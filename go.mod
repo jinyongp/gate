@@ -7,3 +7,5 @@ require (
 	golang.org/x/sys v0.45.0
 	howett.net/plist v1.0.0
 )
+
+require golang.org/x/term v0.43.0

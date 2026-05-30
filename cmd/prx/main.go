@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/jinyongp/prx/internal/cli"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -21,7 +23,14 @@ type command func(args []string, stdout, stderr io.Writer) int
 
 // commands is the subcommand dispatch table. Subcommands register here as
 // features land across the implementation phases.
-var commands = map[string]command{}
+var commands = map[string]command{
+	"ls":    cli.Ls,
+	"port":  cli.Port,
+	"add":   cli.Add,
+	"rm":    cli.Rm,
+	"prune": cli.Prune,
+	"run":   cli.Run,
+}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("prx", flag.ContinueOnError)

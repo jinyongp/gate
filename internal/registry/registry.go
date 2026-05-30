@@ -14,13 +14,14 @@ const SchemaVersion = 1
 
 // Reservation is a persisted service↔port binding.
 type Reservation struct {
-	Project string `json:"project"`
-	Service string `json:"service"`
-	Domain  string `json:"domain"`
-	Port    int    `json:"port"`
-	TLS     string `json:"tls,omitempty"`
-	DNS     string `json:"dns,omitempty"`
-	Adhoc   bool   `json:"adhoc,omitempty"`
+	Project    string `json:"project"`
+	Service    string `json:"service"`
+	Domain     string `json:"domain"`
+	Port       int    `json:"port"`
+	TLS        string `json:"tls,omitempty"`
+	DNS        string `json:"dns,omitempty"`
+	Adhoc      bool   `json:"adhoc,omitempty"`
+	ConfigPath string `json:"config_path,omitempty"` // prx.toml that owns this reservation; enables GC
 }
 
 // Registry is the whole on-disk document.
@@ -84,6 +85,33 @@ func (r *Registry) Get(key string) (Reservation, bool) {
 // Release removes key. It is a no-op if absent.
 func (r *Registry) Release(key string) {
 	delete(r.Services, key)
+}
+
+// ReleaseDomain removes the reservation whose domain matches, returning it.
+func (r *Registry) ReleaseDomain(domain string) (Reservation, bool) {
+	for k, res := range r.Services {
+		if res.Domain == domain {
+			delete(r.Services, k)
+			return res, true
+		}
+	}
+	return Reservation{}, false
+}
+
+// Prune removes reservations whose owning prx.toml no longer exists (per the
+// exists predicate) and returns the removed reservations sorted by key.
+func (r *Registry) Prune(exists func(path string) bool) []Reservation {
+	var removed []Reservation
+	for k, res := range r.Services {
+		if res.ConfigPath != "" && !exists(res.ConfigPath) {
+			removed = append(removed, res)
+			delete(r.Services, k)
+		}
+	}
+	sort.Slice(removed, func(i, j int) bool {
+		return Key(removed[i].Project, removed[i].Service) < Key(removed[j].Project, removed[j].Service)
+	})
+	return removed
 }
 
 // UsedPorts returns the set of currently reserved ports.

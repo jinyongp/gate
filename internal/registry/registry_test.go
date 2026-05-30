@@ -40,6 +40,39 @@ func TestReserveSameKeyUpdates(t *testing.T) {
 	}
 }
 
+func TestReleaseDomain(t *testing.T) {
+	r := New()
+	_ = r.Reserve(Reservation{Project: "a", Service: "web", Domain: "x.localhost", Port: 4300})
+	res, ok := r.ReleaseDomain("x.localhost")
+	if !ok || res.Port != 4300 {
+		t.Fatalf("ReleaseDomain = %+v, %v", res, ok)
+	}
+	if _, ok := r.ReleaseDomain("missing"); ok {
+		t.Fatal("expected miss for unknown domain")
+	}
+}
+
+func TestPrune(t *testing.T) {
+	r := New()
+	_ = r.Reserve(Reservation{Project: "live", Service: "web", Domain: "a", Port: 4300, ConfigPath: "/exists"})
+	_ = r.Reserve(Reservation{Project: "dead", Service: "web", Domain: "b", Port: 4301, ConfigPath: "/gone"})
+	_ = r.Reserve(Reservation{Project: "", Service: "c", Domain: "c", Port: 4302}) // adhoc, no ConfigPath
+
+	removed := r.Prune(func(p string) bool { return p == "/exists" })
+	if len(removed) != 1 || removed[0].Project != "dead" {
+		t.Fatalf("Prune removed = %+v", removed)
+	}
+	if _, ok := r.Get("dead/web"); ok {
+		t.Fatal("dead reservation not pruned")
+	}
+	if _, ok := r.Get("live/web"); !ok {
+		t.Fatal("live reservation wrongly pruned")
+	}
+	if _, ok := r.Get("/c"); !ok {
+		t.Fatal("adhoc reservation wrongly pruned")
+	}
+}
+
 func TestUsedPortsAndRelease(t *testing.T) {
 	r := New()
 	_ = r.Reserve(Reservation{Project: "a", Service: "web", Domain: "x", Port: 4300})
