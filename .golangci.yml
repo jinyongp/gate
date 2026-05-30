@@ -22,6 +22,16 @@ linters:
     - gosec # prx security surface: os/exec, file perms 0600, /etc/hosts, sudo
 
   settings:
+    errcheck:
+      # Writes to stdout/stderr conventionally ignore their error.
+      exclude-functions:
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Writer).Write
     nolintlint:
       require-explanation: true
       require-specific: true
