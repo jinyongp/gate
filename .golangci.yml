@@ -32,6 +32,11 @@ linters:
         - fmt.Fprintf
         - fmt.Fprintln
         - (io.Writer).Write
+    gosec:
+      # G304: prx legitimately reads files by user-provided paths (config,
+      # registry, certs). Keep the file/dir permission checks (G301/G302/G306).
+      excludes:
+        - G304
     nolintlint:
       require-explanation: true
       require-specific: true
