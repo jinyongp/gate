@@ -35,9 +35,9 @@ func Title(app, tagline string) string {
 		Render(inner)
 }
 
-// Section renders a dim, bold section label for grouped help output.
+// Section renders a dim section label for grouped help output.
 func Section(label string) string {
-	return lipgloss.NewStyle().Bold(true).Foreground(Muted).Render(label)
+	return lipgloss.NewStyle().Foreground(Muted).Render(label)
 }
 
 // Tint renders s in the foreground color c (e.g. one of the palette colors).
@@ -58,5 +58,5 @@ func Enabled(w io.Writer) bool {
 // Command renders a fixed-width, left-aligned command name in the brand color,
 // used by `prx` usage output.
 func Command(name string, width int) string {
-	return lipgloss.NewStyle().Foreground(Brand).Bold(true).Width(width).Render(name)
+	return lipgloss.NewStyle().Foreground(Brand).Width(width).Render(name)
 }
