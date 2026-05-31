@@ -35,3 +35,13 @@ fmt:
 
 [doc('full gate — run before opening a PR')]
 check: test lint vuln
+
+[doc('cross-compile all release targets into bin/')]
+build-all version="dev":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  for t in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
+    os="${t%/*}"; arch="${t#*/}"
+    GOOS="$os" GOARCH="$arch" go build -ldflags "-X main.version={{version}}" -o "bin/prx-$os-$arch" ./cmd/prx
+    echo "built bin/prx-$os-$arch"
+  done
