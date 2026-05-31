@@ -17,6 +17,7 @@ import (
 var version = "dev"
 
 func main() {
+	cli.SetVersion(version)
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -45,9 +46,9 @@ var commands = map[string]command{
 
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("prx", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs.SetOutput(stdout)
 	showVersion := fs.Bool("version", false, "print version and exit")
-	fs.Usage = func() { usage(stderr) }
+	fs.Usage = func() { usage(stdout) }
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
