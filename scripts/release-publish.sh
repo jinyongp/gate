@@ -103,7 +103,9 @@ confirm_push() {
   printf "Push branch main and tag %s now? [y/N]: " "$tag"
   read -r response
 
-  case "${response,,}" in
+  response_lower="$(printf '%s' "$response" | tr '[:upper:]' '[:lower:]')"
+
+  case "$response_lower" in
     y|yes)
       return 0
       ;;
