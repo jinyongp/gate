@@ -20,19 +20,36 @@ jobs:
         with:
           go-version: "1.26"
       - name: gofmt
+        id: gofmt
         run: scripts/dev/fmt-check.sh
       - name: vet
+        id: vet
         run: scripts/dev/vet.sh
       - name: golangci-lint
+        id: golangci_lint
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
           version: v2.12.2
       - name: govulncheck
+        id: govulncheck
         run: scripts/dev/vuln.sh
       - name: scripts
+        id: scripts
         run: scripts/dev/check-scripts.sh
       - name: test
+        id: test
         run: scripts/dev/cover.sh
+      - name: job summary
+        if: always()
+        run: bash .github/scripts/check-summary.sh
+        env:
+          RUNNER_OS_NAME: ${{ matrix.os }}
+          GOFMT_OUTCOME: ${{ steps.gofmt.outcome }}
+          VET_OUTCOME: ${{ steps.vet.outcome }}
+          GOLANGCI_LINT_OUTCOME: ${{ steps.golangci_lint.outcome }}
+          GOVULNCHECK_OUTCOME: ${{ steps.govulncheck.outcome }}
+          SCRIPTS_OUTCOME: ${{ steps.scripts.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
 
   build:
     needs: [check]
@@ -53,17 +70,14 @@ jobs:
           go-version: "1.26"
       - name: detect release tag
         id: release_tag
-        run: |
-          TAG="$(git tag --points-at HEAD --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1 || true)"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+        run: bash .github/scripts/detect-release-tag.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: build
-        run: |
-          VERSION="${{ steps.release_tag.outputs.tag }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="$(git describe --tags --always --dirty)"
-          fi
-          scripts/release/build-prx.sh "$VERSION"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: build
+        run: bash .github/scripts/build-release-artifacts.sh "${{ steps.release_tag.outputs.tag }}"
+      - id: upload_artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: prx-${{ github.sha }}
           path: |
@@ -72,27 +86,26 @@ jobs:
             prx-linux-amd64
             prx-linux-arm64
       - name: checksums
+        id: checksums
         if: steps.release_tag.outputs.tag != ''
-        run: |
-          sha256sum prx-darwin-amd64 prx-darwin-arm64 prx-linux-amd64 prx-linux-arm64 > checksums.txt
+        run: bash .github/scripts/checksums.sh
       - name: publish release
+        id: publish_release
         if: steps.release_tag.outputs.tag != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.release_tag.outputs.tag }}"
-          # Use the annotated tag message (written by scripts/release/publish.sh,
-          # a "Release <tag>" header plus the commit changelog) as the notes.
-          # subject+body excludes any GPG signature block; fall back to a bare
-          # line for lightweight tags.
-          NOTES="$(git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$TAG")"
-          [ -n "$(echo "$NOTES" | tr -d '[:space:]')" ] || NOTES="Release $TAG"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" prx-* checksums.txt --clobber
-          else
-            gh release create "$TAG" \
-              prx-darwin-amd64 prx-darwin-arm64 prx-linux-amd64 prx-linux-arm64 checksums.txt \
-              --title "$TAG" \
-              --notes "$NOTES" \
-              --verify-tag
-          fi
+        run: bash .github/scripts/publish-release.sh "${{ steps.release_tag.outputs.tag }}"
+      - name: job summary
+        if: always()
+        run: bash .github/scripts/build-summary.sh
+        env:
+          BUILD_VERSION: ${{ steps.build.outputs.version || 'not built' }}
+          RELEASE_TAG: ${{ steps.release_tag.outputs.tag }}
+          TAG_TYPE: ${{ steps.release_tag.outputs.type }}
+          TAG_TARGET: ${{ steps.release_tag.outputs.target }}
+          RELEASE_STATUS: ${{ steps.release_tag.outputs.release }}
+          DETECT_TAG_OUTCOME: ${{ steps.release_tag.outcome }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          UPLOAD_ARTIFACT_OUTCOME: ${{ steps.upload_artifact.outcome }}
+          CHECKSUMS_OUTCOME: ${{ steps.checksums.outcome }}
+          PUBLISH_RELEASE_OUTCOME: ${{ steps.publish_release.outcome }}
