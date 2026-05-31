@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TAG_INPUT="${1:-}"
-TAG_INPUT="${TAG_INPUT#tag=}"
+DRY_RUN=0
+TAG_INPUT=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run|-n)
+      DRY_RUN=1
+      ;;
+    tag=*)
+      TAG_INPUT="${arg#tag=}"
+      ;;
+    patch|minor|major)
+      TAG_INPUT="$arg"
+      ;;
+    v[0-9]*.[0-9]*.[0-9]*)
+      TAG_INPUT="$arg"
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      echo "Usage: scripts/release-publish.sh [--dry-run|-n] <patch|minor|major|vX.Y.Z>"
+      exit 1
+      ;;
+  esac
+done
 
 get_latest_tag() {
   git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
@@ -44,7 +66,7 @@ next_version() {
 }
 
 if [ -z "$TAG_INPUT" ]; then
-  echo "Usage: scripts/release-publish.sh <patch|minor|major|vX.Y.Z>"
+  echo "Usage: scripts/release-publish.sh [--dry-run|-n] <patch|minor|major|vX.Y.Z>"
   exit 1
 fi
 
@@ -78,22 +100,35 @@ if [ "$(git symbolic-ref --short HEAD)" != "main" ]; then
   exit 1
 fi
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ "$DRY_RUN" -eq 0 ] && [ -n "$(git status --porcelain)" ]; then
   echo "Working tree is dirty. Commit or stash changes first."
   exit 1
 fi
 
-git push origin main
-TARGET_SHA="$(git rev-parse origin/main)"
+if [ "$DRY_RUN" -eq 1 ] && [ -n "$(git status --porcelain)" ]; then
+  echo "DRY-RUN: working tree is dirty; continuing without tag checks."
+fi
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  git push origin main
+  TARGET_SHA="$(git rev-parse origin/main)"
+else
+  TARGET_SHA="$(git rev-parse HEAD)"
+fi
 
 if git rev-parse -q --verify "refs/tags/$PATCH_TAG" >/dev/null; then
   echo "Patch tag already exists: $PATCH_TAG"
   exit 1
 fi
 
-if git ls-remote --exit-code --tags origin "refs/tags/$PATCH_TAG" >/dev/null 2>&1; then
+if [ "$DRY_RUN" -eq 0 ] && git ls-remote --exit-code --tags origin "refs/tags/$PATCH_TAG" >/dev/null 2>&1; then
   echo "Remote patch tag already exists: $PATCH_TAG"
   exit 1
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY-RUN: would create and push tag $PATCH_TAG at $TARGET_SHA"
+  exit 0
 fi
 
 git tag -a "$PATCH_TAG" -m "Release $PATCH_TAG" "$TARGET_SHA"
