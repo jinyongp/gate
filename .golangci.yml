@@ -44,6 +44,16 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: var-declaration
 
   # Vendored upstream code is not held to prx's lint rules.
   exclusions:
@@ -59,18 +69,6 @@ linters:
         text: "unused-parameter"
         linters:
           - revive
-    # Start revive light — enable rules incrementally so code stays idiomatic
-    # rather than "rule-satisfying".
-    revive:
-      rules:
-        - name: blank-imports
-        - name: context-as-argument
-        - name: error-return
-        - name: error-strings
-        - name: errorf
-        - name: increment-decrement
-        - name: indent-error-flow
-        - name: var-declaration
 
 issues:
   max-issues-per-linter: 0
