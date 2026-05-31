@@ -61,8 +61,8 @@ skills/prx/         agentskills.io skill (usage docs — not a dev concern)
 ## Conventions
 
 - **stdlib first.** Dependencies are two-tier (see `docs/spec/impl.md` 부록 B):
-  - core (proxy / TLS / CA / network): stdlib + `golang.org/x` only.
-  - presentation (CLI / config): minimal third-party.
+  - core (proxy / TLS / CA / network / daemon): stdlib + `golang.org/x` only. Must not import TUI deps.
+  - presentation (CLI / config / TUI): minimal third-party — `go-toml`, `term`, and the Charm stack (lipgloss / bubbletea / bubbles / bubblezone / ntcharts), confined to `internal/ui` and `internal/tui`. See [`docs/tui`](docs/tui/plan.md).
 - **Output split (pipe-safe):** program data → stdout; logs/diagnostics → stderr. `--json` emits a
   single object/array and nothing else.
 - **Domain separation:** `internal/truststore` is a self-contained vendored library — it must **not**

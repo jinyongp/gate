@@ -13,7 +13,8 @@
 
 ### 0.1 의존성 추가 정책
 
-Phase 단위로 `go.mod`에 추가한다(미사용 의존 선반입 금지).
+Charm 스택은 [docs/spec/impl.md 부록 B](../spec/impl.md) 개정으로 presentation 계층에 허용된다.
+**core(proxy·TLS·CA·network·daemon)는 stdlib + `golang.org/x`만 유지하고 TUI 의존을 import하지 않는다**(§0.2 불변식). Phase 단위로 `go.mod`에 추가한다(미사용 의존 선반입 금지).
 
 | Phase | 추가 모듈 | 비고 |
 |---|---|---|
@@ -50,6 +51,7 @@ func interactive(stdout io.Writer) bool {
 ```
 
 **불변식:** `--json`이거나 non-TTY이거나 `NO_COLOR`면 리치/인터랙티브 경로 진입 금지.
+core 패키지(proxy·TLS·CA·network·daemon)는 `internal/ui`·`internal/tui`를 import하지 않는다(부록 B 개정).
 
 ### 0.3 패키지 구조
 
@@ -58,6 +60,7 @@ func interactive(stdout io.Writer) bool {
 | `internal/ui` | lipgloss 팔레트·공용 스타일·렌더 헬퍼. **lipgloss만 import**(사이클 없음) | 1 |
 | `internal/cli` | 기존. Phase 1에서 `internal/ui` 사용 | 1 |
 | `internal/tui` | bubbletea 모델/프로그램. `prx top`·진행 UI·picker | 2 |
+| `internal/view` | 서비스 행 빌더(registry+port). cli·tui 공유, import 사이클 회피 | 2 |
 | `internal/metrics` | 트래픽 집계(ring buffer)·admin /metrics | 4 |
 
 `internal/ui`를 cli와 tui가 공유해 스타일 단일 출처를 유지한다.
@@ -115,18 +118,20 @@ import (
 	"github.com/charmbracelet/lipgloss/table"
 )
 
-// Render returns a bordered, aligned table. headers/rows are plain strings;
-// caller pre-formats cell content (incl. status glyphs).
+// Render returns an aligned, borderless table: bold header + adaptive colors.
+// Borderless keeps output copy/grep-friendly and saves width. headers/rows are
+// plain strings; caller pre-formats cell content (incl. status glyphs).
 func Render(headers []string, rows [][]string) string {
 	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(Dim).
+		Border(lipgloss.HiddenBorder()).
+		BorderTop(false).BorderBottom(false).
+		BorderLeft(false).BorderRight(false).BorderColumn(false).
 		Headers(headers...).
 		StyleFunc(func(row, _ int) lipgloss.Style {
 			if row == table.HeaderRow {
-				return Header.Padding(0, 1)
+				return Header.PaddingRight(2)
 			}
-			return lipgloss.NewStyle().Padding(0, 1)
+			return lipgloss.NewStyle().PaddingRight(2)
 		})
 	for _, r := range rows {
 		t.Row(r...)
@@ -376,10 +381,9 @@ func (m Dashboard) View() string {
 `refreshAll`은 레지스트리 읽기 → 행 구성 → liveness 폴링 cmd + daemon 폴링 cmd를
 `tea.Batch`로 묶어 반환한다. liveness는 행 포트 집합으로 호출한다.
 
-**기존 로직 재사용:** 행 구성은 `Ls`의 `service`/`liveness` 형태를 재사용한다. 중복을
-피하려고 `internal/cli`의 행 빌더를 내보내거나(`BuildRows`) `internal/registry` 조회를
-공유 헬퍼로 추출한다. (구현 시 import 방향 점검: tui→cli 의존이 생기면 행 빌더를
-`internal/registry` 또는 신규 `internal/view`로 승격.)
+**행 빌더 공유(결정):** 서비스 행 구성(`Ls`의 `service`/`liveness` 형태)을 신규
+`internal/view`(registry+port 의존)로 추출한다. `internal/cli`와 `internal/tui`가 함께
+호출해 중복을 없애고 `tui→cli` import 사이클을 피한다. `Ls`도 이 빌더를 쓰도록 리팩터한다.
 
 ### 2.6 진행 표시 (`internal/tui/progress.go`)
 
@@ -490,6 +494,8 @@ func addReservation(domain string, p int) (added bool, err error) {
 **목표:** 트래픽·지연·인증서 만료를 대시보드 차트로 시각화. **메트릭 수집 신규 설계 선행.**
 
 **의존성:** ntcharts (+ Phase 2/3).
+
+> **범위 결정:** Phase 4는 현재 **보류**. Phase 1~3 완료 후 별도 합의로 착수한다. 아래는 착수 시 설계.
 
 ### 4.1 메트릭 소스 설계 (선행 결정)
 

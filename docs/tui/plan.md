@@ -51,6 +51,8 @@ prx의 출력 계약([internal/cli/output.go](../../internal/cli/output.go))은 
 
 **원칙 3 — 신규 표면 우선.** 인터랙티브 기능은 가급적 신규 명령/플래그로 추가하고, 기존 one-shot 의미를 바꾸지 않는다.
 
+**원칙 4 — core 불가침.** TUI 의존은 presentation(`internal/ui`·`internal/tui`)에만 둔다. core(proxy·TLS·CA·network·daemon)는 stdlib + `golang.org/x`만 유지하고 TUI 의존을 import하지 않는다([docs/spec/impl.md 부록 B](../spec/impl.md) 개정).
+
 ## 4. 라이브러리 역할
 
 | 라이브러리 | 역할 | 단독 사용 |
@@ -121,9 +123,30 @@ go1.26 darwin/arm64, 릴리스 플래그(`-trimpath -ldflags "-s -w"`) 실측:
 - Phase 3: `prx add -i`가 선택 결과를 기존 `add` 경로로 위임(중복 로직 없음).
 - Phase 4: 차트 명령이 데이터 없을 때 graceful, 수집 오버헤드 측정·문서화.
 
-## 10. 미해결 질문
+## 10. 결정 사항 (확정)
 
-- Phase 채택 범위/순서 확정.
-- `prx top` 데이터 소스 폴링 주기와 liveness 캐시 TTL.
-- `upgrade` 직접 다운로드 리팩터 여부(실제 progress bar 위함).
-- Phase 4 메트릭 수집 모델(상시 ring buffer vs 로그 파일 재파싱)과 access 로그 sink/rotation 설계([internal/logx/rotate.go](../../internal/logx/rotate.go)).
+추천안 전부 채택. 구현은 아래 결정대로 진행한다.
+
+**정책**
+- 의존성 정책 개정: presentation 계층에 Charm 스택 허용([docs/spec/impl.md 부록 B](../spec/impl.md) 개정). core는 stdlib+`x`만, TUI 의존 import 금지(원칙 4).
+
+**Phase 1 (lipgloss)**
+- 패키지 `internal/ui`.
+- `ls` 테이블 = **무테두리**(헤더 강조 + 정렬 + 적응형 색). 복붙/grep 친화.
+- 색 강제 변수(`CLICOLOR_FORCE` 등) 별도 처리 안 함 — termenv 기본동작. `NO_COLOR` 존중.
+- 적용 범위 = `ls` + `usage` + status 먼저. `up`/`add`/`rm` 요약은 색만(plain 문자열 불변).
+- lipgloss 최신 stable pin + `go.sum` 동결.
+
+**Phase 2+**
+- 명령 `prx top`, 풀스크린 AltScreen(진행 UI는 인라인).
+- 폴링 2초, liveness 동시 16, `--interval` 플래그.
+- 행 빌더는 신규 `internal/view`로 추출(registry+port 의존, cli·tui 공유) → `tui→cli` import 사이클 회피.
+- `upgrade` 진행 = shell-out 출력 stream + spinner(직접 다운로드 리팩터 보류).
+- `expose` 진행 = `internal/expose`에 단계 이벤트 채널 추가.
+
+**Phase 4**
+- 이번 범위 **보류**. Phase 1~3 먼저, 4는 별도 합의.
+- (진행 시) 메트릭 소스 = 데몬 인메모리 ring buffer + admin `/metrics`(access 로그 재파싱 대신). access 로그 sink/rotation은 그때 설계([internal/logx/rotate.go](../../internal/logx/rotate.go)).
+
+**테스트**
+- golden(plain/`--json`/`NO_COLOR` 바이트 동일) + 모델 단위테스트. PTY 의존 추가 안 함.

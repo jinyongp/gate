@@ -2,8 +2,9 @@
 
 > README의 설계 명세(§1–§16)를 **구현 가능한 단계**로 분해한 문서다. 결정된 모든 항목
 > (D1–D11·O1–O3)을 코드 수준 작업으로 옮긴다. **런타임(프록시 경로) 외부 바이너리 의존 0**,
-> presentation 포함 전부 직접 구현(stdlib + 수동 ANSI). 단 `prx trust`의 트러스트 스토어
-> 등록만은 OS 네이티브 도구(`security`/`update-ca-trust`/`certutil`)를 1회성으로 호출한다.
+> core(프록시·TLS·CA·네트워크)는 stdlib + `golang.org/x`만 사용한다. presentation(CLI/TUI) 렌더는
+> Charm 스택을 쓴다(부록 B 개정; CLI/TUI 개선 [docs/tui](../tui/plan.md)). 단 `prx trust`의 트러스트
+> 스토어 등록만은 OS 네이티브 도구(`security`/`update-ca-trust`/`certutil`)를 1회성으로 호출한다.
 
 ## 0. 원칙·범위
 
@@ -444,7 +445,7 @@ internal·acme 둘 다 이 인터페이스 구현. 서비스별 `tls` 값으로 
 
 1. **디스패치·플래그:** 각 커맨드 `flag.FlagSet`. 공통 `--json`.
 2. **출력 분리(파이프 안전):** 데이터=stdout, 로그·진행=stderr.
-3. **human 렌더(`output.go`):** 수동 정렬 표(`text/tabwriter` stdlib). 색·기호(● live/○ down)는 **TTY일 때만**(`term.IsTerminal` via `golang.org/x/term`, `NO_COLOR` 존중). 비-TTY면 평문.
+3. **human 렌더(`output.go`):** 비-TTY·`--json`·`NO_COLOR`는 stdlib(`text/tabwriter`) 평문 — 기존과 **바이트 동일**. TTY 리치 경로는 lipgloss(presentation; 부록 B 개정)로 정렬·색·기호(● live/○ down)를 렌더. 게이트는 `term.IsTerminal`(`golang.org/x/term`) + `NO_COLOR`.
 4. **json 렌더:** 단일 객체/배열만. `encoding/json`, 부가 텍스트 0.
 5. **exit code:** `0` 성공 / `1` 일반 / `2` 사용법 / `3` 권한(sudo) / `4` 포트·도메인 충돌. 에러 봉투:
    ```json
@@ -665,13 +666,25 @@ type Provider interface {
 | `golang.org/x/term` | presentation | TTY 감지 | CLI 출력 |
 | `pelletier/go-toml/v2` | presentation | prx.toml 읽기·검증(쓰기는 surgical) | config 한정 |
 | `howett.net/plist` | core | macOS trust-settings plist | internal TLS·macOS 한정, **제거 후보(Phase 3c (b))** |
+| `charmbracelet/lipgloss` | presentation | 출력 스타일·테이블·적응형 색 | CLI 리치 렌더(TTY 한정) |
+| `charmbracelet/bubbletea` | presentation | TUI 런타임 | `prx top`·진행 UI·picker(TTY 한정) |
+| `charmbracelet/bubbles` | presentation | TUI 컴포넌트(table/spinner/progress/list/…) | `prx top`·인터랙티브 |
+| `lrstanley/bubblezone` | presentation | TUI 마우스 영역 | `prx top` |
+| `NimbleMarkets/ntcharts` | presentation | 터미널 차트 | `prx top` 차트(Phase 4) |
 
 > `smallstep/truststore`는 모듈 의존이 아니라 `internal/truststore`로 **vendoring**(Apache-2.0,
 > 자립·prx 비의존)한다 → upstream 모듈 의존 0(Phase 3c). prx 동작은 시드(`WithLogger`/`WithElevator`)로
 > 주입하며 라이브러리에 prx import는 없다. vendored darwin 경로가 `howett.net/plist`를 끌어오며,
 > 이는 trust-settings 댄스를 직접 구현하면 제거 가능하다.
 
-> 그 외 프록시·TLS·CA·라우팅·로그·테이블·회전은 모두 stdlib + 직접 구현.
+> 그 외 프록시·TLS·CA·라우팅·로그·회전은 모두 stdlib + 직접 구현.
+
+> **개정(CLI/TUI 개선, [docs/tui](../tui/plan.md)):** presentation 계층에 Charm 스택
+> (lipgloss·bubbletea·bubbles·bubblezone·ntcharts)을 허용한다. 테이블·TUI 렌더는 더 이상
+> 수동 구현이 아니라 이 스택을 쓴다. **core(프록시·TLS·CA·네트워크·daemon)는 stdlib +
+> `golang.org/x`만 유지하며 TUI 의존을 import하지 않는다.** `internal/ui`·`internal/tui`는
+> presentation 전용이다. Phase 단위로 도입한다(Phase 1=lipgloss, 2=bubbletea+bubbles,
+> 3=bubblezone, 4=ntcharts).
 
 ## 부록 C. MVP 경로 (최소 동작)
 
