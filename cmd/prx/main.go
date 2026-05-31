@@ -38,6 +38,7 @@ var commands = map[string]command{
 	"trust":   cli.Trust,
 	"ca":      cli.Ca,
 	"expose":  cli.Expose,
+	"upgrade": cli.Upgrade,
 	"skill":   cli.Skill,
 	"__serve": cli.Serve,
 }
@@ -88,6 +89,7 @@ var commandHelp = []struct{ name, summary string }{
 	{"trust", "install the local CA into the OS and browser trust stores"},
 	{"ca", "export the local CA certificate"},
 	{"expose", "publish a local service through a public tunnel provider"},
+	{"upgrade", "upgrade prx to the latest GitHub release"},
 	{"skill", "locate or print the bundled agent skill (path|print)"},
 }
 
