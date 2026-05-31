@@ -402,6 +402,7 @@ prx trust
 prx ca export [--out <path>]             # 타기기 설치용 루트 CA 반출
 prx expose <service> --via <provider> [--auth]
 prx skill path                           # 동봉 SKILL.md 경로 출력 (설치는 skills.sh/apm)
+prx uninstall
 ```
 
 ### 출력 규약
@@ -565,6 +566,66 @@ $ prx add web.localhost 4310 --json
   - state/logs: Linux `$XDG_STATE_HOME/prx/`(기본 `~/.local/state/prx/`), macOS `~/Library/Logs/prx/`
     (`XDG_STATE_HOME` 설정 시 그를 우선). config·data는 macOS도 XDG 경로를 따른다.
 - **데몬 reload** — 전체 재기동이 아니라 admin 소켓을 통한 무중단 핫 reload (§8 참고).
+
+## 17. 설치/갱신/삭제
+
+### 설치
+
+- 사람: `scripts/install.sh`를 실행한다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/install.sh | sh
+```
+
+- AI: `scripts/install-with-agent.md`의 지침을 따른다.
+
+설치 스크립트는 OS/CPU를 판별해서 릴리스 자산을 먼저 시도하고,
+받아오기를 실패하면 소스 빌드로 폴백한다.
+
+### 갱신
+
+- `prx upgrade` 실행으로 최신 릴리스로 갱신한다.
+
+`prx upgrade`는 기존 설치 위치를 유지하며 실행 파일만 교체한다.
+
+### 삭제
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/uninstall.sh | sh
+```
+
+삭제 대상 목록:
+
+- `~/.config/prx`
+- `~/.local/share/prx`
+- `~/Library/Logs/prx` (macOS) 또는 `~/.local/state/prx` (Linux)
+- PATH에 노출된 `prx` 실행 파일
+
+삭제 동작:
+
+1. 삭제 후보 수집
+2. 실제로 존재하는 후보만 목록 출력
+3. `Type y to proceed, anything else to cancel [y/N]:` 확인
+4. 데몬 pid 파일(`prx.pid`)이 있으면 종료 시도
+5. 파일/디렉터리 삭제
+
+현재 스크립트는 현재 머신에서 실제로 발견된 항목만 삭제한다. `sudo`로 생성된 항목이 없다면 해당 항목은 후보가 되지 않아 삭제 대상이 아니다.
+
+삭제 스크립트는 동작 중인 데몬이 있으면 종료 시도를 하고,
+시스템 trust store/브라우저 인증서 등록 항목은 건드리지 않는다.
+
+기본 동작은 삭제 전 확인을 요구한다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/uninstall.sh | sh -s -- -y
+```
+
+자동화 스크립트에서는 `-y` 옵션을 사용한다.
+
+종료 코드:
+
+- `0`: 삭제 완료 또는 삭제할 항목이 없음
+- `1`: 일부 항목 삭제 실패
 
 ---
 

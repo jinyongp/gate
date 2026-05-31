@@ -6,7 +6,7 @@ Local HTTPS reverse proxy and port registry for local development.
 
 ### AI Agent bootstrap (recommended)
 
-Open the agent setup instructions directly:
+Open the AI agent setup instructions directly:
 
 ```
 https://raw.githubusercontent.com/jinyongp/prx/main/scripts/install-with-agent.md
@@ -20,7 +20,9 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/install.s
 
 Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 
-### Upgrade
+For detailed setup notes and internals, see [docs/README.md](/Users/jinyongp/Workspaces/github/jinyongp/prx/docs/README.md).
+
+## Upgrade
 
 ```bash
 prx upgrade
@@ -28,9 +30,27 @@ prx upgrade
 
 This updates prx to the latest GitHub release.
 
+## Uninstall
+
+Removes user-level config/data/state and binaries.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/uninstall.sh | sh
+```
+
+```bash
+# non-interactive
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/uninstall.sh | sh -s -- -y
+```
+
+The script removes only files and directories it discovers on the current machine. If privileged setup artifacts were never created, they are not removed.
+
+By default it asks for confirmation before removing files.
+Use `-y` to skip it in automation.
+
 ## Quick start
 
-1. Create `prx.toml` in your project root.
+1. Add `prx.toml` in your project root.
 
 ```toml
 [project]
@@ -44,20 +64,20 @@ domain = "api.example.localhost"
 port = 3001
 ```
 
-2. Start routing for the project:
+2. Start routing:
 
 ```bash
 prx up
 ```
 
-3. Open from another terminal or browser:
+3. Open:
 
 ```bash
 https://app.example.localhost
 https://api.example.localhost
 ```
 
-4. Check status and stop when needed:
+4. Check status:
 
 ```bash
 prx ls
@@ -65,17 +85,15 @@ prx daemon status
 prx down
 ```
 
-## Common command flow
+## Common commands
 
 ```bash
-prx up                  # apply project routes
-prx ls                  # list reservations
-prx run web -- pnpm dev  # run with injected PORT
-prx run web -- ./gradlew bootRun  # framework-agnostic example
-prx port web            # print assigned port
-prx daemon status       # proxy daemon status
-prx upgrade             # update prx to latest release
-prx down               # stop current project routes
+prx up
+prx run web -- pnpm dev
+prx ls
+prx daemon status
+prx upgrade
+prx down
 ```
 
 For full usage and all options, run `prx --help`.

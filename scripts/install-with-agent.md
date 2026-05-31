@@ -44,3 +44,17 @@ prx up
 ```
 
 5) Report where the install landed and what was detected.
+
+6) When removing agent setup, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/uninstall.sh | sh
+# confirm prompt first, then remove all user-level prx artifacts
+# unattended
+curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/uninstall.sh | sh -s -- -y
+```
+
+This removes user-level `config`, `data`, and `state` directories plus detected `prx` binaries,
+then tries to stop a running daemon if a pid file is found.
+Only paths actually present on the current machine are removed.
+System trust store entries are intentionally left behind.
