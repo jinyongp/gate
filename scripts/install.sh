@@ -120,7 +120,7 @@ build_from_source() {
     fi
   fi
 
-  if ! (cd "$SOURCE_DIR" && go build -o "$BINARY_PATH" ./cmd/prx); then
+  if ! (cd "$SOURCE_DIR" && go build -trimpath -ldflags "-s -w" -o "$BINARY_PATH" ./cmd/prx); then
     echo "Failed to build prx from source." >&2
     return 1
   fi

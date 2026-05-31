@@ -6,7 +6,7 @@ default:
 
 [doc('build the binary')]
 build:
-  go build -o bin/prx ./cmd/prx
+  go build -trimpath -ldflags "-s -w" -o bin/prx ./cmd/prx
 
 [doc('run tests with the race detector')]
 test:
@@ -42,6 +42,6 @@ build-all version="dev":
   set -euo pipefail
   for t in darwin/arm64 darwin/amd64 linux/arm64 linux/amd64; do
     os="${t%/*}"; arch="${t#*/}"
-    GOOS="$os" GOARCH="$arch" go build -ldflags "-X main.version={{version}}" -o "bin/prx-$os-$arch" ./cmd/prx
+    GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version={{version}}" -o "bin/prx-$os-$arch" ./cmd/prx
     echo "built bin/prx-$os-$arch"
   done
