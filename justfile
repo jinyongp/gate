@@ -9,6 +9,10 @@ default:
 build:
   go build -trimpath -ldflags "-s -w" -o bin/prx ./cmd/prx
 
+[doc('run prx from source, e.g. `just prx ls`, `just prx --help`')]
+prx *args:
+  go run ./cmd/prx {{args}}
+
 [doc('run tests with the race detector')]
 test:
   go test -race ./...
