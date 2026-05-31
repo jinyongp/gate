@@ -2,6 +2,7 @@
 set -euo pipefail
 
 TAG_INPUT="${1:-}"
+TAG_INPUT="${TAG_INPUT#tag=}"
 
 if [ -z "$TAG_INPUT" ]; then
   echo "Usage: scripts/release-publish.sh <vX.Y.Z>"
