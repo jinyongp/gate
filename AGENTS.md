@@ -4,7 +4,7 @@ Guide for AI agents working **on the prx codebase**. To use prx as a tool, see
 [`skills/prx/SKILL.md`](skills/prx/SKILL.md) instead — do not duplicate usage docs here.
 
 prx = local-dev global HTTPS reverse proxy + port registry, single Go binary.
-Design spec: [`README.md`](README.md). Implementation plan: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
+Design spec: [`docs/README.md`](docs/README.md). Implementation plan: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
 
 Module path: `prx` (bare; no VCS host dependency). Targets: macOS (arm64/amd64), Linux. Windows unsupported.
 

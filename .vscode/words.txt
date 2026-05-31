@@ -13,6 +13,7 @@ gosec
 govet
 govulncheck
 ineffassign
+jinyongp
 nilnil
 nolintlint
 staticcheck
