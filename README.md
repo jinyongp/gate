@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/install.s
 
 Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 
-For detailed setup notes and internals, see [docs/README.md](/Users/jinyongp/Workspaces/github/jinyongp/prx/docs/README.md).
+For detailed setup notes and internals, see [docs/spec/plan.md](docs/spec/plan.md).
 
 ## Upgrade
 

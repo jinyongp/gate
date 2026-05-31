@@ -204,7 +204,7 @@ check: test lint vuln
    - OS 분기는 `runtime.GOOS`. 디렉터리 생성은 `os.MkdirAll(dir, 0o700)`.
 4. **`AGENTS.md`(루트, dev-facing):** prx **코드베이스에서 작업하는 에이전트**용 기여 가이드.
    반드시 아래를 **명시**한다(에이전트가 그대로 실행).
-   - 1줄 개요 + `README.md`·`docs/IMPLEMENTATION.md` 포인터.
+   - 1줄 개요 + `README.md`·`docs/spec/impl.md` 포인터.
    - **명령 러너 = `just`** (전제: `just` 설치 필요). 모든 작업은 `go` 직접 호출보다 just 레시피로:
      - `just test` → `go test -race ./...`
      - `just lint` → `golangci-lint run ./...`

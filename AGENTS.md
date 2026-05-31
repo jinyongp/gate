@@ -4,7 +4,7 @@ Guide for AI agents working **on the prx codebase**. To use prx as a tool, see
 [`skills/prx/SKILL.md`](skills/prx/SKILL.md) instead — do not duplicate usage docs here.
 
 prx = local-dev global HTTPS reverse proxy + port registry, single Go binary.
-Design spec: [`docs/README.md`](docs/README.md). Implementation plan: [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md).
+Design spec: [`docs/spec/plan.md`](docs/spec/plan.md). Implementation plan: [`docs/spec/impl.md`](docs/spec/impl.md).
 
 Module path: `prx` (bare; no VCS host dependency). Targets: macOS (arm64/amd64), Linux. Windows unsupported.
 
@@ -60,7 +60,7 @@ skills/prx/         agentskills.io skill (usage docs — not a dev concern)
 
 ## Conventions
 
-- **stdlib first.** Dependencies are two-tier (see `docs/IMPLEMENTATION.md` 부록 B):
+- **stdlib first.** Dependencies are two-tier (see `docs/spec/impl.md` 부록 B):
   - core (proxy / TLS / CA / network): stdlib + `golang.org/x` only.
   - presentation (CLI / config): minimal third-party.
 - **Output split (pipe-safe):** program data → stdout; logs/diagnostics → stderr. `--json` emits a
