@@ -2,6 +2,7 @@
 set -eu
 
 VERSION="${PRX_VERSION:-latest}"
+REPO="jinyongp/prx"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH_RAW="$(uname -m)"
@@ -27,10 +28,9 @@ case "$ARCH_RAW" in
     ;;
 esac
 
-if [ "$VERSION" = "latest" ]; then
-  DOWNLOAD_URL="https://github.com/jinyongp/prx/releases/latest/download/prx-${OS}-${ARCH}"
-else
-  DOWNLOAD_URL="https://github.com/jinyongp/prx/releases/download/${VERSION}/prx-${OS}-${ARCH}"
+if ! command -v curl >/dev/null 2>&1; then
+  echo "Error: curl is required for installation." >&2
+  exit 1
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -39,17 +39,109 @@ cleanup() {
 }
 trap cleanup EXIT
 
-BINARY_PATH="${TMP_DIR}/prx-${OS}-${ARCH}"
-if ! command -v curl >/dev/null 2>&1; then
-  echo "Error: curl is required for installation." >&2
-  exit 1
+BINARY_NAME="prx-${OS}-${ARCH}"
+BINARY_PATH="${TMP_DIR}/${BINARY_NAME}"
+DOWNLOAD_URL=""
+
+resolve_download_url() {
+  if [ "$VERSION" = "latest" ]; then
+    API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+    VERSION_LABEL="latest"
+  else
+    API_URL="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
+    VERSION_LABEL="$VERSION"
+  fi
+
+  RELEASE_JSON="${TMP_DIR}/release.json"
+  if ! curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: prx-install" "$API_URL" > "$RELEASE_JSON"; then
+    echo "Could not query ${VERSION_LABEL} release from GitHub API." >&2
+    return 1
+  fi
+
+  ASSET_URLS="$(sed -n 's/.*\"browser_download_url\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' "$RELEASE_JSON")"
+  TAG_NAME="$(sed -n 's/.*\"tag_name\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' "$RELEASE_JSON" | head -n 1)"
+
+  if [ -z "$ASSET_URLS" ]; then
+    echo "No release assets found for ${VERSION_LABEL} in ${REPO}." >&2
+    if [ "$VERSION" = "latest" ]; then
+      echo "No release has been published yet." >&2
+    fi
+    return 1
+  fi
+
+  for attempt in "$BINARY_NAME" "${BINARY_NAME}.tar.gz" "${BINARY_NAME}.zip"; do
+    CANDIDATE="$(printf '%s\n' "$ASSET_URLS" | grep "/${attempt}$" | head -n 1 || true)"
+    if [ -n "$CANDIDATE" ]; then
+      DOWNLOAD_URL="$CANDIDATE"
+      return 0
+    fi
+  done
+
+  echo "Could not find ${BINARY_NAME} in release assets for ${VERSION_LABEL}." >&2
+  echo "Release tag: ${TAG_NAME}" >&2
+  echo "Available assets:" >&2
+  printf '%s\n' "$ASSET_URLS" | sed 's#.*/##' >&2
+  return 1
+}
+
+build_from_source() {
+  echo "Falling back to source build." >&2
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "No prebuilt release was found and 'git' is missing." >&2
+    echo "Install git, or publish a release with artifacts for ${BINARY_NAME}." >&2
+    return 1
+  fi
+
+  if ! command -v go >/dev/null 2>&1; then
+    echo "No prebuilt release was found and 'go' is missing." >&2
+    echo "Install Go, or publish a release with artifacts for ${BINARY_NAME}." >&2
+    return 1
+  fi
+
+  SOURCE_DIR="${TMP_DIR}/source"
+  CLONE_URL="https://github.com/${REPO}.git"
+
+  if [ "$VERSION" = "latest" ]; then
+    if ! git clone --depth 1 "$CLONE_URL" "$SOURCE_DIR"; then
+      echo "Failed to clone ${REPO} (latest)" >&2
+      return 1
+    fi
+  else
+    if ! git clone --depth 1 --branch "$VERSION" "$CLONE_URL" "$SOURCE_DIR"; then
+      if ! git clone --depth 1 "$CLONE_URL" "$SOURCE_DIR"; then
+        echo "Failed to clone ${REPO} for tag ${VERSION}" >&2
+        return 1
+      fi
+      if ! (cd "$SOURCE_DIR" && git checkout "$VERSION"); then
+        echo "Release version ${VERSION} not found (tag or branch)." >&2
+        return 1
+      fi
+    fi
+  fi
+
+  if ! (cd "$SOURCE_DIR" && go build -o "$BINARY_PATH" ./cmd/prx); then
+    echo "Failed to build prx from source." >&2
+    return 1
+  fi
+
+  return 0
+}
+
+if resolve_download_url; then
+  if ! curl -fsSL "$DOWNLOAD_URL" -o "$BINARY_PATH"; then
+    echo "Failed to download ${DOWNLOAD_URL}" >&2
+    echo "Falling back to source build." >&2
+    build_from_source
+  fi
+else
+  build_from_source
 fi
 
-curl -fsSL "$DOWNLOAD_URL" -o "$BINARY_PATH" || {
-  echo "Failed to download ${DOWNLOAD_URL}" >&2
-  echo "Make sure ${VERSION} release exists and includes prx-${OS}-${ARCH}" >&2
+if [ ! -f "$BINARY_PATH" ]; then
+  echo "No installable binary found." >&2
   exit 1
-}
+fi
 chmod +x "$BINARY_PATH"
 
 if [ -w /usr/local/bin ]; then
