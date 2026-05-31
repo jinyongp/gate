@@ -2,12 +2,19 @@ package tlsprov
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +58,78 @@ func TestChallengeFQDN(t *testing.T) {
 	if got := ChallengeFQDN("app.example.com"); got != "_acme-challenge.app.example.com" {
 		t.Fatalf("ChallengeFQDN = %q", got)
 	}
+}
+
+func TestACMELoadsPersistedCertificate(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewACME(dir, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := testCert(t, "app.example.com")
+	if err := a.saveCert("app.example.com", cert); err != nil {
+		t.Fatalf("saveCert: %v", err)
+	}
+	reloaded, err := NewACME(dir, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.GetCertificate(&tls.ClientHelloInfo{ServerName: "App.Example.Com."})
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if got.Leaf == nil || got.Leaf.Subject.CommonName != "app.example.com" {
+		t.Fatalf("leaf = %+v", got.Leaf)
+	}
+}
+
+func TestACMEEnsureConcurrentObtainsOnce(t *testing.T) {
+	a, err := NewACME(t.TempDir(), nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := testCert(t, "app.example.com")
+	var calls int32
+	a.obtainFunc = func(context.Context, string) (*tls.Certificate, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(10 * time.Millisecond)
+		return cert, nil
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := a.Ensure(context.Background(), "App.Example.Com."); err != nil {
+				t.Errorf("Ensure: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("obtain calls = %d, want 1", got)
+	}
+}
+
+func testCert(t *testing.T, domain string) *tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: domain},
+		DNSNames:     []string{domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(60 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: tmpl}
 }
 
 func TestCloudflareSetAndClear(t *testing.T) {

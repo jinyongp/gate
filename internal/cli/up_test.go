@@ -2,11 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"prx/internal/daemon"
+	"prx/internal/paths"
 	"prx/internal/port"
+	"prx/internal/proxy"
 	"prx/internal/registry"
 )
 
@@ -83,5 +88,43 @@ func TestDownDeactivatesKeepsReservation(t *testing.T) {
 	}
 	if web.Port == 0 {
 		t.Fatal("reservation lost after down")
+	}
+}
+
+func TestUpDownReloadRunningDaemon(t *testing.T) {
+	setupUpProject(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "prx-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	srv := proxy.New(nil, nil)
+	stop, err := daemon.ServeAdmin(context.Background(), paths.SocketPath(), srv)
+	if err != nil {
+		t.Fatalf("ServeAdmin: %v", err)
+	}
+	defer stop()
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	var up struct {
+		Reloaded bool `json:"reloaded"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &up); err != nil {
+		t.Fatalf("up json: %v\n%s", err, out.String())
+	}
+	if !up.Reloaded || srv.RouteCount() != 2 {
+		t.Fatalf("up reloaded=%v route count=%d", up.Reloaded, srv.RouteCount())
+	}
+
+	out.Reset()
+	if code := Down([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Down exit = %d, stderr=%s", code, errb.String())
+	}
+	if srv.RouteCount() != 0 {
+		t.Fatalf("down route count = %d, want 0", srv.RouteCount())
 	}
 }

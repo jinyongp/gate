@@ -13,7 +13,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
+
+	"prx/internal/fsutil"
 
 	"golang.org/x/crypto/acme"
 )
@@ -32,8 +36,9 @@ type ACME struct {
 	staging bool
 	account *ecdsa.PrivateKey
 
-	mu    sync.RWMutex
-	cache map[string]*tls.Certificate
+	mu         sync.RWMutex
+	cache      map[string]*tls.Certificate
+	obtainFunc func(context.Context, string) (*tls.Certificate, error)
 }
 
 // NewACME returns an ACME provider storing state under dir, using dns to answer
@@ -46,16 +51,21 @@ func NewACME(dir string, dns DNSProvider, staging bool) (*ACME, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ACME{dir: dir, dns: dns, staging: staging, account: acct, cache: map[string]*tls.Certificate{}}, nil
+	provider := &ACME{dir: dir, dns: dns, staging: staging, account: acct, cache: map[string]*tls.Certificate{}}
+	if err := provider.loadCerts(); err != nil {
+		return nil, err
+	}
+	return provider, nil
 }
 
 // GetCertificate returns a previously-obtained certificate for the SNI name.
 func (a *ACME) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	name := canonicalDomain(hello.ServerName)
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	cert, ok := a.cache[hello.ServerName]
+	cert, ok := a.cache[name]
 	if !ok {
-		return nil, fmt.Errorf("acme: no certificate for %q (run prx up)", hello.ServerName)
+		return nil, fmt.Errorf("acme: no certificate for %q (run prx up)", name)
 	}
 	return cert, nil
 }
@@ -63,19 +73,30 @@ func (a *ACME) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, err
 // Ensure obtains a certificate for domain if one is not cached or it is within
 // the renewal window.
 func (a *ACME) Ensure(ctx context.Context, domain string) error {
+	domain = canonicalDomain(domain)
 	a.mu.RLock()
 	cert := a.cache[domain]
 	a.mu.RUnlock()
 	if cert != nil && !NeedsRenewal(cert.Leaf, RenewWindow) {
 		return nil
 	}
-	obtained, err := a.obtain(ctx, domain)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if cert := a.cache[domain]; cert != nil && !NeedsRenewal(cert.Leaf, RenewWindow) {
+		return nil
+	}
+	obtain := a.obtain
+	if a.obtainFunc != nil {
+		obtain = a.obtainFunc
+	}
+	obtained, err := obtain(ctx, domain)
 	if err != nil {
 		return err
 	}
-	a.mu.Lock()
+	if err := a.saveCert(domain, obtained); err != nil {
+		return err
+	}
 	a.cache[domain] = obtained
-	a.mu.Unlock()
 	return nil
 }
 
@@ -88,6 +109,7 @@ func (a *ACME) directoryURL() string {
 
 // obtain runs the full DNS-01 order: authorize, publish TXT, finalize.
 func (a *ACME) obtain(ctx context.Context, domain string) (*tls.Certificate, error) {
+	domain = canonicalDomain(domain)
 	client := &acme.Client{Key: a.account, DirectoryURL: a.directoryURL()}
 	if _, err := client.Register(ctx, &acme.Account{}, acme.AcceptTOS); err != nil && !errors.Is(err, acme.ErrAccountAlreadyExists) {
 		return nil, err
@@ -126,6 +148,10 @@ func (a *ACME) obtain(ctx context.Context, domain string) (*tls.Certificate, err
 	return cert, nil
 }
 
+func canonicalDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
 func (a *ACME) solveDNS01(ctx context.Context, client *acme.Client, domain, authzURL string) error {
 	authz, err := client.GetAuthorization(ctx, authzURL)
 	if err != nil {
@@ -149,13 +175,61 @@ func (a *ACME) solveDNS01(ctx context.Context, client *acme.Client, domain, auth
 	if err := a.dns.SetTXT(ctx, fqdn, rec); err != nil {
 		return err
 	}
-	defer func() { _ = a.dns.ClearTXT(ctx, fqdn, rec) }()
+	defer func() {
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_ = a.dns.ClearTXT(cctx, fqdn, rec)
+	}()
 
 	if _, err := client.Accept(ctx, chal); err != nil {
 		return err
 	}
 	_, err = client.WaitAuthorization(ctx, authzURL)
 	return err
+}
+
+func (a *ACME) loadCerts() error {
+	matches, err := filepath.Glob(filepath.Join(a.dir, "*.crt"))
+	if err != nil {
+		return err
+	}
+	for _, crtPath := range matches {
+		domain := strings.TrimSuffix(filepath.Base(crtPath), ".crt")
+		keyPath := filepath.Join(a.dir, domain+".key")
+		cert, err := tls.LoadX509KeyPair(crtPath, keyPath)
+		if err != nil {
+			continue
+		}
+		if len(cert.Certificate) == 0 {
+			continue
+		}
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil || NeedsRenewal(leaf, RenewWindow) {
+			continue
+		}
+		cert.Leaf = leaf
+		a.cache[canonicalDomain(domain)] = &cert
+	}
+	return nil
+}
+
+func (a *ACME) saveCert(domain string, cert *tls.Certificate) error {
+	domain = canonicalDomain(domain)
+	crtPath := filepath.Join(a.dir, domain+".crt")
+	keyPath := filepath.Join(a.dir, domain+".key")
+	var certPEM []byte
+	for _, der := range cert.Certificate {
+		certPEM = append(certPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	if err := fsutil.WriteAtomic(crtPath, certPEM, 0o644); err != nil {
+		return err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		return err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	return fsutil.WriteAtomic(keyPath, keyPEM, 0o600)
 }
 
 func loadOrGenKey(path string) (*ecdsa.PrivateKey, error) {

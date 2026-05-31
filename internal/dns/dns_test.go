@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -44,6 +45,27 @@ func TestHostsEnsureIdempotent(t *testing.T) {
 	_ = h.Ensure("app.example.com")
 	if n := strings.Count(read(t, h), "app.example.com"); n != 1 {
 		t.Fatalf("domain appears %d times, want 1", n)
+	}
+}
+
+func TestHostsEnsureConcurrentKeepsAllEntries(t *testing.T) {
+	h := tempHosts(t, "")
+	var wg sync.WaitGroup
+	for _, domain := range []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com"} {
+		wg.Add(1)
+		go func(domain string) {
+			defer wg.Done()
+			if err := h.Ensure(domain); err != nil {
+				t.Errorf("Ensure(%s): %v", domain, err)
+			}
+		}(domain)
+	}
+	wg.Wait()
+	s := read(t, h)
+	for _, domain := range []string{"a.example.com", "b.example.com", "c.example.com", "d.example.com"} {
+		if !strings.Contains(s, domain) {
+			t.Fatalf("missing %s after concurrent ensure:\n%s", domain, s)
+		}
 	}
 }
 

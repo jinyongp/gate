@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"prx/internal/fsutil"
@@ -11,11 +12,20 @@ import (
 // ErrServiceExists is returned by AddService when the service is already present.
 var ErrServiceExists = fmt.Errorf("service already exists")
 
+var serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // AddService appends a [services.<name>] block to the prx.toml at path while
 // preserving every existing line and comment. The file is created (with a
 // minimal header) if it does not exist. It never rewrites the whole document,
 // so hand-written comments survive.
 func AddService(path, name string, svc Service) error {
+	svc.Domain = CanonicalDomain(svc.Domain)
+	if svc.TLS == "" {
+		svc.TLS = TLSInternal
+	}
+	if err := validateEdit(path, name, svc); err != nil {
+		return err
+	}
 	var lines []string
 	b, err := os.ReadFile(path)
 	switch {
@@ -42,6 +52,9 @@ func AddService(path, name string, svc Service) error {
 // RemoveService removes the [services.<name>] table from prx.toml, leaving all
 // other content untouched. It is a no-op (returns nil) if the service is absent.
 func RemoveService(path, name string) error {
+	if !serviceNameRe.MatchString(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -54,6 +67,29 @@ func RemoveService(path, name string) error {
 	end := nextHeaderIndex(lines, start+1)
 	kept := append(append([]string{}, lines[:start]...), lines[end:]...)
 	return writeLines(path, collapseBlankRuns(kept))
+}
+
+func validateEdit(path, name string, svc Service) error {
+	if !serviceNameRe.MatchString(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
+	p := &Project{Services: map[string]Service{name: svc}}
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		lines := splitLines(string(b))
+		if header := headerIndex(lines, name); header >= 0 {
+			return fmt.Errorf("%q: %w", name, ErrServiceExists)
+		}
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		lines = append(lines, "", renderBlock(name, svc))
+		_, err = parse(path, []byte(strings.Join(lines, "\n")+"\n"))
+		return err
+	}
+	return nil
 }
 
 func renderBlock(name string, svc Service) string {

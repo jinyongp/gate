@@ -47,6 +47,27 @@ func TestAdminStatusAndRoutes(t *testing.T) {
 	}
 }
 
+func TestServeAdminRefusesLiveSocket(t *testing.T) {
+	srv := proxy.New(nil, nil)
+	socket := filepath.Join(t.TempDir(), "prx.sock")
+	stop, err := ServeAdmin(context.Background(), socket, srv)
+	if err != nil {
+		t.Fatalf("ServeAdmin: %v", err)
+	}
+	defer stop()
+
+	if _, err := NewClient(socket).Status(); err != nil {
+		t.Fatalf("first daemon not reachable: %v", err)
+	}
+	if stop2, err := ServeAdmin(context.Background(), socket, proxy.New(nil, nil)); err == nil {
+		stop2()
+		t.Fatal("second ServeAdmin succeeded on live socket")
+	}
+	if _, err := NewClient(socket).Status(); err != nil {
+		t.Fatalf("live socket was removed: %v", err)
+	}
+}
+
 func TestClientNotRunning(t *testing.T) {
 	c := NewClient(filepath.Join(t.TempDir(), "absent.sock"))
 	if c.IsRunning() {

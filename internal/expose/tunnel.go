@@ -11,8 +11,9 @@ import (
 
 // Cloudflared exposes a route as a public URL via the cloudflared binary.
 type Cloudflared struct {
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu    sync.Mutex
+	cmd   *exec.Cmd
+	waitc chan error
 }
 
 var trycloudflareRe = regexp.MustCompile(`https://[a-z0-9-]+\.trycloudflare\.com`)
@@ -29,8 +30,11 @@ func (c *Cloudflared) Expose(ctx context.Context, domain string, _ Opts) (string
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("expose: cloudflared not available: %w", err)
 	}
+	waitc := make(chan error, 1)
+	go func() { waitc <- cmd.Wait() }()
 	c.mu.Lock()
 	c.cmd = cmd
+	c.waitc = waitc
 	c.mu.Unlock()
 
 	scanner := bufio.NewScanner(stderr)
@@ -45,6 +49,8 @@ func (c *Cloudflared) Expose(ctx context.Context, domain string, _ Opts) (string
 			return url, nil
 		}
 	}
+	_ = cmd.Process.Kill()
+	<-waitc
 	return "", fmt.Errorf("expose: cloudflared did not report a public URL")
 }
 
@@ -52,8 +58,14 @@ func (c *Cloudflared) Expose(ctx context.Context, domain string, _ Opts) (string
 func (c *Cloudflared) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cmd != nil && c.cmd.Process != nil {
-		return c.cmd.Process.Kill()
+	cmd, waitc := c.cmd, c.waitc
+	c.cmd, c.waitc = nil, nil
+	if cmd != nil && cmd.Process != nil {
+		err := cmd.Process.Kill()
+		if waitc != nil {
+			<-waitc
+		}
+		return err
 	}
 	return nil
 }

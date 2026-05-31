@@ -81,6 +81,67 @@ func TestAddJSONErrorEnvelope(t *testing.T) {
 	}
 }
 
+func TestTrailingJSONFlag(t *testing.T) {
+	isolate(t)
+	var out, errb bytes.Buffer
+	if code := Add([]string{"a.localhost", "4312", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Add exit = %d, stderr=%s", code, errb.String())
+	}
+	var add struct {
+		Domain string `json:"domain"`
+		Port   int    `json:"port"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &add); err != nil {
+		t.Fatalf("add json: %v\n%s", err, out.String())
+	}
+	out.Reset()
+	if code := Port([]string{"a.localhost", "--json"}, &out, &errb); code != ExitError {
+		t.Fatalf("Port outside project exit = %d, want no_project error", code)
+	}
+}
+
+func TestAddRmSyncProjectConfig(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	body := "# keep\n[project]\nname = \"demo\"\n"
+	path := filepath.Join(dir, "prx.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	var out, errb bytes.Buffer
+	if code := Add([]string{"api.demo.localhost", "4312"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Add exit = %d, stderr=%s", code, errb.String())
+	}
+	edited, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(edited); !strings.Contains(s, "# keep") || !strings.Contains(s, "[services.api]") {
+		t.Fatalf("config not updated preserving comments:\n%s", s)
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get(registry.Key("demo", "api")); !ok {
+		t.Fatalf("registry missing demo/api: %+v", reg.Services)
+	}
+
+	if code := Rm([]string{"api.demo.localhost"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Rm exit = %d, stderr=%s", code, errb.String())
+	}
+	edited, _ = os.ReadFile(path)
+	if strings.Contains(string(edited), "[services.api]") {
+		t.Fatalf("config service not removed:\n%s", edited)
+	}
+	reg, _ = registryStore().Read()
+	if _, ok := reg.Get(registry.Key("demo", "api")); ok {
+		t.Fatal("registry service not removed")
+	}
+}
+
 func TestRmRemoves(t *testing.T) {
 	isolate(t)
 	var out, errb bytes.Buffer

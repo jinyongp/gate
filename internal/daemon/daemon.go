@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -21,12 +22,16 @@ type Daemon struct {
 
 // Run serves the control socket and both proxy planes until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
-	stop, err := ServeAdmin(ctx, d.Socket, d.Proxy)
-	if err != nil {
+	var stop func()
+	err := d.Proxy.RunReady(ctx, d.HTTPSAddr, d.HTTPAddr, func() error {
+		var err error
+		stop, err = ServeAdmin(ctx, d.Socket, d.Proxy)
 		return err
+	})
+	if stop != nil {
+		stop()
 	}
-	defer stop()
-	return d.Proxy.Run(ctx, d.HTTPSAddr, d.HTTPAddr)
+	return err
 }
 
 // ServeAdmin starts the control-socket HTTP server for srv and returns a stop
@@ -38,6 +43,9 @@ func ServeAdmin(ctx context.Context, socket string, srv *proxy.Server) (func(), 
 		return nil, err
 	}
 	if _, err := os.Stat(socket); err == nil {
+		if NewClient(socket).IsRunning() {
+			return nil, errors.New("daemon already running")
+		}
 		_ = os.Remove(socket)
 	}
 	ln, err := net.Listen("unix", socket)

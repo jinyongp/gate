@@ -52,6 +52,7 @@ func New(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), live Live
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			target, _ := pr.In.Context().Value(upstreamKey).(*url.URL)
 			pr.SetURL(target)
+			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
 		},
 		FlushInterval: -1, // flush immediately for SSE/streaming
@@ -69,6 +70,7 @@ func (s *Server) SetRoutes(routes []Route) {
 	m := make(map[string]*Route, len(routes))
 	for i := range routes {
 		r := routes[i]
+		r.Domain = canonicalDomain(r.Domain)
 		m[r.Domain] = &r
 	}
 	s.routes.Store(&m)
@@ -79,7 +81,7 @@ func (s *Server) lookup(host string) *Route {
 	if m == nil {
 		return nil
 	}
-	return (*m)[host]
+	return (*m)[canonicalDomain(host)]
 }
 
 // RouteCount returns the number of active routes.
@@ -166,9 +168,13 @@ func isLoopback(remoteAddr string) bool {
 
 func hostOnly(hostport string) string {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		return h
+		return canonicalDomain(h)
 	}
-	return hostport
+	return canonicalDomain(hostport)
+}
+
+func canonicalDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
 func dialLive(upstream string) bool {

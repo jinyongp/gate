@@ -7,6 +7,7 @@ package registry
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // SchemaVersion is the current on-disk schema version.
@@ -58,6 +59,7 @@ func (e *ConflictError) Error() string {
 // Reserve inserts or updates res. The domain and port must be globally unique
 // across all other keys; otherwise a *ConflictError naming the owner is returned.
 func (r *Registry) Reserve(res Reservation) error {
+	res.Domain = canonicalDomain(res.Domain)
 	self := Key(res.Project, res.Service)
 	for key, ex := range r.Services {
 		if key == self {
@@ -90,13 +92,18 @@ func (r *Registry) Release(key string) {
 
 // ReleaseDomain removes the reservation whose domain matches, returning it.
 func (r *Registry) ReleaseDomain(domain string) (Reservation, bool) {
+	domain = canonicalDomain(domain)
 	for k, res := range r.Services {
-		if res.Domain == domain {
+		if canonicalDomain(res.Domain) == domain {
 			delete(r.Services, k)
 			return res, true
 		}
 	}
 	return Reservation{}, false
+}
+
+func canonicalDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
 // Prune removes reservations whose owning prx.toml no longer exists (per the

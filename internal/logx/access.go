@@ -1,6 +1,7 @@
 package logx
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net"
@@ -62,6 +63,43 @@ func (r *recorder) Write(b []byte) (int, error) {
 	n, err := r.ResponseWriter.Write(b)
 	r.bytes += n
 	return n, err
+}
+
+func (r *recorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *recorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
+
+func (r *recorder) Push(target string, opts *http.PushOptions) error {
+	p, ok := r.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return p.Push(target, opts)
+}
+
+func (r *recorder) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(src)
+		r.bytes += int(n)
+		return n, err
+	}
+	n, err := io.Copy(r.ResponseWriter, src)
+	r.bytes += int(n)
+	return n, err
+}
+
+func (r *recorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 func hostOnly(hostport string) string {

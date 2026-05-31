@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"prx/internal/fsutil"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -25,6 +27,7 @@ func DefaultHosts() Hosts { return Hosts{Path: hostsPath} }
 
 // Ensure adds a 127.0.0.1 entry for domain inside the managed block.
 func (h Hosts) Ensure(domain string) error {
+	domain = canonicalDomain(domain)
 	return h.edit(func(entries []string) []string {
 		if containsDomain(entries, domain) {
 			return entries
@@ -36,6 +39,7 @@ func (h Hosts) Ensure(domain string) error {
 // Remove deletes the entry for domain. If the block becomes empty its markers
 // are removed too.
 func (h Hosts) Remove(domain string) error {
+	domain = canonicalDomain(domain)
 	return h.edit(func(entries []string) []string {
 		out := entries[:0]
 		for _, e := range entries {
@@ -47,10 +51,19 @@ func (h Hosts) Remove(domain string) error {
 	})
 }
 
+func canonicalDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
 func (h Hosts) edit(mutate func(entries []string) []string) error {
 	if err := verifyTarget(h.Path); err != nil {
 		return err
 	}
+	unlock, err := h.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	b, err := os.ReadFile(h.Path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -74,6 +87,21 @@ func (h Hosts) edit(mutate func(entries []string) []string) error {
 		content += "\n"
 	}
 	return fsutil.WriteAtomic(h.Path, []byte(content), 0o644)
+}
+
+func (h Hosts) lock() (func(), error) {
+	lf, err := os.OpenFile(h.Path+".prx.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(lf.Fd()), unix.LOCK_EX); err != nil {
+		_ = lf.Close()
+		return nil, err
+	}
+	return func() {
+		_ = unix.Flock(int(lf.Fd()), unix.LOCK_UN)
+		_ = lf.Close()
+	}, nil
 }
 
 // verifyTarget hardens against symlink attacks: prx refuses to edit a path that

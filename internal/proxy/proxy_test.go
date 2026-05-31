@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func alwaysLive(string) bool { return true }
@@ -53,6 +57,32 @@ func TestProxiesToUpstream(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "hello app.localhost") {
 		t.Fatalf("body = %q (host not preserved?)", body)
+	}
+}
+
+func TestCanonicalHostAndForwardedHeaders(t *testing.T) {
+	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedFor string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		gotForwardedHost = r.Header.Get("X-Forwarded-Host")
+		gotForwardedProto = r.Header.Get("X-Forwarded-Proto")
+		gotForwardedFor = r.Header.Get("X-Forwarded-For")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	s := New(nil, alwaysLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: backend.Listener.Addr().String()}})
+	resp := get(t, frontend(t, s), "App.Localhost.", "/")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if gotHost != "App.Localhost." {
+		t.Fatalf("Host = %q", gotHost)
+	}
+	if gotForwardedHost != "App.Localhost." || gotForwardedProto != "http" || gotForwardedFor == "" {
+		t.Fatalf("forwarded host=%q proto=%q for=%q", gotForwardedHost, gotForwardedProto, gotForwardedFor)
 	}
 }
 
@@ -195,4 +225,28 @@ func TestSetRoutesConcurrentSwap(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+func TestRunReadyBindsAndShutsDown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := New(func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return nil, fmt.Errorf("unused")
+	}, alwaysLive)
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- s.RunReady(ctx, "127.0.0.1:0", "127.0.0.1:0", func() error {
+			close(ready)
+			return nil
+		})
+	}()
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("server did not become ready")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunReady err = %v, want context.Canceled", err)
+	}
 }

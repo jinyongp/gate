@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"prx/internal/config"
@@ -138,7 +139,8 @@ func Port(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-// Add reserves a domain→port mapping (adhoc registry entry).
+// Add reserves a domain→port mapping. Inside a prx project, it also appends a
+// service block to prx.toml; outside a project it creates an adhoc registry entry.
 func Add(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
@@ -149,23 +151,49 @@ func Add(args []string, stdout, stderr io.Writer) int {
 	if len(rest) != 2 {
 		return usageFail(stderr, *jsonOut, "add")
 	}
-	domain := rest[0]
+	domain := config.CanonicalDomain(rest[0])
 	p, err := strconv.Atoi(rest[1])
 	if err != nil || p < 1 || p > 65535 {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_port", "port must be 1-65535")
 	}
 
+	project, path, inProject, perr := optionalProject()
+	if perr != nil {
+		return fail(stderr, *jsonOut, ExitError, "project", perr.Error())
+	}
+	serviceName := serviceNameForDomain(domain)
 	res := registry.Reservation{Service: domain, Domain: domain, Port: p, TLS: config.TLSInternal, Adhoc: true}
+	if inProject {
+		res = registry.Reservation{
+			Project: project.Name, Service: serviceName, Domain: domain, Port: p,
+			TLS: config.TLSInternal, ConfigPath: path,
+		}
+	}
+
+	if err := registryStore().ReadReserve(res); err != nil {
+		return addError(stderr, *jsonOut, err)
+	}
+	if inProject {
+		if err := config.AddService(path, serviceName, config.Service{Domain: domain, Port: p, TLS: config.TLSInternal}); err != nil {
+			return fail(stderr, *jsonOut, ExitError, "config", err.Error())
+		}
+	}
 	err = registryStore().Update(func(r *registry.Registry) error { return r.Reserve(res) })
 	var ce *registry.ConflictError
 	if errors.As(err, &ce) {
+		if inProject {
+			_ = config.RemoveService(path, serviceName)
+		}
 		return fail(stderr, *jsonOut, ExitConflict, "port_conflict", ce.Error())
 	}
 	if err != nil {
+		if inProject {
+			_ = config.RemoveService(path, serviceName)
+		}
 		return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
 	}
 	if *jsonOut {
-		return writeJSON(stdout, map[string]any{"domain": domain, "port": p, "reserved": true})
+		return writeJSON(stdout, map[string]any{"service": res.Service, "domain": domain, "port": p, "reserved": true})
 	}
 	fmt.Fprintf(stdout, "reserved  %s -> :%d\n", domain, p)
 	return ExitOK
@@ -182,7 +210,31 @@ func Rm(args []string, stdout, stderr io.Writer) int {
 	if len(rest) != 1 {
 		return usageFail(stderr, *jsonOut, "rm")
 	}
-	domain := rest[0]
+	domain := config.CanonicalDomain(rest[0])
+	if project, path, ok, perr := optionalProject(); perr != nil {
+		return fail(stderr, *jsonOut, ExitError, "project", perr.Error())
+	} else if ok {
+		for name, svc := range project.Services {
+			if config.CanonicalDomain(svc.Domain) != domain {
+				continue
+			}
+			if err := config.RemoveService(path, name); err != nil {
+				return fail(stderr, *jsonOut, ExitError, "config", err.Error())
+			}
+			err := registryStore().Update(func(r *registry.Registry) error {
+				r.Release(registry.Key(project.Name, name))
+				return nil
+			})
+			if err != nil {
+				return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
+			}
+			if *jsonOut {
+				return writeJSON(stdout, map[string]any{"domain": domain, "removed": true})
+			}
+			fmt.Fprintf(stdout, "removed  %s\n", domain)
+			return ExitOK
+		}
+	}
 	var removed bool
 	err := registryStore().Update(func(r *registry.Registry) error {
 		_, removed = r.ReleaseDomain(domain)
@@ -199,6 +251,34 @@ func Rm(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "removed  %s\n", domain)
 	return ExitOK
+}
+
+func optionalProject() (*config.Project, string, bool, error) {
+	project, path, err := currentProjectPath()
+	if errors.Is(err, config.ErrNotFound) {
+		return nil, "", false, nil
+	}
+	if err != nil {
+		return nil, "", false, err
+	}
+	return project, path, true, nil
+}
+
+func serviceNameForDomain(domain string) string {
+	label, _, _ := strings.Cut(domain, ".")
+	label = strings.Trim(label, "-_")
+	if label == "" {
+		return "web"
+	}
+	return label
+}
+
+func addError(stderr io.Writer, jsonOut bool, err error) int {
+	var ce *registry.ConflictError
+	if errors.As(err, &ce) {
+		return fail(stderr, jsonOut, ExitConflict, "port_conflict", ce.Error())
+	}
+	return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
 }
 
 // Prune garbage-collects reservations whose owning prx.toml no longer exists.

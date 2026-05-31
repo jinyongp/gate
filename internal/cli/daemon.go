@@ -11,7 +11,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"prx/internal/ca"
 	"prx/internal/daemon"
@@ -71,7 +73,8 @@ func daemonStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func daemonStart(stdout, stderr io.Writer) int {
-	if daemon.NewClient(paths.SocketPath()).IsRunning() {
+	client := daemon.NewClient(paths.SocketPath())
+	if client.IsRunning() {
 		fmt.Fprintln(stdout, "already running")
 		return ExitOK
 	}
@@ -85,14 +88,43 @@ func daemonStart(stdout, stderr io.Writer) int {
 	if err := cmd.Start(); err != nil {
 		return fail(stderr, false, ExitError, "start", err.Error())
 	}
-	if err := os.WriteFile(pidPath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
-		return fail(stderr, false, ExitError, "pidfile", err.Error())
+	waitc := make(chan error, 1)
+	go func() { waitc <- cmd.Wait() }()
+	deadline := time.After(3 * time.Second)
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case err := <-waitc:
+			if err == nil {
+				err = errors.New("daemon exited before becoming ready")
+			}
+			return fail(stderr, false, daemonStartExitCode(err), "start", err.Error())
+		case <-deadline:
+			return fail(stderr, false, ExitError, "start", "daemon did not become ready")
+		case <-tick.C:
+			if st, err := client.Status(); err == nil && st.PID == cmd.Process.Pid {
+				if err := os.WriteFile(pidPath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
+					return fail(stderr, false, ExitError, "pidfile", err.Error())
+				}
+				fmt.Fprintf(stdout, "started · pid %d\n", cmd.Process.Pid)
+				return ExitOK
+			}
+		}
 	}
-	fmt.Fprintf(stdout, "started · pid %d\n", cmd.Process.Pid)
-	return ExitOK
 }
 
 func daemonStop(stdout, stderr io.Writer) int {
+	client := daemon.NewClient(paths.SocketPath())
+	if st, err := client.Status(); err == nil {
+		proc, perr := os.FindProcess(st.PID)
+		if perr == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+		}
+		_ = os.Remove(pidPath())
+		fmt.Fprintln(stdout, "stopped")
+		return ExitOK
+	}
 	b, err := os.ReadFile(pidPath())
 	if err != nil {
 		fmt.Fprintln(stdout, "not running")
@@ -102,6 +134,11 @@ func daemonStop(stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, false, ExitError, "pidfile", "corrupt pid file")
 	}
+	if !isPrxDaemonPID(pid) {
+		_ = os.Remove(pidPath())
+		fmt.Fprintln(stdout, "not running")
+		return ExitOK
+	}
 	proc, err := os.FindProcess(pid)
 	if err == nil {
 		_ = proc.Signal(syscall.SIGTERM)
@@ -109,6 +146,23 @@ func daemonStop(stdout, stderr io.Writer) int {
 	_ = os.Remove(pidPath())
 	fmt.Fprintln(stdout, "stopped")
 	return ExitOK
+}
+
+func daemonStartExitCode(err error) int {
+	if strings.Contains(err.Error(), "permission denied") {
+		return ExitPerm
+	}
+	return ExitError
+}
+
+func isPrxDaemonPID(pid int) bool {
+	//nolint:gosec // G204: fixed executable and fixed flags; pid is data, not a shell command.
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
+	if err != nil {
+		return false
+	}
+	args := strings.TrimSpace(string(out))
+	return args == "prx __serve" || strings.HasSuffix(args, "/prx __serve") || strings.Contains(args, " prx __serve")
 }
 
 func daemonLogs(stdout, stderr io.Writer) int {

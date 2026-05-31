@@ -17,6 +17,18 @@ func TestReserveDomainConflict(t *testing.T) {
 	}
 }
 
+func TestReserveDomainConflictCanonicalCase(t *testing.T) {
+	r := New()
+	if err := r.Reserve(Reservation{Project: "a", Service: "web", Domain: "App.localhost.", Port: 4300}); err != nil {
+		t.Fatal(err)
+	}
+	err := r.Reserve(Reservation{Project: "b", Service: "web", Domain: "app.localhost", Port: 4301})
+	var ce *ConflictError
+	if !errors.As(err, &ce) || ce.Domain != "app.localhost" {
+		t.Fatalf("err = %v, want canonical domain conflict", err)
+	}
+}
+
 func TestReservePortConflict(t *testing.T) {
 	r := New()
 	_ = r.Reserve(Reservation{Project: "a", Service: "web", Domain: "x.localhost", Port: 4300})

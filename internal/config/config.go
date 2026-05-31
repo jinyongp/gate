@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -55,6 +56,10 @@ func Load(path string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parse(path, b)
+}
+
+func parse(path string, b []byte) (*Project, error) {
 	var f file
 	if err := toml.Unmarshal(b, &f); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
@@ -66,13 +71,20 @@ func Load(path string) (*Project, error) {
 	for name, svc := range p.Services {
 		if svc.TLS == "" {
 			svc.TLS = TLSInternal
-			p.Services[name] = svc
 		}
+		svc.Domain = CanonicalDomain(svc.Domain)
+		p.Services[name] = svc
 	}
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+// CanonicalDomain returns the case-insensitive DNS identity prx uses for config,
+// registry, proxy lookup and certificate cache keys.
+func CanonicalDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
 // Validate checks the project for structural and semantic errors.

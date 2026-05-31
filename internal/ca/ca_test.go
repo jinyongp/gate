@@ -53,6 +53,27 @@ func TestLoadIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestLoadRepairsPermissiveRootKey(t *testing.T) {
+	base := t.TempDir()
+	if _, err := Load(base); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(base, "ca", "root.key")
+	if err := os.Chmod(keyPath, 0o644); err != nil { //nolint:gosec // test intentionally makes the key too broad.
+		t.Fatal(err)
+	}
+	if _, err := Load(base); err != nil {
+		t.Fatalf("Load after chmod: %v", err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("key perm = %o, want 600", perm)
+	}
+}
+
 func TestGetCertificateIssuesAndChains(t *testing.T) {
 	ca, _ := loadCA(t)
 	const domain = "app.example.localhost"

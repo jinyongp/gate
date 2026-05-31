@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -75,6 +76,7 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 	if name == "" {
 		return nil, errors.New("ca: missing SNI server name")
 	}
+	name = canonicalDomain(name)
 	c.mu.RLock()
 	if cert, ok := c.cache[name]; ok {
 		c.mu.RUnlock()
@@ -96,6 +98,7 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 }
 
 func (c *CA) issueLeaf(domain string) (*tls.Certificate, error) {
+	domain = canonicalDomain(domain)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -122,6 +125,10 @@ func (c *CA) issueLeaf(domain string) (*tls.Certificate, error) {
 		PrivateKey:  key,
 		Leaf:        mustParse(der),
 	}, nil
+}
+
+func canonicalDomain(domain string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
 func (c *CA) generate() error {
@@ -179,6 +186,13 @@ func (c *CA) load(crtPath, keyPath string) error {
 	cert, err := x509.ParseCertificate(blk.Bytes)
 	if err != nil {
 		return err
+	}
+	if info, err := os.Stat(keyPath); err != nil {
+		return err
+	} else if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(keyPath, 0o600); err != nil {
+			return fmt.Errorf("ca: root key %s permissions too broad and chmod failed: %w", keyPath, err)
+		}
 	}
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {

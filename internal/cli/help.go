@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"prx/internal/ui"
@@ -155,8 +156,49 @@ func parseFlags(fs *flag.FlagSet, name string, argv []string, stdout, stderr io.
 	}
 	fs.SetOutput(stderr)
 	fs.Usage = func() { usageLine(stderr, name) }
+	argv = normalizeFlags(fs, argv)
 	if err := fs.Parse(argv); err != nil {
 		return true, ExitUsage
 	}
 	return false, 0
+}
+
+func normalizeFlags(fs *flag.FlagSet, argv []string) []string {
+	var flags, positionals []string
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		if a == "--" {
+			positionals = append(positionals, argv[i:]...)
+			break
+		}
+		name, ok := flagName(a)
+		if !ok {
+			positionals = append(positionals, a)
+			continue
+		}
+		flags = append(flags, a)
+		f := fs.Lookup(name)
+		if f == nil || isBoolFlag(f) || strings.Contains(a, "=") {
+			continue
+		}
+		if i+1 < len(argv) {
+			i++
+			flags = append(flags, argv[i])
+		}
+	}
+	return append(flags, positionals...)
+}
+
+func flagName(arg string) (string, bool) {
+	if !strings.HasPrefix(arg, "-") || arg == "-" {
+		return "", false
+	}
+	arg = strings.TrimLeft(arg, "-")
+	name, _, _ := strings.Cut(arg, "=")
+	return name, name != ""
+}
+
+func isBoolFlag(f *flag.Flag) bool {
+	bf, ok := f.Value.(interface{ IsBoolFlag() bool })
+	return ok && bf.IsBoolFlag()
 }

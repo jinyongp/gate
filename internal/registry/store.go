@@ -52,6 +52,21 @@ func (s *Store) Read() (*Registry, error) {
 	return s.read()
 }
 
+// ReadReserve checks whether res can be reserved against a locked snapshot,
+// without writing. It is used as a preflight before external side effects.
+func (s *Store) ReadReserve(res Reservation) error {
+	unlock, err := s.lock(unix.LOCK_SH)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	reg, err := s.read()
+	if err != nil {
+		return err
+	}
+	return reg.Reserve(res)
+}
+
 func (s *Store) lock(how int) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return nil, err
