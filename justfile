@@ -18,11 +18,11 @@ cover:
 
 [doc('lint (human-readable)')]
 lint:
-  golangci-lint run ./...
+  go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
 
 [doc('lint for AI/scripts: human text -> stderr, JSON diagnostics -> stdout')]
 lint-json:
-  golangci-lint run ./... --output.text.path=stderr --output.text.colors=false --output.json.path=stdout
+  go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./... --output.text.path=stderr --output.text.colors=false --output.json.path=stdout
 
 [doc('vulnerability scan (narrowed to actually-called code)')]
 vuln:
