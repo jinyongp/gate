@@ -6,7 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 
-	"github.com/jinyongp/prx/internal/ca"
+	"prx/internal/ca"
 )
 
 // Provider supplies certificates for the TLS server.

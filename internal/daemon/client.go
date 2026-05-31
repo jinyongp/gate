@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jinyongp/prx/internal/proxy"
+	"prx/internal/proxy"
 )
 
 // Client talks to a running daemon over its unix-domain control socket.

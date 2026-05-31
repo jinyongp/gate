@@ -1,4 +1,4 @@
-module github.com/jinyongp/prx
+module prx
 
 go 1.26
 

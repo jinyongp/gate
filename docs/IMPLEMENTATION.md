@@ -194,7 +194,7 @@ check: test lint vuln
 
 **단계:**
 
-1. `go mod init github.com/jinyongp/prx`. Go 1.22+ (slog·`http.ServeMux` 향상 활용).
+1. `go mod init prx`. Go 1.22+ (slog·`http.ServeMux` 향상 활용).
 2. `cmd/prx/main.go`: `os.Args` 기반 서브커맨드 디스패치 표(맵: name→handler). 표준 `flag`만 사용.
 3. `internal/paths`:
    - `ConfigDir()` → `$XDG_CONFIG_HOME/prx` (기본 `~/.config/prx`).

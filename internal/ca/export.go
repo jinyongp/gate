@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jinyongp/prx/internal/fsutil"
+	"prx/internal/fsutil"
 )
 
 // Fingerprint returns the SHA-256 fingerprint of the root certificate as an

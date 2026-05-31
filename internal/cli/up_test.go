@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jinyongp/prx/internal/port"
-	"github.com/jinyongp/prx/internal/registry"
+	"prx/internal/port"
+	"prx/internal/registry"
 )
 
 func setupUpProject(t *testing.T) {

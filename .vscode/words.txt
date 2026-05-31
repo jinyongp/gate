@@ -3,6 +3,7 @@ contextcheck
 errcheck
 errorf
 errorlint
+fsutil
 gocritic
 gofmt
 goimports

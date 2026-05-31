@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/jinyongp/prx/internal/ca"
-	"github.com/jinyongp/prx/internal/daemon"
-	"github.com/jinyongp/prx/internal/paths"
-	"github.com/jinyongp/prx/internal/proxy"
+	"prx/internal/ca"
+	"prx/internal/daemon"
+	"prx/internal/paths"
+	"prx/internal/proxy"
 )
 
 func pidPath() string { return filepath.Join(paths.ConfigDir(), "prx.pid") }

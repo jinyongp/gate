@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jinyongp/prx/internal/ca"
+	"prx/internal/ca"
 )
 
 func TestInternalProvider(t *testing.T) {

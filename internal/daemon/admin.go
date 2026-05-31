@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/jinyongp/prx/internal/proxy"
+	"prx/internal/proxy"
 )
 
 // Status is the daemon's reported state.

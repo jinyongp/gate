@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jinyongp/prx/internal/proxy"
+	"prx/internal/proxy"
 )
 
 func TestAdminStatusAndRoutes(t *testing.T) {

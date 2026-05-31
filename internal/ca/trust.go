@@ -1,7 +1,7 @@
 package ca
 
 import (
-	"github.com/jinyongp/prx/internal/truststore"
+	"prx/internal/truststore"
 )
 
 // Trust installs the root CA into the OS trust store and the Firefox/NSS store

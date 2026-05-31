@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jinyongp/prx/internal/paths"
-	"github.com/jinyongp/prx/internal/registry"
+	"prx/internal/paths"
+	"prx/internal/registry"
 	"golang.org/x/term"
 )
 

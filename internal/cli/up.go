@@ -8,13 +8,13 @@ import (
 	"os"
 	"sort"
 
-	"github.com/jinyongp/prx/internal/config"
-	"github.com/jinyongp/prx/internal/daemon"
-	"github.com/jinyongp/prx/internal/dns"
-	"github.com/jinyongp/prx/internal/paths"
-	"github.com/jinyongp/prx/internal/port"
-	"github.com/jinyongp/prx/internal/proxy"
-	"github.com/jinyongp/prx/internal/registry"
+	"prx/internal/config"
+	"prx/internal/daemon"
+	"prx/internal/dns"
+	"prx/internal/paths"
+	"prx/internal/port"
+	"prx/internal/proxy"
+	"prx/internal/registry"
 )
 
 type upResult struct {

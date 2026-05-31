@@ -7,10 +7,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/jinyongp/prx/internal/ca"
-	"github.com/jinyongp/prx/internal/daemon"
-	"github.com/jinyongp/prx/internal/expose"
-	"github.com/jinyongp/prx/internal/paths"
+	"prx/internal/ca"
+	"prx/internal/daemon"
+	"prx/internal/expose"
+	"prx/internal/paths"
 )
 
 // Trust installs the root CA into the OS and browser trust stores.

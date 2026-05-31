@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jinyongp/prx/internal/registry"
+	"prx/internal/registry"
 )
 
 // isolate points prx's config dir at a temp dir for the duration of the test.

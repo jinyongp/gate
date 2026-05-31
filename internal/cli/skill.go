@@ -7,9 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
-	prx "github.com/jinyongp/prx"
-	"github.com/jinyongp/prx/internal/fsutil"
-	"github.com/jinyongp/prx/internal/paths"
+	prx "prx"
+	"prx/internal/fsutil"
+	"prx/internal/paths"
 )
 
 // Skill dispatches `prx skill path|print`. Installation itself is delegated to

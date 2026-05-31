@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jinyongp/prx/internal/fsutil"
+	"prx/internal/fsutil"
 )
 
 // UpsertEnv sets key=value in the dotenv file at path, preserving every other

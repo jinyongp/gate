@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jinyongp/prx/internal/proxy"
+	"prx/internal/proxy"
 )
 
 // Daemon binds the control socket and the proxy planes together.

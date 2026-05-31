@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"text/tabwriter"
 
-	"github.com/jinyongp/prx/internal/config"
-	"github.com/jinyongp/prx/internal/port"
-	"github.com/jinyongp/prx/internal/registry"
+	"prx/internal/config"
+	"prx/internal/port"
+	"prx/internal/registry"
 )
 
 // service is one row of `prx ls` output.

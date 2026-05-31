@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jinyongp/prx/internal/fsutil"
+	"prx/internal/fsutil"
 )
 
 // ErrServiceExists is returned by AddService when the service is already present.
