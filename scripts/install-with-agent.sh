@@ -55,7 +55,7 @@ resolve_download_url() {
 
   RELEASE_JSON="${TMP_DIR}/release.json"
   if ! curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: prx-install" "$API_URL" > "$RELEASE_JSON"; then
-    echo "Could not query ${VERSION_LABEL} release from GitHub API." >&2
+    echo "Failed to read release metadata from GitHub." >&2
     return 1
   fi
 
@@ -63,10 +63,6 @@ resolve_download_url() {
   TAG_NAME="$(sed -n 's/.*\"tag_name\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p' "$RELEASE_JSON" | head -n 1)"
 
   if [ -z "$ASSET_URLS" ]; then
-    echo "No release assets found for ${VERSION_LABEL} in ${REPO}." >&2
-    if [ "$VERSION" = "latest" ]; then
-      echo "No release has been published yet." >&2
-    fi
     return 1
   fi
 
@@ -78,16 +74,10 @@ resolve_download_url() {
     fi
   done
 
-  echo "Could not find ${BINARY_NAME} in release assets for ${VERSION_LABEL}." >&2
-  echo "Release tag: ${TAG_NAME}" >&2
-  echo "Available assets:" >&2
-  printf '%s\n' "$ASSET_URLS" | sed 's#.*/##' >&2
   return 1
 }
 
 build_from_source() {
-  echo "Falling back to source build." >&2
-
   if ! command -v git >/dev/null 2>&1; then
     echo "No prebuilt release was found and 'git' is missing." >&2
     echo "Install git, or publish a release with artifacts for ${BINARY_NAME}." >&2
@@ -104,17 +94,17 @@ build_from_source() {
   CLONE_URL="https://github.com/${REPO}.git"
 
   if [ "$VERSION" = "latest" ]; then
-    if ! git clone --depth 1 "$CLONE_URL" "$SOURCE_DIR"; then
+    if ! git clone --quiet --depth 1 "$CLONE_URL" "$SOURCE_DIR" >/dev/null 2>&1; then
       echo "Failed to clone ${REPO} (latest)" >&2
       return 1
     fi
   else
-    if ! git clone --depth 1 --branch "$VERSION" "$CLONE_URL" "$SOURCE_DIR"; then
-      if ! git clone --depth 1 "$CLONE_URL" "$SOURCE_DIR"; then
+    if ! git clone --quiet --depth 1 --branch "$VERSION" "$CLONE_URL" "$SOURCE_DIR" >/dev/null 2>&1; then
+      if ! git clone --quiet --depth 1 "$CLONE_URL" "$SOURCE_DIR" >/dev/null 2>&1; then
         echo "Failed to clone ${REPO} for tag ${VERSION}" >&2
         return 1
       fi
-      if ! (cd "$SOURCE_DIR" && git checkout "$VERSION"); then
+      if ! (cd "$SOURCE_DIR" && git checkout "$VERSION" >/dev/null 2>&1); then
         echo "Release version ${VERSION} not found (tag or branch)." >&2
         return 1
       fi
@@ -131,8 +121,6 @@ build_from_source() {
 
 if resolve_download_url; then
   if ! curl -fsSL "$DOWNLOAD_URL" -o "$BINARY_PATH"; then
-    echo "Failed to download ${DOWNLOAD_URL}" >&2
-    echo "Falling back to source build." >&2
     build_from_source
   fi
 else
@@ -163,10 +151,6 @@ else
 fi
 
 echo "Installed prx to ${DEST}"
-if [ "$DEST" = "$HOME/.local/bin/prx" ] && ! printf %s "$PATH" | grep -q "$HOME/.local/bin"; then
-  echo "Add it to your PATH:"
-  echo "  export PATH=\"$HOME/.local/bin:$PATH\""
-fi
 
 if [ "$SKIP_SKILL_INSTALL" = "1" ] || [ "$SKIP_SKILL_INSTALL" = "true" ]; then
   echo "Skipped skill installation (SKIP_SKILL_INSTALL=${SKIP_SKILL_INSTALL})."
