@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"text/tabwriter"
 
 	"prx/internal/cli"
 )
@@ -67,12 +68,37 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return cmd(rest[1:], stdout, stderr)
 }
 
+// commandHelp lists public subcommands in display order with a one-line
+// summary. Keep in sync with the commands dispatch table; internal commands
+// (prefixed "__") are intentionally omitted.
+var commandHelp = []struct{ name, summary string }{
+	{"up", "bring up the current project: reserve ports, render routes, reload"},
+	{"down", "tear down the current project's routes and free its ports"},
+	{"ls", "list all reservations with live/down status"},
+	{"port", "print the reserved port for a service"},
+	{"add", "reserve a port for a domain in the current project"},
+	{"rm", "remove a domain reservation from the current project"},
+	{"prune", "remove reservations whose project config no longer exists"},
+	{"run", "run a child process with PORT injected from the reservation"},
+	{"daemon", "control the background proxy daemon (start/stop/status/restart)"},
+	{"trust", "install the local CA into the OS and browser trust stores"},
+	{"ca", "export the local CA certificate"},
+	{"expose", "publish a local service through a public tunnel provider"},
+	{"skill", "locate or print the bundled agent skill (path|print)"},
+}
+
 func usage(w io.Writer) {
 	fmt.Fprint(w, `prx — local-dev HTTPS reverse proxy + port registry
 
 usage:
   prx [--version] <command> [args]
 
-Subcommands are added as features land. See docs/IMPLEMENTATION.md.
+commands:
 `)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, c := range commandHelp {
+		fmt.Fprintf(tw, "  %s\t%s\n", c.name, c.summary)
+	}
+	tw.Flush()
+	fmt.Fprint(w, "\nRun 'prx <command> -h' for command-specific flags.\n")
 }

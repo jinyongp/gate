@@ -10,9 +10,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/term"
 	"prx/internal/paths"
 	"prx/internal/registry"
-	"golang.org/x/term"
 )
 
 // Exit codes (see README §13).
