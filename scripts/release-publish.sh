@@ -6,6 +6,10 @@ AUTO_PUSH=0
 TAG_INPUT=""
 
 for arg in "$@"; do
+  if [ -z "$arg" ]; then
+    continue
+  fi
+
   case "$arg" in
     --dry-run|-n)
       DRY_RUN=1
