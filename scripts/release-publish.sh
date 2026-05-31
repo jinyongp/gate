@@ -2,12 +2,16 @@
 set -euo pipefail
 
 DRY_RUN=0
+AUTO_PUSH=0
 TAG_INPUT=""
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run|-n)
       DRY_RUN=1
+      ;;
+    --yes|-y)
+      AUTO_PUSH=1
       ;;
     tag=*)
       TAG_INPUT="${arg#tag=}"
@@ -20,11 +24,16 @@ for arg in "$@"; do
       ;;
     *)
       echo "Unknown argument: $arg"
-      echo "Usage: scripts/release-publish.sh [--dry-run|-n] <patch|minor|major|vX.Y.Z>"
+      echo "Usage: scripts/release-publish.sh [--dry-run|-n] [--yes|-y] [patch|minor|major|vX.Y.Z]"
       exit 1
       ;;
   esac
 done
+
+INTERACTIVE=1
+if [ -n "$TAG_INPUT" ]; then
+  INTERACTIVE=0
+fi
 
 get_latest_tag() {
   git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
@@ -65,19 +74,113 @@ next_version() {
   echo "v${major}.${minor}.${patch}"
 }
 
+format_commits() {
+  local range="$1"
+
+  if [ -z "$range" ]; then
+    git log --oneline --no-decorate
+  else
+    git log --oneline --no-decorate "$range"
+  fi
+}
+
+confirm_push() {
+  local tag="$1"
+  local auto="$2"
+
+  if [ "$auto" -eq 1 ]; then
+    return 0
+  fi
+
+  if [ -n "${CI:-}" ]; then
+    return 1
+  fi
+
+  printf "Push tag %s now? [y/N]: " "$tag"
+  read -r response
+
+  case "${response,,}" in
+    y|yes)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 if [ -z "$TAG_INPUT" ]; then
-  echo "Usage: scripts/release-publish.sh [--dry-run|-n] <patch|minor|major|vX.Y.Z>"
-  exit 1
+  LATEST_TAG="$(get_latest_tag)"
+
+  if [ -z "$LATEST_TAG" ]; then
+    BASE_TAG="v0.0.0"
+    LATEST_TAG="$BASE_TAG"
+    RANGE=""
+    echo "No previous release tag found. This will create the first semver tag from v0.0.0."
+    echo "Commits since initial commit:"
+    COMMITS="$(format_commits "")"
+  else
+    BASE_TAG="$LATEST_TAG"
+    RANGE="${LATEST_TAG}..HEAD"
+    echo "Last release tag: $LATEST_TAG"
+    echo "Commits since $LATEST_TAG:"
+    COMMITS="$(format_commits "$RANGE")"
+  fi
+
+  echo "$COMMITS" | sed 's/^/- /'
+  CHANGE_COUNT="$(printf "%s" "$COMMITS" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+  if [ "$CHANGE_COUNT" -eq 0 ]; then
+    echo "No commits to release."
+    exit 0
+  fi
+
+  read -r BASE_MAJOR BASE_MINOR BASE_PATCH <<<"$(semver_from_tag "$BASE_TAG")"
+  PATCH_CANDIDATE="$(next_version "$BASE_MAJOR" "$BASE_MINOR" "$BASE_PATCH" patch)"
+  MINOR_CANDIDATE="$(next_version "$BASE_MAJOR" "$BASE_MINOR" "$BASE_PATCH" minor)"
+  MAJOR_CANDIDATE="$(next_version "$BASE_MAJOR" "$BASE_MINOR" "$BASE_PATCH" major)"
+
+  echo
+  echo "Commits to include: $CHANGE_COUNT"
+  echo "1) patch  -> $PATCH_CANDIDATE"
+  echo "2) minor  -> $MINOR_CANDIDATE"
+  echo "3) major  -> $MAJOR_CANDIDATE"
+
+  while true; do
+    printf "Select bump [1/2/3] (default: 1): "
+    read -r REPLY
+
+    case "${REPLY:-1}" in
+      1|patch)
+        TAG_INPUT=patch
+        PATCH_TAG="$PATCH_CANDIDATE"
+        break
+        ;;
+      2|minor)
+        TAG_INPUT=minor
+        PATCH_TAG="$MINOR_CANDIDATE"
+        break
+        ;;
+      3|major)
+        TAG_INPUT=major
+        PATCH_TAG="$MAJOR_CANDIDATE"
+        break
+        ;;
+      *)
+        echo "Please enter 1, 2, or 3 (or patch/minor/major)."
+        ;;
+    esac
+  done
+else
+  LATEST_TAG="$(get_latest_tag)"
+
+  if [ -z "$LATEST_TAG" ]; then
+    LATEST_TAG="v0.0.0"
+  fi
 fi
 
 case "$TAG_INPUT" in
   patch|minor|major)
-    LATEST_TAG="$(get_latest_tag)"
-
-    if [ -z "$LATEST_TAG" ]; then
-      LATEST_TAG="v0.0.0"
-    fi
-
     read -r MAJOR MINOR PATCH <<<"$(semver_from_tag "$LATEST_TAG")"
     PATCH_TAG="$(next_version "$MAJOR" "$MINOR" "$PATCH" "$TAG_INPUT")"
     ;;
@@ -96,7 +199,7 @@ if [ "${TAG_INPUT}" != "${PATCH_TAG}" ]; then
 fi
 
 if [ "$(git symbolic-ref --short HEAD)" != "main" ]; then
-  echo "release-publish must run on branch 'main'."
+  echo "release must run on branch 'main'."
   exit 1
 fi
 
@@ -132,4 +235,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 git tag -a "$PATCH_TAG" -m "Release $PATCH_TAG" "$TARGET_SHA"
-git push origin "$PATCH_TAG"
+
+if confirm_push "$PATCH_TAG" "$AUTO_PUSH"; then
+  git push origin "$PATCH_TAG"
+  echo "Pushed tag $PATCH_TAG"
+else
+  echo "Tag created locally only."
+  echo "Push with: git push origin $PATCH_TAG"
+fi

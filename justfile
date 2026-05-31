@@ -37,7 +37,7 @@ fmt:
 [doc('full gate — run before opening a PR')]
 check: test lint vuln
 
-[doc('publish next version tag from latest commit: patch | minor | major | explicit vX.Y.Z')]
+[doc('release a new version: no arg => interactive patch/minor/major; patch/minor/major -> bump from latest tag; explicit vX.Y.Z')]
 release tag="":
   ./scripts/release-publish.sh "{{tag}}"
 
