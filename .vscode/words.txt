@@ -19,6 +19,7 @@ gopkg
 gosec
 govet
 govulncheck
+healthz
 howett
 ineffassign
 isatty

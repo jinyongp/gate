@@ -1,0 +1,5 @@
+[project]
+name = "hello-js-custom"
+
+[services.web]
+domain = "hello-js.test"
