@@ -11,7 +11,11 @@ import (
 	"text/tabwriter"
 
 	"prx/internal/config"
+	"prx/internal/daemon"
+	"prx/internal/dns"
+	"prx/internal/paths"
 	"prx/internal/port"
+	"prx/internal/proxy"
 	"prx/internal/registry"
 	"prx/internal/ui"
 )
@@ -27,11 +31,32 @@ type service struct {
 	Status  string `json:"status"`
 }
 
+type projectReservation struct {
+	Key string
+	registry.Reservation
+}
+
+var (
+	selectDNSProvider   = dns.Select
+	setDaemonRoutesFunc = setDaemonRoutes
+)
+
 func liveness(p int) string {
 	if p != 0 && port.IsLive(p) {
 		return "live"
 	}
 	return "down"
+}
+
+func reservationStatus(res registry.Reservation) string {
+	if !res.Active {
+		return "down"
+	}
+	return liveness(res.Port)
+}
+
+func displayDomainURL(domain string) string {
+	return "https://" + domain
 }
 
 func currentProjectPath() (*config.Project, string, error) {
@@ -56,20 +81,43 @@ func currentProject() (*config.Project, error) {
 func Ls(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
+	all := fs.Bool("all", false, "show reservations from all projects")
+	fs.BoolVar(all, "a", false, "show reservations from all projects")
+	status := fs.String("status", "", "filter by status: live|down")
 	if handled, code := parseFlags(fs, "ls", args, stdout, stderr); handled {
 		return code
+	}
+	if *status != "" && *status != "live" && *status != "down" {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_status", "status must be live or down")
 	}
 
 	reg, err := registryStore().Read()
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
 	}
+
+	projectName := ""
+	if !*all {
+		project, err := currentProject()
+		if err != nil {
+			return fail(stderr, *jsonOut, ExitError, "no_project", err.Error())
+		}
+		projectName = project.Name
+	}
+
 	rows := make([]service, 0, len(reg.Services))
 	for _, k := range reg.Keys() {
 		res := reg.Services[k]
+		if !*all && (res.Project != projectName || !res.Active) {
+			continue
+		}
+		rowStatus := reservationStatus(res)
+		if *status != "" && rowStatus != *status {
+			continue
+		}
 		rows = append(rows, service{
 			Project: res.Project, Service: res.Service, Domain: res.Domain,
-			Port: res.Port, TLS: res.TLS, DNS: res.DNS, Status: liveness(res.Port),
+			Port: res.Port, TLS: res.TLS, DNS: res.DNS, Status: rowStatus,
 		})
 	}
 
@@ -89,7 +137,7 @@ func Ls(args []string, stdout, stderr io.Writer) int {
 		data := make([][]string, 0, len(rows))
 		for _, r := range rows {
 			data = append(data, []string{
-				r.Project, r.Service, r.Domain, strconv.Itoa(r.Port), r.TLS, statusDot(r.Status, true),
+				r.Project, r.Service, displayDomainURL(r.Domain), strconv.Itoa(r.Port), r.TLS, statusDot(r.Status, true),
 			})
 		}
 		fmt.Fprintln(stdout, ui.Render(headers, data))
@@ -99,7 +147,7 @@ func Ls(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PROJECT\tSERVICE\tDOMAIN\tPORT\tTLS\tSTATUS")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Project, r.Service, r.Domain, r.Port, r.TLS, statusDot(r.Status, color))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Project, r.Service, displayDomainURL(r.Domain), r.Port, r.TLS, statusDot(r.Status, color))
 	}
 	_ = tw.Flush()
 	return ExitOK
@@ -203,10 +251,14 @@ func Add(args []string, stdout, stderr io.Writer) int {
 func Rm(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
+	projectMode := fs.Bool("project", false, "remove all reservations for the current project, or the named project when NAME is passed")
 	if handled, code := parseFlags(fs, "rm", args, stdout, stderr); handled {
 		return code
 	}
 	rest := fs.Args()
+	if *projectMode {
+		return rmProject(rest, stdout, stderr, *jsonOut)
+	}
 	if len(rest) != 1 {
 		return usageFail(stderr, *jsonOut, "rm")
 	}
@@ -251,6 +303,132 @@ func Rm(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "removed  %s\n", domain)
 	return ExitOK
+}
+
+func rmProject(args []string, stdout, stderr io.Writer, jsonOut bool) int {
+	if len(args) > 1 {
+		return usageFail(stderr, jsonOut, "rm")
+	}
+	projectName := ""
+	if len(args) == 1 {
+		projectName = strings.TrimSpace(args[0])
+	} else {
+		project, err := currentProject()
+		if err != nil {
+			return fail(stderr, jsonOut, ExitError, "no_project", err.Error())
+		}
+		projectName = project.Name
+	}
+	if projectName == "" {
+		return fail(stderr, jsonOut, ExitUsage, "bad_project", "project name is required")
+	}
+
+	reg, err := registryStore().Read()
+	if err != nil {
+		return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
+	}
+	var removed []projectReservation
+	for _, key := range reg.Keys() {
+		res := reg.Services[key]
+		if res.Project == projectName {
+			removed = append(removed, projectReservation{Key: key, Reservation: res})
+		}
+	}
+	if len(removed) == 0 {
+		return fail(stderr, jsonOut, ExitError, "not_found", fmt.Sprintf("no reservations for project %q", projectName))
+	}
+	beforeRoutes := activeRoutes(reg)
+
+	var routes []proxy.Route
+	err = registryStore().Update(func(r *registry.Registry) error {
+		for _, item := range removed {
+			r.Release(item.Key)
+		}
+		routes = activeRoutes(r)
+		return nil
+	})
+	if err != nil {
+		return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
+	}
+	if code := reloadDaemonRoutes(routes, stderr, jsonOut); code != ExitOK {
+		if err := restoreProjectReservations(removed, beforeRoutes); err != nil {
+			return fail(stderr, jsonOut, ExitError, "rollback_failed", "project removal failed and rollback failed: "+err.Error())
+		}
+		return code
+	}
+	if code := removeProjectDNS(removed, beforeRoutes, stderr, jsonOut); code != ExitOK {
+		return code
+	}
+	if jsonOut {
+		return writeJSON(stdout, map[string]any{"project": projectName, "removed": len(removed)})
+	}
+	fmt.Fprintf(stdout, "removed %d reservations for %s\n", len(removed), projectName)
+	return ExitOK
+}
+
+func removeProjectDNS(removed []projectReservation, beforeRoutes []proxy.Route, stderr io.Writer, jsonOut bool) int {
+	for i, item := range removed {
+		res := item.Reservation
+		if err := selectDNSProvider(res.Domain, res.DNS).Remove(res.Domain); err != nil {
+			rollbackErr := restoreProjectDNS(removed[:i])
+			rollbackErr = errors.Join(rollbackErr, restoreProjectReservations(removed, beforeRoutes))
+			if rollbackErr != nil {
+				return fail(stderr, jsonOut, ExitError, "rollback_failed", "DNS removal failed and rollback failed: "+rollbackErr.Error())
+			}
+			if os.IsPermission(err) || errors.Is(err, os.ErrPermission) {
+				return fail(stderr, jsonOut, ExitPerm, "permission", err.Error())
+			}
+			return fail(stderr, jsonOut, ExitError, "dns_failed", err.Error())
+		}
+	}
+	return ExitOK
+}
+
+func restoreProjectDNS(removed []projectReservation) error {
+	var errs []error
+	for _, item := range removed {
+		res := item.Reservation
+		if err := selectDNSProvider(res.Domain, res.DNS).Ensure(res.Domain); err != nil {
+			errs = append(errs, fmt.Errorf("restore DNS %s: %w", res.Domain, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func restoreProjectReservations(removed []projectReservation, routes []proxy.Route) error {
+	var errs []error
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		for _, item := range removed {
+			if err := r.Reserve(item.Reservation); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("restore registry: %w", err))
+	}
+	if err := setDaemonRoutesFunc(routes); err != nil {
+		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func reloadDaemonRoutes(routes []proxy.Route, stderr io.Writer, jsonOut bool) int {
+	if err := setDaemonRoutesFunc(routes); err != nil {
+		return fail(stderr, jsonOut, ExitError, "reload_failed", err.Error())
+	}
+	return ExitOK
+}
+
+func setDaemonRoutes(routes []proxy.Route) error {
+	client := daemon.NewClient(paths.SocketPath())
+	if !client.IsRunning() {
+		return nil
+	}
+	if err := client.SetRoutes(routes); err != nil {
+		return err
+	}
+	return nil
 }
 
 func optionalProject() (*config.Project, string, bool, error) {

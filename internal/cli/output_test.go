@@ -39,7 +39,7 @@ func TestRichOutGate(t *testing.T) {
 func TestLsEmptyPlain(t *testing.T) {
 	isolate(t)
 	var out, errb bytes.Buffer
-	if code := Ls(nil, &out, &errb); code != ExitOK {
+	if code := Ls([]string{"--all"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Ls exit = %d", code)
 	}
 	s := out.String()
@@ -58,7 +58,7 @@ func TestLsEmptyPlain(t *testing.T) {
 func TestLsEmptyJSON(t *testing.T) {
 	isolate(t)
 	var out, errb bytes.Buffer
-	if code := Ls([]string{"--json"}, &out, &errb); code != ExitOK {
+	if code := Ls([]string{"--all", "--json"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Ls --json exit = %d", code)
 	}
 	var got struct {
@@ -81,14 +81,14 @@ func TestLsPlainNoEscapes(t *testing.T) {
 		t.Fatalf("Add exit = %d, stderr=%s", code, errb.String())
 	}
 	out.Reset()
-	if code := Ls(nil, &out, &errb); code != ExitOK {
+	if code := Ls([]string{"--all"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Ls exit = %d", code)
 	}
 	s := out.String()
 	if strings.Contains(s, "\x1b") {
 		t.Fatalf("plain Ls leaked an ANSI escape:\n%q", s)
 	}
-	for _, want := range []string{"PROJECT", "SERVICE", "DOMAIN", "PORT", "TLS", "STATUS", "web.localhost", "4312"} {
+	for _, want := range []string{"PROJECT", "SERVICE", "DOMAIN", "PORT", "TLS", "STATUS", "https://web.localhost", "4312"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("Ls output missing %q in:\n%s", want, s)
 		}
