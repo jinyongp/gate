@@ -42,7 +42,7 @@ type ctxKey int
 const upstreamKey ctxKey = iota
 
 // New returns a Server. getCert supplies leaf certificates by SNI; live (if nil)
-// defaults to a short TCP dial.
+// defaults to a short TCP dial used to classify upstream proxy failures.
 func New(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), live LiveFunc) *Server {
 	if live == nil {
 		live = dialLive
@@ -57,8 +57,14 @@ func New(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), live Live
 			pr.Out.Host = pr.In.Host
 		},
 		FlushInterval: -1, // flush immediately for SSE/streaming
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-			http.Error(w, "502 Bad Gateway", http.StatusBadGateway)
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
+			host := hostOnly(r.Host)
+			route := s.lookup(host)
+			if route != nil && !s.live(route.Upstream) {
+				writeNotRunning(w, host)
+				return
+			}
+			writeBadGateway(w)
 		},
 		Transport: transport(),
 	}
@@ -118,10 +124,6 @@ func (s *Server) HTTPSHandler() http.Handler {
 			http.Error(w, "401 Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if !s.live(route.Upstream) {
-			writeNotRunning(w, host)
-			return
-		}
 		target := &url.URL{Scheme: "http", Host: route.Upstream}
 		ctx := context.WithValue(r.Context(), upstreamKey, target)
 		s.rp.ServeHTTP(w, r.WithContext(ctx))
@@ -143,6 +145,10 @@ func writeNotRunning(w http.ResponseWriter, host string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusBadGateway)
 	fmt.Fprintf(w, "502 Bad Gateway\n\nprx: no dev server running for %s\n", host)
+}
+
+func writeBadGateway(w http.ResponseWriter) {
+	http.Error(w, "502 Bad Gateway", http.StatusBadGateway)
 }
 
 // remoteAllowed enforces the non-loopback block: only loopback clients may reach

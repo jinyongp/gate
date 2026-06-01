@@ -60,6 +60,48 @@ func TestProxiesToUpstream(t *testing.T) {
 	}
 }
 
+func TestLivenessFailureDoesNotShortCircuitReachableUpstream(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	s := New(nil, neverLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: backend.Listener.Addr().String()}})
+
+	resp := get(t, frontend(t, s), "app.localhost", "/")
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %q", resp.StatusCode, body)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestPreservesViteFileSystemModulePaths(t *testing.T) {
+	var got string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RequestURI()
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	s := New(nil, alwaysLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: backend.Listener.Addr().String()}})
+
+	path := "/_nuxt/@fs/Users/jinyongp/Workspaces/connextable/stamp.is/node_modules/.pnpm/@vue+shared@3.5.34/node_modules/@vue/shared/dist/shared.esm-bundler.js?v=bbd7bb0b"
+	resp := get(t, frontend(t, s), "app.localhost", path)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got != path {
+		t.Fatalf("path = %q, want %q", got, path)
+	}
+}
+
 func TestCanonicalHostAndForwardedHeaders(t *testing.T) {
 	var gotHost, gotForwardedHost, gotForwardedProto, gotForwardedFor string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
