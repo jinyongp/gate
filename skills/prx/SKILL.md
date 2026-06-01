@@ -29,7 +29,7 @@ errors use a stderr envelope.
 | `prx add <domain> <port> [--json]` | reserve a domain→port mapping |
 | `prx rm <domain> [--json]` | remove a reservation |
 | `prx prune [--json]` | GC reservations whose prx.toml is gone |
-| `prx daemon start\|stop\|status [--json]\|logs` | manage the resident proxy; `--json` is for `status` |
+| `prx daemon start\|stop\|restart\|status [--json]\|logs` | manage the resident proxy; `--json` is for `status` |
 | `prx trust` | install the root CA (one time) |
 | `prx ca export [--out path]` | export the root CA for other devices |
 | `prx expose <service> --via <provider> [--auth user:pass] [--json]` | reach a service externally |

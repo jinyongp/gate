@@ -222,6 +222,7 @@ acme_dns = "cloudflare"            # DNS-01 provider
 
 ```
 prx daemon start        # 상주 시작
+prx daemon restart      # 상주 재시작
 prx daemon stop
 prx daemon status
 prx daemon logs -f
@@ -397,7 +398,7 @@ prx add <domain> <port>                  # prx.toml + 레지스트리에 기록
 prx rm <domain>
 prx prune
 prx port <service>
-prx daemon start|stop|status|logs [--access] [-f]
+prx daemon start|stop|restart|status|logs [--access] [-f]
 prx trust
 prx ca export [--out <path>]             # 타기기 설치용 루트 CA 반출
 prx expose <service> --via <provider> [--auth]

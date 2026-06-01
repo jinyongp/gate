@@ -34,7 +34,7 @@ const (
 	defaultDaemonHTTPAddr  = ":80"
 )
 
-// Daemon dispatches `prx daemon start|stop|status|logs`.
+// Daemon dispatches `prx daemon start|stop|restart|status|logs`.
 func Daemon(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		sp := specFor("daemon")
@@ -53,6 +53,8 @@ func Daemon(args []string, stdout, stderr io.Writer) int {
 		return daemonStart(rest, stdout, stderr)
 	case "stop":
 		return daemonStop(stdout, stderr)
+	case "restart":
+		return daemonRestart(rest, stdout, stderr)
 	case "logs":
 		return daemonLogs(stdout, stderr)
 	default:
@@ -105,7 +107,7 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "already running · https %s · http %s\n", displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
-	result := startDaemonCommand(newDaemonServeCommand(executablePath(), *httpsAddr, *httpAddr), client, 0, nil)
+	result := startDaemonCommand(newDaemonServeCommand(executablePath(), *httpsAddr, *httpAddr), client)
 	if result.Code == ExitOK {
 		st, err := client.Status()
 		if err != nil {
@@ -116,6 +118,56 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	return fail(stderr, false, result.Code, "start", result.Message)
+}
+
+func daemonRestart(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("restart", flag.ContinueOnError)
+	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
+	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
+	if handled, code := parseFlags(fs, "daemon restart", args, stdout, stderr); handled {
+		return code
+	}
+
+	httpsSet, httpSet := flagSet(fs, "https-addr"), flagSet(fs, "http-addr")
+	client := daemon.NewClient(paths.SocketPath())
+	st, running := client.Status()
+	if running == nil {
+		*httpsAddr, *httpAddr = restartListenAddrs(st, *httpsAddr, *httpAddr, httpsSet, httpSet)
+		if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
+			return fail(stderr, false, ExitError, "restart", err.Error())
+		}
+	}
+
+	result := startDaemonCommand(newDaemonServeCommand(executablePath(), *httpsAddr, *httpAddr), client)
+	if result.Code != ExitOK {
+		return fail(stderr, false, result.Code, "restart", result.Message)
+	}
+	if st, err := client.Status(); err == nil {
+		fmt.Fprintf(stdout, "restarted · pid %d · https %s · http %s\n", st.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
+		return ExitOK
+	}
+	fmt.Fprintf(stdout, "restarted · pid %d · https %s · http %s\n", result.PID, *httpsAddr, *httpAddr)
+	return ExitOK
+}
+
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+func restartListenAddrs(st daemon.Status, httpsAddr, httpAddr string, httpsSet, httpSet bool) (string, string) {
+	if !httpsSet {
+		httpsAddr = restartListenAddr(st.HTTPSAddr, defaultDaemonHTTPSAddr)
+	}
+	if !httpSet {
+		httpAddr = restartListenAddr(st.HTTPAddr, defaultDaemonHTTPAddr)
+	}
+	return httpsAddr, httpAddr
 }
 
 func daemonListenMatches(st daemon.Status, httpsAddr, httpAddr string) bool {
@@ -156,7 +208,7 @@ type daemonStartResult struct {
 	Message string
 }
 
-func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, expectedPID int, liveStderr io.Writer) daemonStartResult {
+func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client) daemonStartResult {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	logFile, logOffset, err := openDaemonLog()
 	if err != nil {
@@ -170,9 +222,7 @@ func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, expectedPID int, l
 	}
 	_ = logFile.Close()
 
-	if expectedPID == 0 {
-		expectedPID = cmd.Process.Pid
-	}
+	expectedPID := cmd.Process.Pid
 	waitc := make(chan error, 1)
 	go func() { waitc <- cmd.Wait() }()
 	deadline := time.After(3 * time.Second)
@@ -185,9 +235,6 @@ func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, expectedPID int, l
 				err = errors.New("daemon exited before becoming ready")
 			}
 			msg := daemonStartErrorMessage(err, daemonLogSince(logOffset))
-			if liveStderr != nil && msg != "" {
-				fmt.Fprintln(liveStderr, msg)
-			}
 			return daemonStartResult{Code: daemonStartExitCode(msg), Message: msg}
 		case <-deadline:
 			return daemonStartResult{Code: ExitError, Message: "daemon did not become ready"}
@@ -242,11 +289,9 @@ func daemonLogSince(offset int64) string {
 func daemonStop(stdout, stderr io.Writer) int {
 	client := daemon.NewClient(paths.SocketPath())
 	if st, err := client.Status(); err == nil {
-		proc, perr := os.FindProcess(st.PID)
-		if perr == nil {
-			_ = proc.Signal(syscall.SIGTERM)
+		if err := stopDaemonProcess(client, st.PID, 2*time.Second); err != nil {
+			return fail(stderr, false, ExitError, "stop", err.Error())
 		}
-		waitForDaemonStop(client, 2*time.Second)
 		_ = os.Remove(pidPath())
 		fmt.Fprintln(stdout, "stopped")
 		return ExitOK
@@ -274,17 +319,28 @@ func daemonStop(stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func waitForDaemonStop(client *daemon.Client, timeout time.Duration) {
+func stopDaemonProcess(client *daemon.Client, pid int, timeout time.Duration) error {
+	proc, perr := os.FindProcess(pid)
+	if perr == nil {
+		_ = proc.Signal(syscall.SIGTERM)
+	}
+	if !waitForDaemonStop(client, timeout) {
+		return errors.New("daemon did not stop")
+	}
+	return nil
+}
+
+func waitForDaemonStop(client *daemon.Client, timeout time.Duration) bool {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		if !client.IsRunning() {
-			return
+			return true
 		}
 		select {
 		case <-deadline:
-			return
+			return false
 		case <-tick.C:
 		}
 	}

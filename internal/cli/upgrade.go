@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"prx/internal/daemon"
+	"prx/internal/paths"
 	"prx/internal/ui"
 )
 
@@ -23,6 +25,8 @@ const (
 )
 
 var currentVersion = "dev"
+
+var restartDaemonAfterUpgradeFunc = restartDaemonAfterUpgrade
 
 // SetVersion stores the currently running prx version for upgrade decisions.
 func SetVersion(v string) {
@@ -54,8 +58,8 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	if latestTag != "" {
 		if current := normalizedVersion(currentVersion); current != "" && current != "dev" {
 			if normalizedVersion(latestTag) == current {
-				printUpgradeStatus(stdout, fmt.Sprintf("up to date (%s)", currentVersion))
-				return ExitOK
+				daemonBefore, daemonWasRunning := daemonStatusBeforeUpgrade()
+				return completeUpToDate(stdout, stderr, currentVersion, daemonBefore, daemonWasRunning)
 			}
 		}
 	} else {
@@ -66,6 +70,8 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 		printUpgradeStatus(stdout, "upgrade canceled")
 		return ExitOK
 	}
+
+	daemonBefore, daemonWasRunning := daemonStatusBeforeUpgrade()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upgradeScriptURL, nil)
 	if err != nil {
@@ -108,8 +114,55 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	if err := cmd.Run(); err != nil {
 		return fail(stderr, false, ExitError, "upgrade", err.Error())
 	}
+	return completeUpgrade(stdout, stderr, daemonBefore, daemonWasRunning)
+}
+
+func daemonStatusBeforeUpgrade() (daemon.Status, bool) {
+	st, err := daemon.NewClient(paths.SocketPath()).Status()
+	return st, err == nil
+}
+
+func completeUpgrade(stdout, stderr io.Writer, daemonBefore daemon.Status, daemonWasRunning bool) int {
+	if daemonWasRunning {
+		if code := restartDaemonAfterUpgradeFunc(daemonBefore, stdout, stderr); code != ExitOK {
+			return code
+		}
+	}
 	printUpgradeStatus(stdout, "upgrade complete")
 	return ExitOK
+}
+
+func completeUpToDate(stdout, stderr io.Writer, version string, daemonBefore daemon.Status, daemonWasRunning bool) int {
+	if daemonWasRunning {
+		if code := restartDaemonAfterUpgradeFunc(daemonBefore, stdout, stderr); code != ExitOK {
+			return code
+		}
+	}
+	printUpgradeStatus(stdout, fmt.Sprintf("up to date (%s)", version))
+	return ExitOK
+}
+
+func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
+	client := daemon.NewClient(paths.SocketPath())
+	if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
+		return fail(stderr, false, ExitError, "upgrade", "failed to restart daemon: "+err.Error())
+	}
+
+	httpsAddr := restartListenAddr(st.HTTPSAddr, defaultDaemonHTTPSAddr)
+	httpAddr := restartListenAddr(st.HTTPAddr, defaultDaemonHTTPAddr)
+	result := startDaemonCommand(newDaemonServeCommand(executablePath(), httpsAddr, httpAddr), client)
+	if result.Code != ExitOK {
+		return fail(stderr, false, result.Code, "upgrade", "failed to restart daemon: "+result.Message)
+	}
+	fmt.Fprintf(stdout, "daemon restarted · pid %d · https %s · http %s\n", result.PID, httpsAddr, httpAddr)
+	return ExitOK
+}
+
+func restartListenAddr(actual, fallback string) string {
+	if strings.TrimSpace(actual) == "" {
+		return fallback
+	}
+	return actual
 }
 
 func printUpgradeVersion(stdout io.Writer, label, version string) {

@@ -31,7 +31,7 @@ var Specs = []CmdSpec{
 	{"rm", "<domain>|--project [name]", "remove a domain or project reservations"},
 	{"prune", "", "remove reservations whose project config no longer exists"},
 	{"run", "<service> -- <cmd> [args]", "run a child process with PORT injected from the reservation"},
-	{"daemon", "start|stop|status|logs", "control the background proxy daemon (start/stop/status/restart)"},
+	{"daemon", "start|stop|restart|status|logs", "control the background proxy daemon"},
 	{"trust", "", "install the local CA into the OS and browser trust stores"},
 	{"ca", "export [--out <path>]", "export the local CA certificate"},
 	{"expose", "<service> --via <provider>", "publish a local service through a public tunnel provider"},

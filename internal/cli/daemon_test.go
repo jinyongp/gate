@@ -61,6 +61,32 @@ func TestDaemonListenMatches(t *testing.T) {
 	}
 }
 
+func TestRestartListenAddrsPreservesRunningDaemonPorts(t *testing.T) {
+	httpsAddr, httpAddr := restartListenAddrs(
+		daemon.Status{HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"},
+		defaultDaemonHTTPSAddr,
+		defaultDaemonHTTPAddr,
+		false,
+		false,
+	)
+	if httpsAddr != "[::]:18443" || httpAddr != "[::]:18080" {
+		t.Fatalf("restart addrs = %q %q", httpsAddr, httpAddr)
+	}
+}
+
+func TestRestartListenAddrsAllowsExplicitOverrides(t *testing.T) {
+	httpsAddr, httpAddr := restartListenAddrs(
+		daemon.Status{HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"},
+		":9443",
+		":9080",
+		true,
+		true,
+	)
+	if httpsAddr != ":9443" || httpAddr != ":9080" {
+		t.Fatalf("restart addrs = %q %q", httpsAddr, httpAddr)
+	}
+}
+
 func TestDaemonStartHelperProcess(t *testing.T) {
 	if os.Getenv("PRX_TEST_DAEMON_START_HELPER") != "1" {
 		return

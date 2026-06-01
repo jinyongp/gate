@@ -96,7 +96,7 @@ func Up(args []string, stdout, stderr io.Writer) int {
 				return fail(stderr, *jsonOut, ExitConflict, "daemon_start", msg)
 			}
 		} else {
-			result := startDaemonCommand(newDaemonServeCommand(executablePath(), *httpsAddr, *httpAddr), client, 0, nil)
+			result := startDaemonCommand(newDaemonServeCommand(executablePath(), *httpsAddr, *httpAddr), client)
 			if result.Code != ExitOK {
 				return fail(stderr, *jsonOut, result.Code, "daemon_start", result.Message)
 			}
