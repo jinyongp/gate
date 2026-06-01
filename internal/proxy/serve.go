@@ -17,7 +17,7 @@ func (s *Server) Run(ctx context.Context, httpsAddr, httpAddr string) error {
 
 // RunReady is Run plus a readiness hook called after both listeners are bound
 // and before serving begins.
-func (s *Server) RunReady(ctx context.Context, httpsAddr, httpAddr string, ready func() error) error {
+func (s *Server) RunReady(ctx context.Context, httpsAddr, httpAddr string, ready func(httpsAddr, httpAddr string) error) error {
 	httpsSrv := &http.Server{
 		Addr:              httpsAddr,
 		Handler:           s.HTTPSHandler(),
@@ -42,8 +42,11 @@ func (s *Server) RunReady(ctx context.Context, httpsAddr, httpAddr string, ready
 		_ = httpsLn.Close()
 		return err
 	}
+	actualHTTPSAddr := httpsLn.Addr().String()
+	actualHTTPAddr := httpLn.Addr().String()
+	s.SetHTTPSAddr(actualHTTPSAddr)
 	if ready != nil {
-		if err := ready(); err != nil {
+		if err := ready(actualHTTPSAddr, actualHTTPAddr); err != nil {
 			_ = httpsLn.Close()
 			_ = httpLn.Close()
 			return err

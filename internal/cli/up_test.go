@@ -74,6 +74,37 @@ func TestUpIsStablePort(t *testing.T) {
 	}
 }
 
+func TestUpPrunesMissingConfigReservationBeforeConflict(t *testing.T) {
+	setupUpProject(t)
+	missing := filepath.Join(t.TempDir(), "missing", "prx.toml")
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{
+			Project:    "old",
+			Service:    "web",
+			Domain:     "web.demo.localhost",
+			Port:       4300,
+			ConfigPath: missing,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get(registry.Key("old", "web")); ok {
+		t.Fatal("stale reservation still present")
+	}
+	if _, ok := reg.Get(registry.Key("demo", "web")); !ok {
+		t.Fatal("new reservation missing")
+	}
+}
+
 func TestDownDeactivatesKeepsReservation(t *testing.T) {
 	setupUpProject(t)
 	var out, errb bytes.Buffer
@@ -126,5 +157,39 @@ func TestUpDownReloadRunningDaemon(t *testing.T) {
 	}
 	if srv.RouteCount() != 0 {
 		t.Fatalf("down route count = %d, want 0", srv.RouteCount())
+	}
+}
+
+func TestUpDaemonStartsAndReloads(t *testing.T) {
+	setupUpProject(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "prx-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	srv := proxy.New(nil, nil)
+	stop, err := daemon.ServeAdmin(context.Background(), paths.SocketPath(), srv)
+	if err != nil {
+		t.Fatalf("ServeAdmin: %v", err)
+	}
+	defer stop()
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--daemon", "--https-addr", "127.0.0.1:0", "--http-addr", "127.0.0.1:0", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+
+	var up struct {
+		Reloaded bool `json:"reloaded"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &up); err != nil {
+		t.Fatalf("up json: %v\n%s", err, out.String())
+	}
+	if !up.Reloaded {
+		t.Fatal("up --daemon did not reload daemon")
+	}
+	if srv.RouteCount() != 2 {
+		t.Fatalf("route count = %d, want 2", srv.RouteCount())
 	}
 }

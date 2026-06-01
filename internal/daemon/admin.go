@@ -1,6 +1,7 @@
 // Package daemon runs the resident prx proxy and its control plane. The control
 // plane is a small HTTP API over a unix-domain socket; the CLI uses it to push
-// routes (hot reload) and query status. Only one process owns :443 at a time.
+// routes (hot reload) and query status. Only one process owns the proxy listen
+// ports at a time.
 package daemon
 
 import (
@@ -14,14 +15,15 @@ import (
 
 // Status is the daemon's reported state.
 type Status struct {
-	Running   bool  `json:"running"`
-	PID       int   `json:"pid"`
-	Routes    int   `json:"routes"`
-	UptimeSec int64 `json:"uptime_sec"`
+	Running   bool   `json:"running"`
+	PID       int    `json:"pid"`
+	Routes    int    `json:"routes"`
+	UptimeSec int64  `json:"uptime_sec"`
+	HTTPSAddr string `json:"https_addr,omitempty"`
+	HTTPAddr  string `json:"http_addr,omitempty"`
 }
 
-// adminHandler serves the control API backed by a proxy.Server.
-func adminHandler(srv *proxy.Server, started time.Time) http.Handler {
+func adminHandlerWithListen(srv *proxy.Server, started time.Time, httpsAddr, httpAddr string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
@@ -30,6 +32,8 @@ func adminHandler(srv *proxy.Server, started time.Time) http.Handler {
 			PID:       os.Getpid(),
 			Routes:    srv.RouteCount(),
 			UptimeSec: int64(time.Since(started).Seconds()),
+			HTTPSAddr: httpsAddr,
+			HTTPAddr:  httpAddr,
 		})
 	})
 

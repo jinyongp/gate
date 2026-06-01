@@ -30,10 +30,11 @@ type LiveFunc func(upstream string) bool
 
 // Server holds the atomically-swappable route table and serves both planes.
 type Server struct {
-	routes  atomic.Pointer[map[string]*Route]
-	getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error)
-	live    LiveFunc
-	rp      *httputil.ReverseProxy
+	routes        atomic.Pointer[map[string]*Route]
+	getCert       func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	live          LiveFunc
+	rp            *httputil.ReverseProxy
+	httpsHostPort atomic.Value
 }
 
 type ctxKey int
@@ -93,6 +94,12 @@ func (s *Server) RouteCount() int {
 	return len(*m)
 }
 
+// SetHTTPSAddr records the HTTPS listener so plaintext redirects can include a
+// non-default port in no-sudo mode.
+func (s *Server) SetHTTPSAddr(addr string) {
+	s.httpsHostPort.Store(redirectHostPort(addr))
+}
+
 // HTTPSHandler routes a decrypted request to its upstream.
 func (s *Server) HTTPSHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +132,9 @@ func (s *Server) HTTPSHandler() http.Handler {
 func (s *Server) HTTPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := hostOnly(r.Host)
+		if hostPort, ok := s.httpsHostPort.Load().(string); ok && hostPort != "" {
+			host = net.JoinHostPort(host, hostPort)
+		}
 		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusMovedPermanently)
 	})
 }
@@ -171,6 +181,17 @@ func hostOnly(hostport string) string {
 		return canonicalDomain(h)
 	}
 	return canonicalDomain(hostport)
+}
+
+func redirectHostPort(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if port == "" || port == "443" {
+		return ""
+	}
+	return port
 }
 
 func canonicalDomain(domain string) string {

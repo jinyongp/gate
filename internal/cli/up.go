@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sort"
+	"strings"
 
 	"prx/internal/config"
 	"prx/internal/daemon"
@@ -30,6 +32,10 @@ func Up(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
 	dnsMode := fs.String("dns", "", "force DNS mode: localhost|hosts")
+	startDaemon := fs.Bool("daemon", false, "start the background daemon before reloading routes")
+	fs.BoolVar(startDaemon, "d", false, "start the background daemon before reloading routes")
+	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "daemon HTTPS listen address (with --daemon)")
+	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "daemon HTTP listen address (with --daemon)")
 	if handled, code := parseFlags(fs, "up", args, stdout, stderr); handled {
 		return code
 	}
@@ -42,6 +48,7 @@ func Up(args []string, stdout, stderr io.Writer) int {
 	var results []upResult
 	var routes []proxy.Route
 	err = registryStore().Update(func(reg *registry.Registry) error {
+		reg.Prune(configPathExists)
 		used := reg.UsedPorts()
 		for _, name := range sortedServices(project) {
 			svc := project.Services[name]
@@ -79,10 +86,28 @@ func Up(args []string, stdout, stderr io.Writer) int {
 	}
 
 	reloaded := false
+	actualHTTPSAddr := ""
 	client := daemon.NewClient(paths.SocketPath())
+	if *startDaemon {
+		if st, err := client.Status(); err == nil {
+			if !daemonListenMatches(st, *httpsAddr, *httpAddr) {
+				msg := fmt.Sprintf("daemon already running on https %s · http %s; requested https %s · http %s; run `prx daemon stop` first",
+					displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr), *httpsAddr, *httpAddr)
+				return fail(stderr, *jsonOut, ExitConflict, "daemon_start", msg)
+			}
+		} else {
+			result := startDaemonCommand(newDaemonServeCommand(executablePath(), *httpsAddr, *httpAddr), client, 0, nil)
+			if result.Code != ExitOK {
+				return fail(stderr, *jsonOut, result.Code, "daemon_start", result.Message)
+			}
+		}
+	}
 	if client.IsRunning() {
 		if err := client.SetRoutes(routes); err != nil {
 			return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
+		}
+		if st, err := client.Status(); err == nil {
+			actualHTTPSAddr = st.HTTPSAddr
 		}
 		reloaded = true
 	}
@@ -91,7 +116,11 @@ func Up(args []string, stdout, stderr io.Writer) int {
 		return writeJSON(stdout, map[string]any{"project": project.Name, "reloaded": reloaded, "services": results})
 	}
 	for _, r := range results {
-		fmt.Fprintf(stdout, "%s/%s  %s -> :%d\n", project.Name, r.Service, r.Domain, r.Port)
+		domain := r.Domain
+		if reloaded {
+			domain = proxyURL(r.Domain, actualHTTPSAddr)
+		}
+		fmt.Fprintf(stdout, "%s/%s  %s -> :%d\n", project.Name, r.Service, domain, r.Port)
 	}
 	if reloaded {
 		fmt.Fprintf(stdout, "proxy reloaded · %d routes active\n", len(routes))
@@ -99,6 +128,46 @@ func Up(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "note: no daemon running; start it with `prx daemon start`")
 	}
 	return ExitOK
+}
+
+func executablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return os.Args[0]
+	}
+	return exe
+}
+
+func configPathExists(path string) bool {
+	if path == "" {
+		return true
+	}
+	if _, err := os.Stat(path); err != nil {
+		return !os.IsNotExist(err)
+	}
+	return true
+}
+
+func proxyURL(domain, httpsAddr string) string {
+	port := proxyPort(httpsAddr)
+	if port == "" {
+		return "https://" + domain
+	}
+	return "https://" + net.JoinHostPort(domain, port)
+}
+
+func proxyPort(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if port == "" || port == "443" {
+		return ""
+	}
+	return strings.TrimSpace(port)
 }
 
 // Down deactivates the current project's routes (reservations are preserved)

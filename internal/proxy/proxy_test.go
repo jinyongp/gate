@@ -130,6 +130,28 @@ func TestHTTPRedirectsToHTTPS(t *testing.T) {
 	}
 }
 
+func TestHTTPRedirectsToHTTPSCustomPort(t *testing.T) {
+	s := New(nil, alwaysLive)
+	s.SetHTTPSAddr(":8443")
+	fe := httptest.NewServer(s.HTTPHandler())
+	defer fe.Close()
+	fe.Client().CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	req, _ := http.NewRequest(http.MethodGet, fe.URL+"/path?q=1", nil)
+	req.Host = "app.localhost:8080"
+	resp, err := fe.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("status = %d, want 301", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "https://app.localhost:8443/path?q=1" {
+		t.Fatalf("Location = %q", loc)
+	}
+}
+
 func TestSSEStreams(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -235,7 +257,7 @@ func TestRunReadyBindsAndShutsDown(t *testing.T) {
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- s.RunReady(ctx, "127.0.0.1:0", "127.0.0.1:0", func() error {
+		done <- s.RunReady(ctx, "127.0.0.1:0", "127.0.0.1:0", func(_, _ string) error {
 			close(ready)
 			return nil
 		})
