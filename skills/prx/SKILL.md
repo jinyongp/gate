@@ -81,6 +81,27 @@ domain = "api.example.com"
 port = 3001                      # fixed when needed
 ```
 
+`domain` and `port` support environment interpolation:
+
+```toml
+[project]
+name = "myapp"
+env_files = [".env.local", ".env"]
+
+[services.web]
+domain = "${PRX_WEB_DOMAIN:-app.localhost}"
+port = "${PRX_WEB_PORT:-3000}"
+
+[services.api]
+domain = "api.${PRX_BASE_DOMAIN:-localhost}"
+port = "${PRX_API_PORT}"
+```
+
+`env_files` are resolved relative to `prx.toml`. Missing env files are ignored.
+Process env overrides dotenv values; earlier env files override later env files.
+`${NAME}` is required and errors when unset. `${NAME:-default}` is optional and
+uses `default` when unset or empty.
+
 Inside a project, `prx add`/`prx rm` edit this file in place, preserving comments.
 Outside a project they create/remove adhoc registry reservations. Domains ending
 in `.localhost` need no sudo; custom domains use `/etc/hosts` (sudo).

@@ -122,6 +122,28 @@ domain = "api.example.localhost"
 port = 3001
 ```
 
+`domain` and `port` can read environment variables:
+
+```toml
+[project]
+name = "my-project"
+env_files = [".env.local", ".env"]
+
+[services.web]
+domain = "${PRX_WEB_DOMAIN:-app.example.localhost}"
+port = "${PRX_WEB_PORT:-3000}"
+
+[services.api]
+domain = "api.${PRX_BASE_DOMAIN:-example.localhost}"
+port = "${PRX_API_PORT}"
+```
+
+`env_files` are resolved relative to `prx.toml`. Missing files are ignored, so
+session environment variables still work without a local dotenv file. Process
+environment values win over dotenv values, and earlier dotenv files win over
+later ones. `${NAME}` is required and fails if unset; `${NAME:-default}` uses
+the default when unset or empty.
+
 5. Start routing and run the service:
 
 ```bash

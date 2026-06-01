@@ -75,6 +75,126 @@ tls = "bogus"
 	}
 }
 
+func TestLoadExpandsServiceEnvFromEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Filename)
+	writeFile(t, filepath.Join(dir, ".env.local"), `
+PRX_BASE_DOMAIN=local.stamp.is
+PRX_WEB_PORT=4306
+`)
+	writeFile(t, filepath.Join(dir, ".env"), `
+PRX_BASE_DOMAIN=wrong.example
+PRX_WEB_PORT=4999
+`)
+	writeFile(t, path, `
+[project]
+name = "myapp"
+env_files = [".env.local", ".env"]
+
+[services.web]
+domain = "web.${PRX_BASE_DOMAIN}"
+port = "${PRX_WEB_PORT}"
+`)
+
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	web := p.Services["web"]
+	if web.Domain != "web.local.stamp.is" {
+		t.Fatalf("domain = %q", web.Domain)
+	}
+	if web.Port != 4306 {
+		t.Fatalf("port = %d", web.Port)
+	}
+}
+
+func TestLoadProcessEnvOverridesEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Filename)
+	t.Setenv("PRX_WEB_PORT", "5555")
+	writeFile(t, filepath.Join(dir, ".env"), "PRX_WEB_PORT=4306\n")
+	writeFile(t, path, `
+[project]
+name = "myapp"
+env_files = [".env"]
+
+[services.web]
+domain = "web.localhost"
+port = "${PRX_WEB_PORT}"
+`)
+
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p.Services["web"].Port != 5555 {
+		t.Fatalf("port = %d", p.Services["web"].Port)
+	}
+}
+
+func TestLoadEnvReferenceDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Filename)
+	writeFile(t, path, `
+[project]
+name = "myapp"
+
+[services.web]
+domain = "${PRX_WEB_DOMAIN:-web.localhost}"
+port = "${PRX_WEB_PORT:-4306}"
+`)
+
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p.Services["web"].Domain != "web.localhost" {
+		t.Fatalf("domain = %q", p.Services["web"].Domain)
+	}
+	if p.Services["web"].Port != 4306 {
+		t.Fatalf("port = %d", p.Services["web"].Port)
+	}
+}
+
+func TestLoadMissingEnvReferenceFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Filename)
+	writeFile(t, path, `
+[project]
+name = "myapp"
+
+[services.web]
+domain = "${PRX_WEB_DOMAIN}"
+`)
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestLoadMissingEnvFileUsesProcessEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Filename)
+	t.Setenv("PRX_WEB_DOMAIN", "web.localhost")
+	writeFile(t, path, `
+[project]
+name = "myapp"
+env_files = [".env.missing"]
+
+[services.web]
+domain = "${PRX_WEB_DOMAIN}"
+`)
+
+	p, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if p.Services["web"].Domain != "web.localhost" {
+		t.Fatalf("domain = %q", p.Services["web"].Domain)
+	}
+}
+
 func TestDiscoverWalksUp(t *testing.T) {
 	root := t.TempDir()
 	nested := filepath.Join(root, "a", "b", "c")
