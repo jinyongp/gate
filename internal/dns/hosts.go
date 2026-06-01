@@ -3,6 +3,8 @@ package dns
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"prx/internal/fsutil"
@@ -15,6 +17,11 @@ const (
 	endMarker   = "# <<< prx managed <<<"
 	hostsPath   = "/etc/hosts"
 )
+
+var runPrivilegedHostsCommand = func(name string, args ...string) error {
+	//nolint:gosec // command and args are fixed by prx; no shell is involved.
+	return exec.Command(name, args...).Run()
+}
 
 // Hosts edits a marked block in an /etc/hosts-style file. It only ever touches
 // lines between its own markers; everything else is preserved.
@@ -86,11 +93,11 @@ func (h Hosts) edit(mutate func(entries []string) []string) error {
 	if content != "" {
 		content += "\n"
 	}
-	return fsutil.WriteAtomic(h.Path, []byte(content), 0o644)
+	return h.write([]byte(content))
 }
 
 func (h Hosts) lock() (func(), error) {
-	lf, err := os.OpenFile(h.Path+".prx.lock", os.O_CREATE|os.O_RDWR, 0o600)
+	lf, err := os.OpenFile(h.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +109,46 @@ func (h Hosts) lock() (func(), error) {
 		_ = unix.Flock(int(lf.Fd()), unix.LOCK_UN)
 		_ = lf.Close()
 	}, nil
+}
+
+func (h Hosts) lockPath() string {
+	if h.Path == hostsPath {
+		return filepath.Join(os.TempDir(), "prx-hosts.lock")
+	}
+	return h.Path + ".prx.lock"
+}
+
+func (h Hosts) write(content []byte) error {
+	if h.Path == hostsPath {
+		return writeSystemHosts(content)
+	}
+	return fsutil.WriteAtomic(h.Path, content, 0o644)
+}
+
+func writeSystemHosts(content []byte) (err error) {
+	tmp, err := os.CreateTemp("", "prx-hosts-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	dst := fmt.Sprintf("%s.prx.tmp.%d", hostsPath, os.Getpid())
+	defer func() { _ = runPrivilegedHostsCommand("sudo", "rm", "-f", dst) }()
+	if err := runPrivilegedHostsCommand("sudo", "install", "-m", "0644", tmpName, dst); err != nil {
+		return fmt.Errorf("%w: sudo install %s: %w", os.ErrPermission, hostsPath, err)
+	}
+	if err := runPrivilegedHostsCommand("sudo", "mv", dst, hostsPath); err != nil {
+		return fmt.Errorf("%w: sudo mv %s: %w", os.ErrPermission, hostsPath, err)
+	}
+	return nil
 }
 
 // verifyTarget hardens against symlink attacks: prx refuses to edit a path that

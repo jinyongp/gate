@@ -230,7 +230,7 @@ func ensureDNS(project *config.Project, mode string, stderr io.Writer, jsonOut b
 	for _, name := range sortedServices(project) {
 		domain := project.Services[name].Domain
 		if err := dns.Select(domain, mode).Ensure(domain); err != nil {
-			if os.IsPermission(err) {
+			if os.IsPermission(err) || errors.Is(err, os.ErrPermission) {
 				return fail(stderr, jsonOut, ExitPerm, "permission", err.Error())
 			}
 			return fail(stderr, jsonOut, ExitError, "dns_failed", err.Error())

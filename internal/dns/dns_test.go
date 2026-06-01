@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,24 @@ func TestHostsRejectsSymlink(t *testing.T) {
 	h := Hosts{Path: link}
 	if err := h.Ensure("x.example.com"); err == nil {
 		t.Fatal("expected symlink to be refused")
+	}
+}
+
+func TestSystemHostsUsesTempLockPath(t *testing.T) {
+	h := Hosts{Path: hostsPath}
+	if got := h.lockPath(); got != filepath.Join(os.TempDir(), "prx-hosts.lock") {
+		t.Fatalf("lockPath = %q", got)
+	}
+}
+
+func TestWriteSystemHostsReportsPermission(t *testing.T) {
+	oldRun := runPrivilegedHostsCommand
+	t.Cleanup(func() { runPrivilegedHostsCommand = oldRun })
+	runPrivilegedHostsCommand = func(string, ...string) error {
+		return errors.New("denied")
+	}
+	if err := writeSystemHosts([]byte("127.0.0.1 example.test\n")); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("error = %v, want permission", err)
 	}
 }
 
