@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"prx/internal/ui"
 )
 
 const (
@@ -46,22 +48,22 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 
 	latestTag, err := latestReleaseTag(ctx)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: unable to check latest version: %v\n", err)
+		printUpgradeWarning(stderr, "unable to check latest version: "+err.Error())
 	}
 
-	fmt.Fprintf(stdout, "Current version: %s\n", currentVersion)
 	if latestTag != "" {
-		fmt.Fprintf(stdout, "Latest version:  %s\n", latestTag)
 		if current := normalizedVersion(currentVersion); current != "" && current != "dev" {
 			if normalizedVersion(latestTag) == current {
-				fmt.Fprintln(stdout, "Already up to date.")
+				printUpgradeStatus(stdout, fmt.Sprintf("up to date (%s)", currentVersion))
 				return ExitOK
 			}
 		}
+	} else {
+		printUpgradeVersion(stdout, "current", currentVersion)
 	}
 
 	if !yes && !confirmUpgrade(stdout, currentVersion, latestTag) {
-		fmt.Fprintln(stdout, "Upgrade cancelled.")
+		printUpgradeStatus(stdout, "upgrade canceled")
 		return ExitOK
 	}
 
@@ -106,19 +108,39 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	if err := cmd.Run(); err != nil {
 		return fail(stderr, false, ExitError, "upgrade", err.Error())
 	}
-	fmt.Fprintln(stdout, "upgrade complete")
+	printUpgradeStatus(stdout, "upgrade complete")
 	return ExitOK
+}
+
+func printUpgradeVersion(stdout io.Writer, label, version string) {
+	if richOut(stdout, false) {
+		fmt.Fprintf(stdout, "%s  %s\n", ui.Dim.Render(label), ui.Tint(ui.Brand, version))
+		return
+	}
+	fmt.Fprintf(stdout, "%-7s %s\n", label+":", version)
+}
+
+func printUpgradeStatus(stdout io.Writer, msg string) {
+	if richOut(stdout, false) {
+		fmt.Fprintf(stdout, "%s %s\n", ui.Tint(ui.Success, "✓"), msg)
+		return
+	}
+	fmt.Fprintln(stdout, msg)
+}
+
+func printUpgradeWarning(stderr io.Writer, msg string) {
+	if richOut(stderr, false) {
+		fmt.Fprintf(stderr, "%s %s\n", ui.Tint(ui.Warn, "!"), msg)
+		return
+	}
+	fmt.Fprintf(stderr, "warning: %s\n", msg)
 }
 
 // confirmUpgrade asks the user to confirm the upgrade on stdin. An empty line
 // (just Enter) accepts; EOF / no input declines so non-interactive callers that
 // forgot -y don't silently upgrade.
 func confirmUpgrade(stdout io.Writer, current, latest string) bool {
-	if latest != "" {
-		fmt.Fprintf(stdout, "Upgrade %s -> %s? [Y/n]: ", current, latest)
-	} else {
-		fmt.Fprintf(stdout, "Upgrade prx to the latest release? [Y/n]: ")
-	}
+	fmt.Fprintf(stdout, "%s? [Y/n]: ", upgradePrompt(current, latest))
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return false
@@ -129,6 +151,13 @@ func confirmUpgrade(stdout io.Writer, current, latest string) bool {
 	default:
 		return false
 	}
+}
+
+func upgradePrompt(current, latest string) string {
+	if latest != "" {
+		return fmt.Sprintf("upgrade %s -> %s", current, latest)
+	}
+	return "upgrade prx to the latest release"
 }
 
 type githubRelease struct {
