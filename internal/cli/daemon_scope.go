@@ -219,7 +219,8 @@ func scopeForReservation(res registry.Reservation) daemonScope {
 }
 
 func slug(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
+	original := strings.TrimSpace(s)
+	s = strings.ToLower(original)
 	var b strings.Builder
 	lastDash := false
 	for _, r := range s {
@@ -242,7 +243,7 @@ func slug(s string) string {
 		}
 	}
 	out := strings.Trim(b.String(), "-")
-	hash := slugHash(s)
+	hash := slugHash(original)
 	if out == "" {
 		return "x" + hash
 	}

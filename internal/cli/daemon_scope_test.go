@@ -159,6 +159,9 @@ func TestDaemonScopeFileKeySlug(t *testing.T) {
 	if a, b := projectDaemonScope("stamp.is").fileKey(), projectDaemonScope("stamp is").fileKey(); a == b {
 		t.Fatalf("fileKey collision: %q", a)
 	}
+	if a, b := projectDaemonScope("Demo").fileKey(), projectDaemonScope("demo").fileKey(); a == b {
+		t.Fatalf("case-sensitive project fileKey collision: %q", a)
+	}
 }
 
 func containsString(xs []string, want string) bool {
