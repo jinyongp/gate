@@ -11,7 +11,9 @@ stderr. Commands marked `--json` emit a single JSON value on success; JSON-mode
 errors use a stderr envelope. `gate doctor --json` emits its issue report on
 stdout even when issues make it exit non-zero. Longer operations may show a
 TTY-only activity indicator on stderr; JSON mode, redirected stderr,
-`NO_COLOR`, `CI`, and `GATE_NO_INDICATOR=1` disable it.
+`NO_COLOR`, `CI`, and `GATE_NO_INDICATOR=1` disable it. `FORCE_COLOR=1` and
+`CLICOLOR_FORCE=1` force styled text only; they do not force activity
+indicators.
 
 ## When to use
 

@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"gate/internal/ui/uitest"
 )
 
 func TestStatusDotPlain(t *testing.T) {
@@ -27,16 +29,26 @@ func TestStatusDotColorGlyph(t *testing.T) {
 }
 
 func TestRichOutGate(t *testing.T) {
+	uitest.ClearColorEnv(t)
 	var buf bytes.Buffer
 	if richOut(&buf, false) {
 		t.Fatal("richOut must be false for a non-TTY buffer")
 	}
+	uitest.ForceColor(t)
+	if !richOut(&buf, false) {
+		t.Fatal("forced colour should enable richOut for a non-TTY buffer")
+	}
 	if richOut(&buf, true) {
 		t.Fatal("richOut must be false when emitting JSON")
+	}
+	uitest.DisableColor(t)
+	if richOut(&buf, false) {
+		t.Fatal("disabled colour should disable richOut")
 	}
 }
 
 func TestPrintCancelledUsesFailureMarkerAndLeadingBlankLine(t *testing.T) {
+	uitest.ClearColorEnv(t)
 	var out bytes.Buffer
 	printCancelled(&out, "init")
 	got := out.String()

@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 
-	"golang.org/x/term"
+	"gate/internal/ui/policy"
 )
 
 // Format selects the runtime log encoding.
@@ -26,7 +25,7 @@ func New(w io.Writer, format string, level slog.Level) *slog.Logger {
 	if format == FormatJSON {
 		return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level}))
 	}
-	return slog.New(&textHandler{w: w, mu: &sync.Mutex{}, level: level, color: isTTY(w)})
+	return slog.New(&textHandler{w: w, mu: &sync.Mutex{}, level: level, color: policy.ColorEnabled(w)})
 }
 
 // textHandler is a compact slog.Handler: "HH:MM:SS.mmm LEVEL msg key=value".
@@ -94,12 +93,4 @@ func writeAttr(b *strings.Builder, a slog.Attr) {
 	b.WriteString(a.Key)
 	b.WriteByte('=')
 	fmt.Fprint(b, a.Value.Any())
-}
-
-func isTTY(w io.Writer) bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	f, ok := w.(*os.File)
-	return ok && term.IsTerminal(int(f.Fd()))
 }

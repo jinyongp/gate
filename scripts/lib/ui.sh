@@ -1,20 +1,27 @@
 #!/usr/bin/env sh
 
-case "${GATE_COLOR:-auto}" in
-  always)
-    UI_COLOR=1
-    ;;
-  never)
-    UI_COLOR=0
-    ;;
-  *)
-    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-      UI_COLOR=1
-    else
-      UI_COLOR=0
-    fi
-    ;;
-esac
+ui_env_enabled() {
+  case "$1" in
+    "" | 0 | false | False | FALSE | no | No | NO | off | Off | OFF)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+if [ -n "${NO_COLOR:-}" ]; then
+  UI_COLOR=0
+elif ui_env_enabled "${FORCE_COLOR:-}" || ui_env_enabled "${CLICOLOR_FORCE:-}"; then
+  UI_COLOR=1
+elif [ "${CLICOLOR:-}" = "0" ]; then
+  UI_COLOR=0
+elif [ -t 1 ]; then
+  UI_COLOR=1
+else
+  UI_COLOR=0
+fi
 
 if [ "$UI_COLOR" -eq 1 ]; then
   UI_BOLD="$(printf '\033[1m')"

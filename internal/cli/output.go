@@ -28,12 +28,12 @@ func registryStore() *registry.Store {
 	return registry.Open(filepath.Join(paths.ConfigDir(), "registry.json"))
 }
 
-// isTTY reports whether w is an interactive terminal and colour is permitted.
-func isTTY(w io.Writer) bool { return ui.Enabled(w) }
+// isTTY reports whether w should receive styled status output.
+func isTTY(w io.Writer) bool { return ui.ColorEnabled(w) }
 
-// richOut is the single gate for styled (lipgloss) output: a real terminal,
-// NO_COLOR unset, and not emitting JSON.
-func richOut(w io.Writer, jsonOut bool) bool { return !jsonOut && ui.Enabled(w) }
+// richOut is the single CLI gate for styled output: JSON always stays plain,
+// otherwise the shared colour policy decides.
+func richOut(w io.Writer, jsonOut bool) bool { return !jsonOut && ui.ColorEnabled(w) }
 
 type activityHandle interface {
 	Stop()

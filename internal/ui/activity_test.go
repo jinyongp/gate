@@ -52,21 +52,6 @@ func TestActivityEnabledGatesOutput(t *testing.T) {
 	if ActivityEnabled(os.Stderr, true) {
 		t.Fatal("json output should disable activity")
 	}
-	for _, key := range []string{"NO_COLOR", "CI", "GATE_NO_INDICATOR", "GATE_NO_SPINNER"} {
-		env[key] = "1"
-		if ActivityEnabled(os.Stderr, false) {
-			t.Fatalf("%s should disable activity", key)
-		}
-		delete(env, key)
-	}
-	env["CI"] = "false"
-	if !ActivityEnabled(os.Stderr, false) {
-		t.Fatal("CI=false should not disable activity")
-	}
-	env["CI"] = "0"
-	if !ActivityEnabled(os.Stderr, false) {
-		t.Fatal("CI=0 should not disable activity")
-	}
 }
 
 func TestStartActivityNoopWritesNothing(t *testing.T) {

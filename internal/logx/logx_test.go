@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gate/internal/ui/uitest"
 )
 
 func TestTextHandlerPlainOnBuffer(t *testing.T) {
+	uitest.ClearColorEnv(t)
 	var buf bytes.Buffer
 	log := New(&buf, FormatText, slog.LevelInfo)
 	log.Info("hello", "domain", "app.localhost", "port", 4310)
@@ -25,6 +28,16 @@ func TestTextHandlerPlainOnBuffer(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b[") {
 		t.Fatalf("colour leaked to non-TTY: %q", out)
+	}
+}
+
+func TestTextHandlerRespectsForceColor(t *testing.T) {
+	uitest.ForceColor(t)
+	var buf bytes.Buffer
+	log := New(&buf, FormatText, slog.LevelInfo)
+	log.Info("hello")
+	if out := buf.String(); !strings.Contains(out, "\x1b[") {
+		t.Fatalf("forced colour did not enable colour: %q", out)
 	}
 }
 

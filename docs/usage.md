@@ -301,7 +301,13 @@ error envelope.
 
 Some longer operations show a one-line activity indicator on stderr when stderr
 is an interactive terminal. Indicators never appear in JSON mode or when stderr
-is redirected. Set `GATE_NO_INDICATOR=1` to disable them explicitly.
+is redirected. `NO_COLOR`, `CI`, and `GATE_NO_INDICATOR=1` disable them.
+
+Text styling is enabled for terminals by default. `NO_COLOR=1` disables styling,
+`FORCE_COLOR=1` or `CLICOLOR_FORCE=1` forces styling for non-TTY output, and
+`CLICOLOR=0` disables default terminal styling unless a force variable is set.
+`NO_COLOR` always wins. Force variables affect styling only; they do not force
+activity indicators.
 
 Examples:
 

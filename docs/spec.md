@@ -474,7 +474,7 @@ Exit codes:
 flowchart TD
     cmd["command result"]
     json{"--json?"}
-    tty{"stdout is TTY<br/>and NO_COLOR unset?"}
+    tty{"stdout is TTY or colour forced?<br/>and not colour disabled?"}
     data["stdout: single json object/array"]
     rich["stdout: styled text output"]
     plain["stdout: plain text output"]
@@ -497,21 +497,25 @@ Rules:
 - `gate doctor --json` is a check/report command: discovered issues are report
   data and are written to stdout even when the command exits non-zero. Usage and
   internal errors still use the JSON error envelope on stderr.
-- Rich output is enabled only when stdout is a terminal and `NO_COLOR` is unset.
-- Piped output stays plain and grep-friendly.
+- Rich output is enabled when stdout is a terminal and colour is not disabled.
+  `FORCE_COLOR=1` or `CLICOLOR_FORCE=1` forces rich output for non-TTY
+  writers. `NO_COLOR` always disables rich output. `CLICOLOR=0` disables default
+  TTY colour unless a force variable is set.
+- Piped output stays plain and grep-friendly by default.
 - Long-running command progress may show a single-line activity indicator on
   stderr only when stderr is an interactive terminal. Activity indicators are
   disabled for JSON mode, redirected stderr, `NO_COLOR`, `CI`, and
-  `GATE_NO_INDICATOR`.
+  `GATE_NO_INDICATOR`. `FORCE_COLOR` and `CLICOLOR_FORCE` do not force activity
+  indicators.
 - Activity indicators must stop and clear their line before final success
   output, errors, warnings, interactive prompts, or child-process stdout/stderr
   ownership.
 
-The current presentation layer uses `lipgloss` for TTY-only styling and
-borderless tables, plus `internal/ui` activity indicators for selected
-long-running command phases. There is no fullscreen TUI command in the current
-public surface. Any future interactive TUI must keep the same output contract
-and must not affect non-TTY or JSON behavior.
+The current presentation layer uses `lipgloss` for terminal/forced-colour
+styling and borderless tables, plus `internal/ui` activity indicators for
+selected long-running command phases. There is no fullscreen TUI command in the
+current public surface. Any future interactive TUI must keep the same output
+contract and must not affect non-TTY or JSON behavior.
 
 ---
 
@@ -627,7 +631,7 @@ flowchart TB
 | --- | --- |
 | `cmd/gate` | Entrypoint, cobra root command, subcommand dispatch, top-level usage. |
 | `internal/cli` | Command parsing, command orchestration, text/json output, exit codes. |
-| `internal/ui` | TTY-only styling helpers. Presentation tier only. |
+| `internal/ui` | Styling helpers and activity indicators. Presentation tier only. |
 | `internal/paths` | XDG/macOS config, data, state, and runtime path resolution. |
 | `internal/config` | `gate.toml` discovery, parsing, validation, env interpolation, surgical editing. |
 | `internal/registry` | Registry schema, conflict checks, file locking, atomic persistence. |
@@ -667,7 +671,8 @@ The project command runner is `just`.
 
 Validation priorities:
 
-- Output contract tests for plain, TTY-gated, `NO_COLOR`, and JSON paths.
+- Output contract tests for plain, TTY-gated, forced-colour, `NO_COLOR`, and
+  JSON paths.
 - Registry concurrency and atomic-write tests.
 - Proxy tests for routing, hot reload, loopback guard, auth, 502 classification,
   streaming, and redirects.
@@ -684,9 +689,9 @@ scope is intentionally smaller and is now part of this spec:
 
 | Area | Current state |
 | --- | --- |
-| Rich CLI usage | Implemented for TTY output through `internal/ui`. |
-| Rich tables/status | Implemented as TTY-only presentation sugar. |
-| JSON and pipe output | Plain and stable; rich rendering is disabled. |
+| Rich CLI usage | Implemented for terminal or forced-colour output through `internal/ui`. |
+| Rich tables/status | Implemented as terminal or forced-colour presentation sugar. |
+| JSON and pipe output | Plain and stable by default; rich rendering is enabled only when colour is forced. |
 | Fullscreen dashboard | Not part of the current command surface. |
 | Interactive pickers | Not part of the current command surface. |
 | Charts/metrics TUI | Not part of the current command surface. |

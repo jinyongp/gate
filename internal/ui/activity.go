@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"gate/internal/ui/policy"
+
 	"golang.org/x/term"
 )
 
@@ -45,17 +47,7 @@ var dotStackFrames = buildDotStackFrames()
 var asciiActivityFrames = []string{"|", "/", "-", "\\"}
 
 func ActivityEnabled(w io.Writer, jsonOut bool) bool {
-	if jsonOut {
-		return false
-	}
-	if activityGetenv("NO_COLOR") != "" || activityGetenv("GATE_NO_INDICATOR") != "" || activityGetenv("GATE_NO_SPINNER") != "" {
-		return false
-	}
-	if ci := strings.ToLower(strings.TrimSpace(activityGetenv("CI"))); ci != "" && ci != "false" && ci != "0" {
-		return false
-	}
-	f, ok := w.(*os.File)
-	return ok && activityIsTerminal(f)
+	return policy.ActivityEnabled(w, jsonOut, activityGetenv, activityIsTerminal)
 }
 
 func StartActivity(w io.Writer, label string, opts ActivityOptions) *Activity {

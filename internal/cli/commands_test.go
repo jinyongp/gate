@@ -13,11 +13,13 @@ import (
 	"gate/internal/expose"
 	"gate/internal/proxy"
 	"gate/internal/registry"
+	"gate/internal/ui/uitest"
 )
 
 // isolate points gate's config dir and cwd at temp dirs for the duration of the test.
 func isolate(t *testing.T) {
 	t.Helper()
+	uitest.ClearColorEnv(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Chdir(t.TempDir())
 }

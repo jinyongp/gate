@@ -1,15 +1,15 @@
 // Package ui holds gate's presentation-tier styling: the lipgloss palette and
-// shared render helpers. It is TTY-only sugar — callers gate on Enabled so that
-// piped, --json, and NO_COLOR output stays plain. ui imports lipgloss only (no
+// shared render helpers. By default it is TTY-only sugar; explicit colour env
+// vars may override that for callers that opt in. ui imports lipgloss only (no
 // gate packages) so it stays free of import cycles and the core stays TUI-free.
 package ui
 
 import (
 	"io"
-	"os"
+
+	"gate/internal/ui/policy"
 
 	"github.com/charmbracelet/lipgloss"
-	"golang.org/x/term"
 )
 
 // Palette. AdaptiveColor adapts to light/dark terminal backgrounds. Brand is a
@@ -45,14 +45,18 @@ func Tint(c lipgloss.TerminalColor, s string) string {
 	return lipgloss.NewStyle().Foreground(c).Render(s)
 }
 
-// Enabled reports whether w should receive styled output: a real terminal with
-// NO_COLOR unset. It is the single gate for all rich rendering.
-func Enabled(w io.Writer) bool {
-	if os.Getenv("NO_COLOR") != "" {
-		return false
-	}
-	f, ok := w.(*os.File)
-	return ok && term.IsTerminal(int(f.Fd()))
+func ColorEnabled(w io.Writer) bool {
+	return policy.ColorEnabled(w)
+}
+
+// Enabled is kept for existing presentation callers. Prefer ColorEnabled in new
+// code when the colour policy itself is the point.
+func Enabled(w io.Writer) bool { return ColorEnabled(w) }
+
+// ColorDisabled reports whether styling is explicitly disabled by the
+// environment.
+func ColorDisabled() bool {
+	return policy.ColorDisabled()
 }
 
 // Command renders a fixed-width, left-aligned command name in the brand color,
