@@ -397,7 +397,7 @@ prx run <service> -- <cmd...>            # PORT 주입 후 자식 exec
 prx add <domain> <port>                  # prx.toml + 레지스트리에 기록
 prx rm <domain>
 prx prune
-prx port <service>
+prx port [service] [-a|--all]
 prx daemon start|stop|restart|status|logs [--access] [-f]
 prx trust
 prx ca export [--out <path>]             # 타기기 설치용 루트 CA 반출
@@ -483,15 +483,19 @@ $ prx up --json
   ] }
 ```
 
-#### `prx port <service>`
+#### `prx port [service]`
 
-스크립트 주입용. 기본은 숫자만 출력(개행 포함), `--json`은 객체.
+서비스명을 넘기면 스크립트 주입용으로 숫자만 출력(개행 포함), `--json`은 객체.
+서비스명을 생략하면 현재 프로젝트의 예약 포트 목록을 표로 출력한다. `-a|--all`은 모든 프로젝트를 출력한다.
 
 ```
 $ prx port web
 4310
 $ prx port web --json
 { "service": "web", "port": 4310 }
+$ prx port
+PORT  OWNER      TARGET                   STATUS
+4310  myapp/web  https://app.example.com  * live
 ```
 
 #### `prx add` / `prx rm` / `prx prune`

@@ -39,7 +39,7 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	var yes bool
 	fs.BoolVar(&yes, "yes", false, "upgrade without the confirmation prompt")
-	fs.BoolVar(&yes, "y", false, "upgrade without the confirmation prompt (shorthand)")
+	fs.BoolVar(&yes, "y", false, "upgrade without the confirmation prompt")
 	if handled, code := parseFlags(fs, "upgrade", args, stdout, stderr); handled {
 		return code
 	}

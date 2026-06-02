@@ -36,6 +36,15 @@ type projectReservation struct {
 	registry.Reservation
 }
 
+type portRow struct {
+	Project string `json:"project"`
+	Service string `json:"service"`
+	Domain  string `json:"domain"`
+	Port    int    `json:"port"`
+	Status  string `json:"status"`
+	Adhoc   bool   `json:"adhoc,omitempty"`
+}
+
 var (
 	selectDNSProvider   = dns.Select
 	setDaemonRoutesFunc = setDaemonRoutes
@@ -153,14 +162,20 @@ func Ls(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-// Port prints the reserved port for a service (script injection).
+// Port prints the reserved port for a service, or lists reserved ports when no
+// service is passed.
 func Port(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("port", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
+	all := fs.Bool("all", false, "show reservations from all projects")
+	fs.BoolVar(all, "a", false, "show reservations from all projects")
 	if handled, code := parseFlags(fs, "port", args, stdout, stderr); handled {
 		return code
 	}
 	rest := fs.Args()
+	if len(rest) == 0 {
+		return listPorts(stdout, stderr, *jsonOut, *all)
+	}
 	if len(rest) != 1 {
 		return usageFail(stderr, *jsonOut, "port")
 	}
@@ -185,6 +200,85 @@ func Port(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, res.Port)
 	return ExitOK
+}
+
+func listPorts(stdout, stderr io.Writer, jsonOut, all bool) int {
+	reg, err := registryStore().Read()
+	if err != nil {
+		return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
+	}
+	projectName := ""
+	if !all {
+		project, err := currentProject()
+		if err != nil {
+			return fail(stderr, jsonOut, ExitError, "no_project", err.Error())
+		}
+		projectName = project.Name
+	}
+	rows := make([]portRow, 0, len(reg.Services))
+	for _, k := range reg.Keys() {
+		res := reg.Services[k]
+		if !all && res.Project != projectName {
+			continue
+		}
+		if res.Port == 0 {
+			continue
+		}
+		rows = append(rows, portRow{
+			Project: res.Project,
+			Service: res.Service,
+			Domain:  res.Domain,
+			Port:    res.Port,
+			Status:  reservationStatus(res),
+			Adhoc:   res.Adhoc,
+		})
+	}
+	if jsonOut {
+		return writeJSON(stdout, map[string]any{"ports": rows})
+	}
+	if len(rows) == 0 {
+		if richOut(stdout, false) {
+			fmt.Fprintln(stdout, ui.Dim.Render("No reserved ports yet — run `prx up` in a project or `prx add <domain> <port>`."))
+		} else {
+			fmt.Fprintln(stdout, "No reserved ports.")
+		}
+		return ExitOK
+	}
+	if richOut(stdout, false) {
+		headers := []string{"PORT", "OWNER", "TARGET", "STATUS"}
+		data := make([][]string, 0, len(rows))
+		for _, r := range rows {
+			data = append(data, []string{
+				strconv.Itoa(r.Port), displayPortOwner(r), displayDomainURL(r.Domain), statusDot(r.Status, true),
+			})
+		}
+		fmt.Fprintln(stdout, ui.Render(headers, data))
+		return ExitOK
+	}
+	color := isTTY(stdout)
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "PORT\tOWNER\tTARGET\tSTATUS")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.Port, displayPortOwner(r), displayDomainURL(r.Domain), statusDot(r.Status, color))
+	}
+	_ = tw.Flush()
+	return ExitOK
+}
+
+func displayPortOwner(r portRow) string {
+	if r.Project != "" {
+		if r.Service != "" {
+			return r.Project + "/" + r.Service
+		}
+		return r.Project
+	}
+	if r.Adhoc {
+		if r.Service != "" {
+			return "adhoc/" + r.Service
+		}
+		return "adhoc"
+	}
+	return "-"
 }
 
 // Add reserves a domain→port mapping. Inside a prx project, it also appends a

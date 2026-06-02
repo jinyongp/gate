@@ -26,7 +26,7 @@ var Specs = []CmdSpec{
 	{"up", "", "bring up the current project: reserve ports, render routes, reload"},
 	{"down", "", "tear down the current project's routes and free its ports"},
 	{"ls", "", "list current project reservations with live/down status"},
-	{"port", "<service>", "print the reserved port for a service"},
+	{"port", "[service]", "print one service port, or list reserved ports"},
 	{"add", "<domain> <port>", "reserve a port for a domain in the current project"},
 	{"rm", "<domain>|--project [name]", "remove a domain or project reservations"},
 	{"prune", "", "remove reservations whose project config no longer exists"},
@@ -59,6 +59,32 @@ func collectFlags(fs *flag.FlagSet) []FlagInfo {
 	fs.VisitAll(func(f *flag.Flag) {
 		out = append(out, FlagInfo{Name: f.Name, Usage: f.Usage, Default: f.DefValue})
 	})
+	return out
+}
+
+func groupFlagAliases(flags []FlagInfo) []FlagInfo {
+	out := make([]FlagInfo, 0, len(flags))
+	used := make([]bool, len(flags))
+	for i, f := range flags {
+		if used[i] {
+			continue
+		}
+		group := f
+		used[i] = true
+		if len(f.Name) == 1 {
+			for j := i + 1; j < len(flags); j++ {
+				if used[j] {
+					continue
+				}
+				if len(flags[j].Name) > 1 && flags[j].Usage == f.Usage && flags[j].Default == f.Default {
+					group.Name = f.Name + ", " + flags[j].Name
+					used[j] = true
+					break
+				}
+			}
+		}
+		out = append(out, group)
+	}
 	return out
 }
 
@@ -121,21 +147,29 @@ func WriteHelp(w io.Writer, name, args, summary string, flags []FlagInfo) {
 	if len(flags) > 0 {
 		fmt.Fprintf(w, "\n%s\n", section(w, "FLAGS"))
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		for _, f := range flags {
+		for _, f := range groupFlagAliases(flags) {
 			desc := f.Usage
 			// Show a default only when it is meaningful — skip zero values
 			// (bool false, empty string, 0) the way flag.PrintDefaults does.
 			if f.Default != "" && f.Default != "false" && f.Default != "0" {
 				desc = fmt.Sprintf("%s (default %q)", desc, f.Default)
 			}
-			dash := "--"
-			if len(f.Name) == 1 {
-				dash = "-"
-			}
-			fmt.Fprintf(tw, "  %s%s\t%s\n", dash, f.Name, desc)
+			fmt.Fprintf(tw, "  %s\t%s\n", formatFlagNames(f.Name), desc)
 		}
 		_ = tw.Flush()
 	}
+}
+
+func formatFlagNames(names string) string {
+	parts := strings.Split(names, ", ")
+	for i, name := range parts {
+		dash := "--"
+		if len(name) == 1 {
+			dash = "-"
+		}
+		parts[i] = dash + name
+	}
+	return strings.Join(parts, ", ")
 }
 
 // parseFlags is the unified flag-parsing front door for subcommands. It handles

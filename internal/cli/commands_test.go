@@ -530,6 +530,80 @@ func TestPortReadsReservation(t *testing.T) {
 	}
 }
 
+func TestPortListsReservedPorts(t *testing.T) {
+	setupProject(t)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Project: "other", Service: "api", Domain: "api.localhost", Port: 5500})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Port(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Port exit = %d, stderr=%s", code, errb.String())
+	}
+	s := out.String()
+	for _, want := range []string{"PORT", "OWNER", "TARGET", "STATUS", "4400", "demo/web", "https://app.localhost"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("port list missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "5500") || strings.Contains(s, "api.localhost") {
+		t.Fatalf("port list should default to current project only:\n%s", s)
+	}
+}
+
+func TestPortListsAllReservedPorts(t *testing.T) {
+	setupProject(t)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Project: "other", Service: "api", Domain: "api.localhost", Port: 5500})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Port([]string{"-a"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Port -a exit = %d, stderr=%s", code, errb.String())
+	}
+	s := out.String()
+	for _, want := range []string{"4400", "demo/web", "5500", "other/api", "https://api.localhost"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("port -a missing %q in:\n%s", want, s)
+		}
+	}
+}
+
+func TestPortListsReservedPortsJSON(t *testing.T) {
+	setupProject(t)
+	var out, errb bytes.Buffer
+	if code := Port([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Port --json exit = %d, stderr=%s", code, errb.String())
+	}
+	var got struct {
+		Ports []struct {
+			Project string `json:"project"`
+			Service string `json:"service"`
+			Domain  string `json:"domain"`
+			Port    int    `json:"port"`
+		} `json:"ports"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if len(got.Ports) != 1 || got.Ports[0].Project != "demo" || got.Ports[0].Service != "web" || got.Ports[0].Domain != "app.localhost" || got.Ports[0].Port != 4400 {
+		t.Fatalf("unexpected ports: %+v", got.Ports)
+	}
+}
+
+func TestLsHelpGroupsAllAlias(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := Ls([]string{"-h"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Ls -h exit = %d, stderr=%s", code, errb.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, "-a, --all") {
+		t.Fatalf("help should group shorthand with long flag:\n%s", s)
+	}
+}
+
 func TestRunInjectsPort(t *testing.T) {
 	setupProject(t)
 	var out, errb bytes.Buffer

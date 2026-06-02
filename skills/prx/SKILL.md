@@ -40,7 +40,7 @@ fi
 | `prx up [--json] [--dns localhost\|hosts]` | reserve/allocate ports, reflect DNS, push routes |
 | `prx down [--json]` | deactivate this project's routes (reservations kept) |
 | `prx ls [--json]` | list reservations with live/down status |
-| `prx port <service> [--json]` | print the reserved port (for scripts) |
+| `prx port [service] [-a|--all] [--json]` | print one service port, or list reserved ports |
 | `prx run <service> -- <cmd...>` | run a command with `PORT` injected |
 | `prx add <domain> <port> [--json]` | reserve a domain→port mapping |
 | `prx rm <domain> [--json]` | remove a reservation |
@@ -69,6 +69,13 @@ Get a port for a script:
 
 ```bash
 PORT=$("$PRX_BIN" port web) pnpm dev
+```
+
+List reserved ports:
+
+```bash
+"$PRX_BIN" port
+"$PRX_BIN" port -a   # all projects
 ```
 
 Inspect mappings as JSON:
