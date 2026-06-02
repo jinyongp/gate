@@ -1,4 +1,4 @@
-# gate Specification
+# Specification
 
 `gate` is a local-development HTTPS reverse proxy and port registry, shipped as a
 single Go binary. It maps local domains to local dev servers, keeps domain and
@@ -99,7 +99,6 @@ root, the user's home directory, or the filesystem root.
 ```toml
 [project]
 name = "myapp"
-env_files = [".env.local"]
 
 [services.web]
 domain = "app.localhost"
@@ -111,18 +110,8 @@ port = 3001
 
 ### Service
 
-A service maps one domain to one upstream port.
-
-| Field | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `domain` | string | required | Hostname gate routes. Canonicalized as lowercase without trailing dot. |
-| `port` | integer or env string | auto-allocate | Local upstream port. `0` or omitted means allocate from the default pool. |
-| `tls` | `internal` or `acme` | `internal` | Certificate provider for the domain. |
-| `acme_dns` | string | required for `acme` | DNS-01 provider key. |
-
-`domain` and `port` can include environment references through `${NAME}` or
-`${NAME:-fallback}`. Values come from the process environment first, then
-`[project].env_files` entries when the variable is not already set.
+A service maps one domain to one upstream port. If a service does not specify a
+port, gate allocates one from the default pool and stores the reservation.
 
 ### Reservation
 
@@ -152,12 +141,55 @@ is listening.
 
 ---
 
-## 4. Storage Layout
+## 4. Project Configuration
+
+`gate.toml` is intentionally small. The common case is a project name plus one
+or more service domains. Environment-backed values are available for projects
+that need per-developer domains or ports, but they are not required for ordinary
+local routing.
+
+### Project Fields
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `name` | string | required | Stable project key used in registry ownership such as `myapp/web`. |
+| `env_files` | string array | empty | Dotenv files used only for environment interpolation in service fields. |
+
+`env_files` entries are resolved relative to `gate.toml`. Missing files are
+ignored. Process environment values win over dotenv values, and earlier dotenv
+files win over later ones.
+
+### Service Fields
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `domain` | string | required | Hostname gate routes. Canonicalized as lowercase without trailing dot. |
+| `port` | integer or env string | auto-allocate | Local upstream port. `0` or omitted means allocate from the default pool. |
+| `tls` | `internal` or `acme` | `internal` | Certificate provider for the domain. |
+| `acme_dns` | string | required for `acme` | DNS-01 provider key. |
+
+`domain` and `port` can include environment references through `${NAME}` or
+`${NAME:-fallback}`. `${NAME}` is required and fails if unset. `${NAME:-fallback}`
+uses the fallback when the variable is unset or empty.
+
+```toml
+[project]
+name = "myapp"
+env_files = [".env.local", ".env"]
+
+[services.web]
+domain = "${WEB_DOMAIN:-app.localhost}"
+port = "${WEB_PORT:-3000}"
+```
+
+---
+
+## 5. Storage Layout
 
 ```mermaid
 flowchart LR
     project["Project repo"]
-    gatetoml["gate.toml<br/>human-owned"]
+    gatetoml["gate.toml<br/>user-owned"]
     cfgdir["Config dir<br/>~/.config/gate"]
     registry["registry.json<br/>tool-owned"]
     sock["gate.sock<br/>admin socket"]
@@ -175,7 +207,7 @@ flowchart LR
 
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |
-| `gate.toml` | Human and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |
+| `gate.toml` | user and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |
 | `registry.json` | gate only | JSON | Machine-wide reservations. Uses schema versioning, advisory file locking, and atomic write by temp file + rename. |
 | Admin socket | daemon | Unix socket | CLI talks to daemon over a local HTTP API. |
 | CA material | gate | PEM files | Root key is private local state and must not be copied. Export only the root certificate. |
@@ -203,7 +235,7 @@ Registry schema:
 
 ---
 
-## 5. Port Management
+## 6. Port Management
 
 The default allocation pool is owned by `internal/port`. When a service omits
 `port`, gate chooses an available port that is not already reserved and is not
@@ -238,7 +270,7 @@ Rules:
 
 ---
 
-## 6. DNS Modes
+## 7. DNS Modes
 
 | Mode | When used | Permission | Behavior |
 | --- | --- | --- | --- |
@@ -258,7 +290,7 @@ failures return exit code `3`.
 
 ---
 
-## 7. TLS
+## 8. TLS
 
 ```mermaid
 flowchart TB
@@ -306,7 +338,7 @@ acme_dns = "cloudflare"
 
 ---
 
-## 8. Proxy Behavior
+## 9. Proxy Behavior
 
 ```mermaid
 sequenceDiagram
@@ -347,7 +379,7 @@ Implementation notes:
 
 ---
 
-## 9. Daemon and Admin Socket
+## 10. Daemon and Admin Socket
 
 The daemon owns the front proxy listeners. The CLI controls it over a Unix-domain
 socket.
@@ -383,27 +415,29 @@ conflict.
 
 ---
 
-## 10. Command Surface
+## 11. Command Surface
 
 | Command | Purpose | Data mode |
 | --- | --- | --- |
-| `gate init` | Scaffold a starter `gate.toml`. | human |
-| `gate up [-d]` | Reserve ports, reflect DNS, activate routes, optionally start daemon. | human / JSON |
-| `gate down` | Deactivate current project routes and preserve reservations. | human / JSON |
-| `gate ls [-a] [--status live|down]` | List reservations and liveness. | human / JSON |
-| `gate port [service]` | Print one port or list reserved ports. | human / JSON |
-| `gate add <domain> <port>` | Add a project service or standalone reservation. | human / JSON |
-| `gate rm <domain>` | Remove a domain reservation and project service block when applicable. | human / JSON |
-| `gate rm --project [name]` | Remove project reservations. | human / JSON |
-| `gate prune` | Remove reservations whose owning config no longer exists. | human / JSON |
+| `gate init [-y] [--name name] [--force]` | Scaffold a starter `gate.toml`. | text / json |
+| `gate up [-d\|--daemon] [--dns localhost\|hosts] [--https-addr addr] [--http-addr addr]` | Reserve ports, reflect DNS, activate routes, optionally start daemon. | text / json |
+| `gate down` | Deactivate current project routes and preserve reservations. | text / json |
+| `gate ls [-a] [--status live\|down]` | List reservations and liveness. | text / json |
+| `gate port [service] [-a\|--all]` | Print one port or list reserved ports. | text / json |
+| `gate add <domain> <port>` | Add a project service or standalone reservation. | text / json |
+| `gate rm <domain>` | Remove a domain reservation and project service block when applicable. | text / json |
+| `gate rm --project [name]` | Remove project reservations. | text / json |
+| `gate prune` | Remove reservations whose owning config no longer exists. | text / json |
 | `gate run <service> -- <cmd>` | Run a child command with `PORT` injected. | child stdio |
-| `gate daemon start|stop|restart|status|logs` | Manage the resident proxy. | human / JSON where applicable |
-| `gate trust` | Install the local root CA into trust stores. | human / JSON |
-| `gate ca export` | Export the local root certificate. | human |
-| `gate expose <service> --via <provider>` | Expose a project service through a provider. | human / JSON |
+| `gate daemon start [--https-addr addr] [--http-addr addr]` | Start the resident proxy. | text |
+| `gate daemon stop\|restart\|logs` | Stop, restart, or print logs for the resident proxy. | text |
+| `gate daemon status` | Print daemon status. | text / json |
+| `gate trust` | Install the local root CA into trust stores. | text |
+| `gate ca export` | Export the local root certificate. | text |
+| `gate expose <service> --via <provider> [--auth user:pass]` | Expose a project service through a provider. | text / json |
 | `gate completion <shell>` | Print shell completion. | script |
-| `gate upgrade` | Upgrade to the latest release. | human |
-| `gate skill path|print` | Locate or print the bundled agent skill. | human |
+| `gate upgrade [-y\|--yes]` | Upgrade to the latest release. | text |
+| `gate skill path\|print` | Locate or print the bundled agent skill. | text |
 
 Exit codes:
 
@@ -417,16 +451,16 @@ Exit codes:
 
 ---
 
-## 11. Output Contract
+## 12. Output Contract
 
 ```mermaid
 flowchart TD
     cmd["command result"]
     json{"--json?"}
     tty{"stdout is TTY<br/>and NO_COLOR unset?"}
-    data["stdout: single JSON object/array"]
-    rich["stdout: styled human output"]
-    plain["stdout: plain human output"]
+    data["stdout: single json object/array"]
+    rich["stdout: styled text output"]
+    plain["stdout: plain text output"]
     diag["stderr: diagnostics, warnings, logs"]
 
     cmd --> json
@@ -453,7 +487,7 @@ not affect non-TTY or JSON behavior.
 
 ---
 
-## 12. Exposure Providers
+## 13. Exposure Providers
 
 ```mermaid
 flowchart LR
@@ -483,7 +517,7 @@ the proxy's loopback guard.
 
 ---
 
-## 13. Security Model
+## 14. Security Model
 
 ```mermaid
 flowchart TB
@@ -524,7 +558,7 @@ Other security properties:
 
 ---
 
-## 14. Package Architecture
+## 15. Package Architecture
 
 ```mermaid
 flowchart TB
@@ -564,7 +598,7 @@ flowchart TB
 | Package | Responsibility |
 | --- | --- |
 | `cmd/gate` | Entrypoint, cobra root command, subcommand dispatch, top-level usage. |
-| `internal/cli` | Command parsing, command orchestration, human/JSON output, exit codes. |
+| `internal/cli` | Command parsing, command orchestration, text/json output, exit codes. |
 | `internal/ui` | TTY-only styling helpers. Presentation tier only. |
 | `internal/paths` | XDG/macOS config, data, state, and runtime path resolution. |
 | `internal/config` | `gate.toml` discovery, parsing, validation, env interpolation, surgical editing. |
@@ -589,7 +623,7 @@ Dependency policy:
 
 ---
 
-## 15. Development Gates
+## 16. Development Gates
 
 The project command runner is `just`.
 
@@ -597,8 +631,8 @@ The project command runner is `just`.
 | --- | --- |
 | `just build` | Build `bin/gate`. |
 | `just test` | Run `go test -race ./...`. |
-| `just lint-json` | Emit structured lint diagnostics on stdout and human text on stderr. |
-| `just lint` | Run human lint output. |
+| `just lint-json` | Emit structured lint diagnostics on stdout and text diagnostics on stderr. |
+| `just lint` | Run text lint output. |
 | `just vuln` | Run `govulncheck ./...`. |
 | `just check` | Run tests, lint, and vulnerability scan. Must pass before PR. |
 | `just fmt` | Run gofmt and goimports. |
@@ -615,7 +649,7 @@ Validation priorities:
 
 ---
 
-## 16. Current TUI Scope
+## 17. Current TUI Scope
 
 The previous TUI documents were planning artifacts. The current implemented
 scope is intentionally smaller and is now part of this spec:
@@ -631,4 +665,4 @@ scope is intentionally smaller and is now part of this spec:
 
 If fullscreen or interactive TUI features are added later, they must be specified
 in this file before implementation and must preserve the output contract in
-section 11.
+section 12.

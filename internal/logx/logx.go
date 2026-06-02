@@ -1,4 +1,4 @@
-// Package logx builds gate's loggers on top of stdlib log/slog: a human handler
+// Package logx builds gate's loggers on top of stdlib log/slog: a text handler
 // (coloured on a TTY, plain logfmt otherwise) and the stdlib JSON handler for
 // JSONL output. It also provides access logging and size-based rotation.
 package logx
@@ -21,7 +21,7 @@ const (
 	FormatJSON = "json"
 )
 
-// New returns a logger writing to w. format is "text" (human) or "json" (JSONL).
+// New returns a logger writing to w. format is "text" or "json" (JSONL).
 func New(w io.Writer, format string, level slog.Level) *slog.Logger {
 	if format == FormatJSON {
 		return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level}))

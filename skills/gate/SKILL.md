@@ -36,25 +36,27 @@ fi
 
 | command | purpose |
 | --- | --- |
-| `gate init [--json] [--name name] [--force]` | scaffold a starter `gate.toml` |
-| `gate up [--json] [--dns localhost\|hosts]` | reserve/allocate ports, reflect DNS, push routes |
+| `gate init [--json] [--name name] [--force] [-y\|--yes]` | scaffold a starter `gate.toml` |
+| `gate up [--json] [-d\|--daemon] [--dns localhost\|hosts] [--https-addr addr] [--http-addr addr]` | reserve/allocate ports, reflect DNS, push routes |
 | `gate down [--json]` | deactivate this project's routes (reservations kept) |
-| `gate ls [--json]` | list reservations with live/down status |
-| `gate port [service] [-a|--all] [--json]` | print one service port, or list reserved ports |
+| `gate ls [-a\|--all] [--status live\|down] [--json]` | list reservations with live/down status |
+| `gate port [service] [-a\|--all] [--json]` | print one service port, or list reserved ports |
 | `gate run <service> -- <cmd...>` | run a command with `PORT` injected |
 | `gate add <domain> <port> [--json]` | reserve a domain→port mapping |
-| `gate rm <domain> [--json]` | remove a reservation |
+| `gate rm <domain> [--json]` / `gate rm --project [name] [--json]` | remove a reservation or project reservations |
 | `gate prune [--json]` | GC reservations whose gate.toml is gone |
-| `gate daemon start\|stop\|restart\|status [--json]\|logs` | manage the resident proxy; `--json` is for `status` |
+| `gate daemon start [--https-addr addr] [--http-addr addr]` | start the resident proxy |
+| `gate daemon stop\|restart\|logs` | stop, restart, or print logs for the resident proxy |
+| `gate daemon status [--json]` | inspect the resident proxy |
 | `gate trust` | install the root CA (one time) |
 | `gate ca export [--out path]` | export the root CA for other devices |
 | `gate expose <service> --via <provider> [--auth user:pass] [--json]` | reach a service externally |
-| `gate upgrade [--yes]` | upgrade to the latest GitHub release |
+| `gate upgrade [-y\|--yes]` | upgrade to the latest GitHub release |
 | `gate skill path\|print` | locate or print this skill file |
 
 ## Exit codes
 
-`0` ok · `1` error · `2` usage · `3` permission (needs sudo) · `4` port/domain conflict.
+`0` ok · `1` error · `2` usage · `3` permission (needs sudo) · `4` port/domain/daemon-listen conflict.
 
 ## Recipes
 
@@ -112,12 +114,12 @@ name = "myapp"
 env_files = [".env.local", ".env"]
 
 [services.web]
-domain = "${GATE_WEB_DOMAIN:-app.localhost}"
-port = "${GATE_WEB_PORT:-3000}"
+domain = "${WEB_DOMAIN:-app.localhost}"
+port = "${WEB_PORT:-3000}"
 
 [services.api]
-domain = "api.${GATE_BASE_DOMAIN:-localhost}"
-port = "${GATE_API_PORT}"
+domain = "api.${BASE_DOMAIN:-localhost}"
+port = "${API_PORT}"
 ```
 
 `env_files` are resolved relative to `gate.toml`. Missing env files are ignored.

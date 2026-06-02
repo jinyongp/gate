@@ -520,4 +520,4 @@ left behind.
 | 1 | error |
 | 2 | usage error |
 | 3 | permission required |
-| 4 | port or domain conflict |
+| 4 | port, domain, or daemon-listen conflict |

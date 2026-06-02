@@ -1,4 +1,4 @@
-// Package cli implements gate's command surface and its human/JSON output
+// Package cli implements gate's command surface and its text/json output
 // contract: data on stdout, diagnostics on stderr, a single JSON value under
 // --json, and stable exit codes.
 package cli

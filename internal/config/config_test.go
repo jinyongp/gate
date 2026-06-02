@@ -79,12 +79,12 @@ func TestLoadExpandsServiceEnvFromEnvFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, Filename)
 	writeFile(t, filepath.Join(dir, ".env.local"), `
-GATE_BASE_DOMAIN=local.stamp.is
-GATE_WEB_PORT=4306
+BASE_DOMAIN=local.stamp.is
+WEB_PORT=4306
 `)
 	writeFile(t, filepath.Join(dir, ".env"), `
-GATE_BASE_DOMAIN=wrong.example
-GATE_WEB_PORT=4999
+BASE_DOMAIN=wrong.example
+WEB_PORT=4999
 `)
 	writeFile(t, path, `
 [project]
@@ -92,8 +92,8 @@ name = "myapp"
 env_files = [".env.local", ".env"]
 
 [services.web]
-domain = "web.${GATE_BASE_DOMAIN}"
-port = "${GATE_WEB_PORT}"
+domain = "web.${BASE_DOMAIN}"
+port = "${WEB_PORT}"
 `)
 
 	p, err := Load(path)
@@ -112,8 +112,8 @@ port = "${GATE_WEB_PORT}"
 func TestLoadProcessEnvOverridesEnvFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, Filename)
-	t.Setenv("GATE_WEB_PORT", "5555")
-	writeFile(t, filepath.Join(dir, ".env"), "GATE_WEB_PORT=4306\n")
+	t.Setenv("WEB_PORT", "5555")
+	writeFile(t, filepath.Join(dir, ".env"), "WEB_PORT=4306\n")
 	writeFile(t, path, `
 [project]
 name = "myapp"
@@ -121,7 +121,7 @@ env_files = [".env"]
 
 [services.web]
 domain = "web.localhost"
-port = "${GATE_WEB_PORT}"
+port = "${WEB_PORT}"
 `)
 
 	p, err := Load(path)
@@ -141,8 +141,8 @@ func TestLoadEnvReferenceDefault(t *testing.T) {
 name = "myapp"
 
 [services.web]
-domain = "${GATE_WEB_DOMAIN:-web.localhost}"
-port = "${GATE_WEB_PORT:-4306}"
+domain = "${WEB_DOMAIN:-web.localhost}"
+port = "${WEB_PORT:-4306}"
 `)
 
 	p, err := Load(path)
@@ -165,7 +165,7 @@ func TestLoadMissingEnvReferenceFails(t *testing.T) {
 name = "myapp"
 
 [services.web]
-domain = "${GATE_WEB_DOMAIN}"
+domain = "${WEB_DOMAIN}"
 `)
 
 	if _, err := Load(path); err == nil {
@@ -176,14 +176,14 @@ domain = "${GATE_WEB_DOMAIN}"
 func TestLoadMissingEnvFileUsesProcessEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, Filename)
-	t.Setenv("GATE_WEB_DOMAIN", "web.localhost")
+	t.Setenv("WEB_DOMAIN", "web.localhost")
 	writeFile(t, path, `
 [project]
 name = "myapp"
 env_files = [".env.missing"]
 
 [services.web]
-domain = "${GATE_WEB_DOMAIN}"
+domain = "${WEB_DOMAIN}"
 `)
 
 	p, err := Load(path)

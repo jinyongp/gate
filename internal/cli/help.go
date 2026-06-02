@@ -24,7 +24,7 @@ type CmdSpec struct {
 var Specs = []CmdSpec{
 	{"init", "", "scaffold a starter gate.toml in the current directory"},
 	{"up", "", "bring up the current project: reserve ports, render routes, reload"},
-	{"down", "", "tear down the current project's routes and free its ports"},
+	{"down", "", "tear down the current project's routes and keep reservations"},
 	{"ls", "", "list current project reservations with live/down status"},
 	{"port", "[service]", "print one service port, or list reserved ports"},
 	{"add", "<domain> <port>", "reserve a port for a domain in the current project"},

@@ -131,12 +131,12 @@ name = "my-project"
 env_files = [".env.local", ".env"]
 
 [services.web]
-domain = "${GATE_WEB_DOMAIN:-app.example.localhost}"
-port = "${GATE_WEB_PORT:-3000}"
+domain = "${WEB_DOMAIN:-app.example.localhost}"
+port = "${WEB_PORT:-3000}"
 
 [services.api]
-domain = "api.${GATE_BASE_DOMAIN:-example.localhost}"
-port = "${GATE_API_PORT}"
+domain = "api.${BASE_DOMAIN:-example.localhost}"
+port = "${API_PORT}"
 ```
 
 `env_files` are resolved relative to `gate.toml`. Missing files are ignored, so

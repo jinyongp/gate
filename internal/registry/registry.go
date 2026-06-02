@@ -1,5 +1,5 @@
 // Package registry persists the machine-wide domain↔port↔service reservations.
-// The registry is tool-owned (humans use the CLI, not the file). Concurrent
+// The registry is tool-owned (users use the CLI, not the file). Concurrent
 // access is serialised with an advisory file lock and written atomically; see
 // store.go. This file holds the schema and the pure, IO-free operations.
 package registry
