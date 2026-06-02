@@ -400,7 +400,7 @@ func Add(args []string, stdout, stderr io.Writer) int {
 func addStandalone(res registry.Reservation, stdout, stderr io.Writer, jsonOut bool) int {
 	scope := globalDaemonScope()
 	key := registry.Key(res.Project, res.Service)
-	if err := selectDNSProvider(res.Domain, res.DNS).Ensure(res.Domain); err != nil {
+	if err := ensureDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
 		if os.IsPermission(err) || errors.Is(err, os.ErrPermission) {
 			return fail(stderr, jsonOut, ExitPerm, "permission", err.Error())
 		}
@@ -423,14 +423,14 @@ func addStandalone(res registry.Reservation, stdout, stderr io.Writer, jsonOut b
 	})
 	if err != nil {
 		if !hadPrevious {
-			_ = selectDNSProvider(res.Domain, res.DNS).Remove(res.Domain)
+			_ = removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut)
 		}
 		return addError(stderr, jsonOut, err)
 	}
 	if code := reloadDaemonRoutes(scope, routes, stderr, jsonOut); code != ExitOK {
-		_ = rollbackStandaloneAdd(key, previous, hadPrevious, scope, beforeRoutes)
+		_ = rollbackStandaloneAdd(key, previous, hadPrevious, scope, beforeRoutes, stderr, jsonOut)
 		if !hadPrevious {
-			_ = selectDNSProvider(res.Domain, res.DNS).Remove(res.Domain)
+			_ = removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut)
 		}
 		return code
 	}
@@ -496,7 +496,7 @@ func Rm(args []string, stdout, stderr io.Writer) int {
 				return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
 			}
 			if code := reloadDaemonRoutes(scope, routes, stderr, *jsonOut); code != ExitOK {
-				if rollbackErr := restoreProjectServiceRemoval(path, originalConfig, originalInfo.Mode().Perm(), key, removedRes, hadReservation, scope, beforeRoutes); rollbackErr != nil {
+				if rollbackErr := restoreProjectServiceRemoval(path, originalConfig, originalInfo.Mode().Perm(), key, removedRes, hadReservation, scope, beforeRoutes, stderr, *jsonOut); rollbackErr != nil {
 					return fail(stderr, *jsonOut, ExitError, "rollback_failed", "service removal failed and rollback failed: "+rollbackErr.Error())
 				}
 				return code
@@ -534,11 +534,11 @@ func Rm(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, *jsonOut, ExitError, "not_found", fmt.Sprintf("no reservation for %q", domain))
 	}
 	if code := reloadDaemonRoutes(scope, routes, stderr, *jsonOut); code != ExitOK {
-		_ = restoreReservations([]projectReservation{{Key: registry.Key(removedRes.Project, removedRes.Service), Reservation: removedRes}}, scope, beforeRoutes)
+		_ = restoreReservations([]projectReservation{{Key: registry.Key(removedRes.Project, removedRes.Service), Reservation: removedRes}}, scope, beforeRoutes, stderr, *jsonOut)
 		return code
 	}
-	if err := selectDNSProvider(removedRes.Domain, removedRes.DNS).Remove(removedRes.Domain); err != nil {
-		rollbackErr := restoreReservations([]projectReservation{{Key: registry.Key(removedRes.Project, removedRes.Service), Reservation: removedRes}}, scope, beforeRoutes)
+	if err := removeDomainDNS(removedRes.Domain, removedRes.DNS, stderr, *jsonOut); err != nil {
+		rollbackErr := restoreReservations([]projectReservation{{Key: registry.Key(removedRes.Project, removedRes.Service), Reservation: removedRes}}, scope, beforeRoutes, stderr, *jsonOut)
 		if rollbackErr != nil {
 			return fail(stderr, *jsonOut, ExitError, "rollback_failed", "removal failed and rollback failed: "+rollbackErr.Error())
 		}
@@ -601,7 +601,7 @@ func rmProject(args []string, stdout, stderr io.Writer, jsonOut bool) int {
 		return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
 	}
 	if code := reloadDaemonRoutes(scope, routes, stderr, jsonOut); code != ExitOK {
-		if err := restoreProjectReservations(removed, scope, beforeRoutes); err != nil {
+		if err := restoreProjectReservations(removed, scope, beforeRoutes, stderr, jsonOut); err != nil {
 			return fail(stderr, jsonOut, ExitError, "rollback_failed", "project removal failed and rollback failed: "+err.Error())
 		}
 		return code
@@ -619,9 +619,9 @@ func rmProject(args []string, stdout, stderr io.Writer, jsonOut bool) int {
 func removeProjectDNS(removed []projectReservation, beforeRoutes []proxy.Route, stderr io.Writer, jsonOut bool) int {
 	for i, item := range removed {
 		res := item.Reservation
-		if err := selectDNSProvider(res.Domain, res.DNS).Remove(res.Domain); err != nil {
-			rollbackErr := restoreProjectDNS(removed[:i])
-			rollbackErr = errors.Join(rollbackErr, restoreProjectReservations(removed, projectDaemonScope(res.Project), beforeRoutes))
+		if err := removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
+			rollbackErr := restoreProjectDNS(removed[:i], stderr, jsonOut)
+			rollbackErr = errors.Join(rollbackErr, restoreProjectReservations(removed, projectDaemonScope(res.Project), beforeRoutes, stderr, jsonOut))
 			if rollbackErr != nil {
 				return fail(stderr, jsonOut, ExitError, "rollback_failed", "DNS removal failed and rollback failed: "+rollbackErr.Error())
 			}
@@ -634,29 +634,29 @@ func removeProjectDNS(removed []projectReservation, beforeRoutes []proxy.Route, 
 	return ExitOK
 }
 
-func restoreProjectDNS(removed []projectReservation) error {
+func restoreProjectDNS(removed []projectReservation, stderr io.Writer, jsonOut bool) error {
 	var errs []error
 	for _, item := range removed {
 		res := item.Reservation
-		if err := selectDNSProvider(res.Domain, res.DNS).Ensure(res.Domain); err != nil {
+		if err := ensureDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
 			errs = append(errs, fmt.Errorf("restore DNS %s: %w", res.Domain, err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func restoreProjectReservations(removed []projectReservation, scope daemonScope, routes []proxy.Route) error {
-	return restoreReservations(removed, scope, routes)
+func restoreProjectReservations(removed []projectReservation, scope daemonScope, routes []proxy.Route, stderr io.Writer, jsonOut bool) error {
+	return restoreReservations(removed, scope, routes, stderr, jsonOut)
 }
 
-func restoreProjectServiceRemoval(path string, originalConfig []byte, mode os.FileMode, key string, res registry.Reservation, hadReservation bool, scope daemonScope, routes []proxy.Route) error {
+func restoreProjectServiceRemoval(path string, originalConfig []byte, mode os.FileMode, key string, res registry.Reservation, hadReservation bool, scope daemonScope, routes []proxy.Route, stderr io.Writer, jsonOut bool) error {
 	var errs []error
 	if err := restoreProjectConfig(path, originalConfig, mode); err != nil {
 		errs = append(errs, fmt.Errorf("restore config: %w", err))
 	}
 	if hadReservation {
-		errs = append(errs, restoreReservations([]projectReservation{{Key: key, Reservation: res}}, scope, routes))
-	} else if err := setDaemonRoutesFunc(scope, routes); err != nil {
+		errs = append(errs, restoreReservations([]projectReservation{{Key: key, Reservation: res}}, scope, routes, stderr, jsonOut))
+	} else if err := setDaemonRoutesWithActivity(scope, routes, stderr, jsonOut, "restoring routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
@@ -667,9 +667,9 @@ func restoreProjectConfig(path string, originalConfig []byte, mode os.FileMode) 
 	return os.WriteFile(path, originalConfig, mode)
 }
 
-func rollbackStandaloneAdd(key string, previous registry.Reservation, hadPrevious bool, scope daemonScope, routes []proxy.Route) error {
+func rollbackStandaloneAdd(key string, previous registry.Reservation, hadPrevious bool, scope daemonScope, routes []proxy.Route, stderr io.Writer, jsonOut bool) error {
 	if hadPrevious {
-		return restoreReservations([]projectReservation{{Key: key, Reservation: previous}}, scope, routes)
+		return restoreReservations([]projectReservation{{Key: key, Reservation: previous}}, scope, routes, stderr, jsonOut)
 	}
 	var errs []error
 	if err := registryStore().Update(func(r *registry.Registry) error {
@@ -678,13 +678,13 @@ func rollbackStandaloneAdd(key string, previous registry.Reservation, hadPreviou
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("remove registry: %w", err))
 	}
-	if err := setDaemonRoutesFunc(scope, routes); err != nil {
+	if err := setDaemonRoutesWithActivity(scope, routes, stderr, jsonOut, "restoring routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
 }
 
-func restoreReservations(removed []projectReservation, scope daemonScope, routes []proxy.Route) error {
+func restoreReservations(removed []projectReservation, scope daemonScope, routes []proxy.Route, stderr io.Writer, jsonOut bool) error {
 	var errs []error
 	if err := registryStore().Update(func(r *registry.Registry) error {
 		for _, item := range removed {
@@ -696,17 +696,24 @@ func restoreReservations(removed []projectReservation, scope daemonScope, routes
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("restore registry: %w", err))
 	}
-	if err := setDaemonRoutesFunc(scope, routes); err != nil {
+	if err := setDaemonRoutesWithActivity(scope, routes, stderr, jsonOut, "restoring routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
 }
 
 func reloadDaemonRoutes(scope daemonScope, routes []proxy.Route, stderr io.Writer, jsonOut bool) int {
-	if err := setDaemonRoutesFunc(scope, routes); err != nil {
+	if err := setDaemonRoutesWithActivity(scope, routes, stderr, jsonOut, "reloading routes"); err != nil {
 		return fail(stderr, jsonOut, ExitError, "reload_failed", err.Error())
 	}
 	return ExitOK
+}
+
+func setDaemonRoutesWithActivity(scope daemonScope, routes []proxy.Route, stderr io.Writer, jsonOut bool, label string) error {
+	activity := startActivity(stderr, jsonOut, label)
+	err := setDaemonRoutesFunc(scope, routes)
+	activity.Stop()
+	return err
 }
 
 func setDaemonRoutes(scope daemonScope, routes []proxy.Route) error {
@@ -726,6 +733,44 @@ func setDaemonRoutesForScope(scope daemonScope) error {
 		return err
 	}
 	return setDaemonRoutesFunc(scope, activeRoutesForScope(reg, scope))
+}
+
+func setDaemonRoutesForScopeWithActivity(scope daemonScope, stderr io.Writer, jsonOut bool) error {
+	activity := startActivity(stderr, jsonOut, "reloading routes")
+	err := setDaemonRoutesForScope(scope)
+	activity.Stop()
+	return err
+}
+
+func ensureDomainDNS(domain, mode string, stderr io.Writer, jsonOut bool) error {
+	provider := selectDNSProvider(domain, mode)
+	return runDomainDNS(provider, domain, stderr, jsonOut, "updating DNS", provider.Ensure)
+}
+
+func removeDomainDNS(domain, mode string, stderr io.Writer, jsonOut bool) error {
+	provider := selectDNSProvider(domain, mode)
+	return runDomainDNS(provider, domain, stderr, jsonOut, "updating DNS", provider.Remove)
+}
+
+func runDomainDNS(provider dns.Provider, domain string, stderr io.Writer, jsonOut bool, label string, fn func(string) error) error {
+	if !dnsActivityAllowed(provider) {
+		return fn(domain)
+	}
+	activity := startActivity(stderr, jsonOut, label)
+	err := fn(domain)
+	activity.Stop()
+	return err
+}
+
+func dnsActivityAllowed(provider dns.Provider) bool {
+	switch p := provider.(type) {
+	case dns.Localhost:
+		return false
+	case dns.Hosts:
+		return p.Path != "/etc/hosts"
+	default:
+		return true
+	}
 }
 
 func reservationByDomain(reg *registry.Registry, domain string) (registry.Reservation, bool) {

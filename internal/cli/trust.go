@@ -16,6 +16,7 @@ import (
 var (
 	trustAuthorityFunc   = func(authority *ca.CA) error { return authority.Trust() }
 	untrustAuthorityFunc = func(authority *ca.CA) error { return authority.Untrust() }
+	exposeProviderFor    = expose.For
 )
 
 // Trust installs the root CA into the OS and browser trust stores.
@@ -24,7 +25,9 @@ func Trust(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "trust", args, stdout, stderr); handled {
 		return code
 	}
+	activity := startActivity(stderr, false, "preparing trust store")
 	authority, err := ca.Load(paths.DataDir())
+	activity.Stop()
 	if err != nil {
 		return fail(stderr, false, ExitError, "ca", err.Error())
 	}
@@ -44,7 +47,9 @@ func Untrust(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "untrust", args, stdout, stderr); handled {
 		return code
 	}
+	activity := startActivity(stderr, false, "preparing trust store")
 	authority, err := ca.LoadCertificate(paths.DataDir())
+	activity.Stop()
 	if errors.Is(err, ca.ErrNotFound) {
 		fmt.Fprintln(stdout, "root CA not found; nothing to untrust")
 		return ExitOK
@@ -112,14 +117,21 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	if !ok {
 		return fail(stderr, *jsonOut, ExitError, "no_service", fmt.Sprintf("no service %q", svc))
 	}
-	provider, err := expose.For(*via)
+	provider, err := exposeProviderFor(*via)
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_provider", err.Error())
 	}
 	if *auth == "" && *via != "local" {
 		fmt.Fprintln(stderr, "warning: exposing without --auth; anyone with the URL can reach your dev server")
 	}
+	var activity activityHandle
+	if exposeActivityAllowed(*via) {
+		activity = startActivity(stderr, *jsonOut, "starting tunnel")
+	}
 	url, err := provider.Expose(context.Background(), service.Domain, expose.Opts{Auth: *auth})
+	if activity != nil {
+		activity.Stop()
+	}
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitError, "expose_failed", err.Error())
 	}
@@ -138,7 +150,7 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 					routes[i].Auth = *auth
 				}
 			}
-			if serr := client.SetRoutes(routes); serr != nil {
+			if serr := setDaemonRoutesWithActivity(scope, routes, stderr, *jsonOut, "reloading routes"); serr != nil {
 				return fail(stderr, *jsonOut, ExitError, "reload_failed", serr.Error())
 			}
 		}
@@ -149,4 +161,8 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "%s exposed via %s\n  %s -> %s\n", svc, *via, url, service.Domain)
 	return ExitOK
+}
+
+func exposeActivityAllowed(via string) bool {
+	return via == expose.ProviderCloudflared || via == expose.ProviderTailscale
 }

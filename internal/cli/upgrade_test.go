@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -14,6 +17,12 @@ import (
 	"gate/internal/proxy"
 	"gate/internal/registry"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
 	oldRestart := restartDaemonAfterUpgradeFunc
@@ -186,6 +195,87 @@ func TestRestartDaemonAfterUpgradeReloadsScopedRoutes(t *testing.T) {
 		t.Fatal("daemon pid did not change after restart")
 	}
 	_ = stopDaemonProcess(daemonClientFor(scope), newStatus.PID, 2*time.Second)
+}
+
+func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {
+	events := recordActivities(t)
+	oldClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+	http.DefaultClient = &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader("echo upgraded\n")),
+			}, nil
+		}),
+	}
+
+	var errb bytes.Buffer
+	path, err := prepareUpgradeScript(context.Background(), &errb)
+	if err != nil {
+		t.Fatalf("prepareUpgradeScript: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(path) })
+	if got := lastEvent(*events); got != "stop:downloading installer" {
+		t.Fatalf("installer handoff happened before activity stopped; events=%v", *events)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("script missing: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("script is not executable: %v", info.Mode().Perm())
+	}
+}
+
+func TestConfirmUpgradeFallbackNormalizesAnswers(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{input: "\n", want: true},
+		{input: "y\n", want: true},
+		{input: "yes\n", want: true},
+		{input: "n\n", want: false},
+		{input: "no\n", want: false},
+	}
+	for _, tc := range cases {
+		var out bytes.Buffer
+		got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader(tc.input)), &out, "dev", "v1.0.0")
+		if err != nil {
+			t.Fatalf("confirmUpgradePrompt(%q): %v", tc.input, err)
+		}
+		if got != tc.want {
+			t.Fatalf("confirmUpgradePrompt(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+		if strings.Contains(out.String(), "[Y/n]") {
+			t.Fatalf("upgrade prompt used legacy y/n prompt: %q", out.String())
+		}
+	}
+}
+
+func TestConfirmUpgradeFallbackEOFDeclines(t *testing.T) {
+	var out bytes.Buffer
+	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("")), &out, "dev", "v1.0.0")
+	if err == nil {
+		t.Fatal("confirmUpgradePrompt should report EOF")
+	}
+	if got {
+		t.Fatal("EOF should decline upgrade")
+	}
+}
+
+func TestPrintUpgradeCancelledUsesFailureMarker(t *testing.T) {
+	var out bytes.Buffer
+	printUpgradeCancelled(&out)
+	got := out.String()
+	if !strings.Contains(got, "✗ upgrade cancelled") {
+		t.Fatalf("cancel output = %q", got)
+	}
+	if strings.Contains(got, "✓") {
+		t.Fatalf("cancel output used success marker: %q", got)
+	}
 }
 
 func startHelperAdminDaemon(t *testing.T, scope daemonScope) *exec.Cmd {

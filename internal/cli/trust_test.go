@@ -35,6 +35,47 @@ func TestUntrustDoesNotGenerateMissingCA(t *testing.T) {
 	}
 }
 
+func TestTrustStopsActivityBeforeTrustStoreCall(t *testing.T) {
+	isolate(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	events := recordActivities(t)
+	oldTrust := trustAuthorityFunc
+	t.Cleanup(func() { trustAuthorityFunc = oldTrust })
+	trustAuthorityFunc = func(*ca.CA) error {
+		if got := lastEvent(*events); got != "stop:preparing trust store" {
+			t.Fatalf("trust store called before activity stopped; events=%v", *events)
+		}
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Trust(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Trust exit = %d, stderr=%s", code, errb.String())
+	}
+}
+
+func TestUntrustStopsActivityBeforeTrustStoreCall(t *testing.T) {
+	isolate(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	if _, err := ca.Load(paths.DataDir()); err != nil {
+		t.Fatal(err)
+	}
+	events := recordActivities(t)
+	oldUntrust := untrustAuthorityFunc
+	t.Cleanup(func() { untrustAuthorityFunc = oldUntrust })
+	untrustAuthorityFunc = func(*ca.CA) error {
+		if got := lastEvent(*events); got != "stop:preparing trust store" {
+			t.Fatalf("trust store called before activity stopped; events=%v", *events)
+		}
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Untrust(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Untrust exit = %d, stderr=%s", code, errb.String())
+	}
+}
+
 func TestUntrustRemovesExistingCA(t *testing.T) {
 	isolate(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())

@@ -134,9 +134,11 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "already running · scope %s · https %s · http %s\n", scope.String(), displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
+	activity := startActivity(stderr, false, "starting daemon")
 	result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), *httpsAddr, *httpAddr), client, scope)
+	activity.Stop()
 	if result.Code == ExitOK {
-		if err := setDaemonRoutesForScope(scope); err != nil {
+		if err := setDaemonRoutesForScopeWithActivity(scope, stderr, false); err != nil {
 			cleanupStartedDaemon(client, scope, result.PID)
 			return fail(stderr, false, ExitError, "reload_failed", err.Error())
 		}
@@ -166,19 +168,22 @@ func daemonRestart(args []string, stdout, stderr io.Writer) int {
 
 	httpsSet, httpSet := flagSet(fs, "https-addr"), flagSet(fs, "http-addr")
 	client := daemonClientFor(scope)
+	activity := startActivity(stderr, false, "restarting daemon")
 	st, running := client.Status()
 	if running == nil {
 		*httpsAddr, *httpAddr = restartListenAddrs(st, *httpsAddr, *httpAddr, httpsSet, httpSet)
 		if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
+			activity.Stop()
 			return fail(stderr, false, ExitError, "restart", err.Error())
 		}
 	}
 
 	result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), *httpsAddr, *httpAddr), client, scope)
+	activity.Stop()
 	if result.Code != ExitOK {
 		return fail(stderr, false, result.Code, "restart", result.Message)
 	}
-	if err := setDaemonRoutesForScope(scope); err != nil {
+	if err := setDaemonRoutesForScopeWithActivity(scope, stderr, false); err != nil {
 		cleanupStartedDaemon(client, scope, result.PID)
 		return fail(stderr, false, ExitError, "reload_failed", err.Error())
 	}

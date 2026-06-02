@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"gate/internal/dns"
+	"gate/internal/expose"
 	"gate/internal/proxy"
 	"gate/internal/registry"
 )
@@ -168,6 +169,72 @@ func TestTrailingJSONFlag(t *testing.T) {
 	}
 	if gotPort.Service != "a.localhost" || gotPort.Port != 4312 || !gotPort.Standalone {
 		t.Fatalf("port json = %+v", gotPort)
+	}
+}
+
+func TestJSONCommandsDoNotEmitIndicatorBytes(t *testing.T) {
+	setupUpProject(t)
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up --json exit = %d, stderr=%s", code, errb.String())
+	}
+	assertNoIndicatorBytes(t, "up stderr", errb.String())
+
+	out.Reset()
+	errb.Reset()
+	if code := Down([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Down --json exit = %d, stderr=%s", code, errb.String())
+	}
+	assertNoIndicatorBytes(t, "down stderr", errb.String())
+
+	out.Reset()
+	errb.Reset()
+	if code := Expose([]string{"web", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose --json exit = %d, stderr=%s", code, errb.String())
+	}
+	assertNoIndicatorBytes(t, "expose stderr", errb.String())
+
+	isolate(t)
+	out.Reset()
+	errb.Reset()
+	if code := Add([]string{"--json", "standalone.localhost", "4312"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Add --json exit = %d, stderr=%s", code, errb.String())
+	}
+	assertNoIndicatorBytes(t, "add stderr", errb.String())
+
+	out.Reset()
+	errb.Reset()
+	if code := Rm([]string{"--json", "standalone.localhost"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Rm --json exit = %d, stderr=%s", code, errb.String())
+	}
+	assertNoIndicatorBytes(t, "rm stderr", errb.String())
+}
+
+func TestPromptCapableActivityGates(t *testing.T) {
+	if dnsActivityAllowed(dns.DefaultHosts()) {
+		t.Fatal("system hosts DNS must not run an activity across sudo-capable writes")
+	}
+	if !dnsActivityAllowed(dns.Hosts{Path: filepath.Join(t.TempDir(), "hosts")}) {
+		t.Fatal("test/local hosts file should allow DNS activity")
+	}
+	if !dnsActivityAllowed(fakeDNSProvider{}) {
+		t.Fatal("mock DNS provider should allow activity")
+	}
+	if exposeActivityAllowed(expose.ProviderLocal) {
+		t.Fatal("local expose should not use activity")
+	}
+	if exposeActivityAllowed(expose.ProviderLAN) {
+		t.Fatal("LAN expose should not use activity")
+	}
+	if !exposeActivityAllowed(expose.ProviderCloudflared) || !exposeActivityAllowed(expose.ProviderTailscale) {
+		t.Fatal("external expose providers should use activity")
+	}
+}
+
+func assertNoIndicatorBytes(t *testing.T, label, s string) {
+	t.Helper()
+	if strings.Contains(s, "\r") || strings.Contains(s, "\033[") {
+		t.Fatalf("%s contains indicator control bytes: %q", label, s)
 	}
 }
 

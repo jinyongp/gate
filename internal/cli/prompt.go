@@ -14,6 +14,8 @@ import (
 	"golang.org/x/term"
 )
 
+var errPromptInterrupted = errors.New("interrupted")
+
 func promptString(reader *bufio.Reader, stdout io.Writer, label, def string) (string, error) {
 	return promptInput(reader, stdout, promptInputSpec{
 		Label:       label,
@@ -148,7 +150,7 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 				return result, err
 			}
 		case r == 0x03:
-			return "", errors.New("interrupted")
+			return "", errPromptInterrupted
 		case r == 0x04:
 			if value == "" {
 				return "", io.EOF
@@ -303,7 +305,7 @@ func promptChoiceRadio(stdout io.Writer, label, def string, allowed []string) (s
 			fmt.Fprint(stdout, "\r\n")
 			return allowed[selected], nil
 		case r == 0x03:
-			return "", errors.New("interrupted")
+			return "", errPromptInterrupted
 		case r == 0x1b:
 			next, _, err := input.ReadRune()
 			if err != nil {

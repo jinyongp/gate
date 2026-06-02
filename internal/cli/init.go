@@ -57,6 +57,10 @@ func Init(args []string, stdout, stderr io.Writer) int {
 		}
 		spec, err = promptInitSpec(stdout, *name)
 		if err != nil {
+			if errors.Is(err, errPromptInterrupted) && !*jsonOut {
+				printCancelled(stdout, "init")
+				return ExitOK
+			}
 			return fail(stderr, *jsonOut, ExitError, "init", err.Error())
 		}
 	}

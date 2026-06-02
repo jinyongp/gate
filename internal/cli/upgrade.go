@@ -49,7 +49,9 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	activity := startActivity(stderr, false, "checking latest release")
 	latestTag, err := latestReleaseTag(ctx)
+	activity.Stop()
 	if err != nil {
 		printUpgradeWarning(stderr, "unable to check latest version: "+err.Error())
 	}
@@ -66,54 +68,75 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !yes && !confirmUpgrade(stdout, currentVersion, latestTag) {
-		printUpgradeStatus(stdout, "upgrade canceled")
+		printUpgradeCancelled(stdout)
 		return ExitOK
 	}
 
 	daemonsBefore := daemonStatusesBeforeUpgrade()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upgradeScriptURL, nil)
-	if err != nil {
-		return fail(stderr, false, ExitError, "upgrade", err.Error())
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fail(stderr, false, ExitError, "upgrade", "failed to download install script: "+err.Error())
-	}
-	defer func() {
-		_ = res.Body.Close()
-	}()
-
-	if res.StatusCode != http.StatusOK {
-		return fail(stderr, false, ExitError, "upgrade", fmt.Sprintf("failed to download install script: %s", res.Status))
-	}
-
-	script, err := os.CreateTemp("", "gate-upgrade-*.sh")
+	scriptPath, err := prepareUpgradeScript(ctx, stderr)
 	if err != nil {
 		return fail(stderr, false, ExitError, "upgrade", err.Error())
 	}
 	defer func() {
-		_ = os.Remove(script.Name())
+		_ = os.Remove(scriptPath)
 	}()
-
-	if _, err := io.Copy(script, res.Body); err != nil {
-		return fail(stderr, false, ExitError, "upgrade", err.Error())
-	}
-	if err := script.Chmod(0o755); err != nil {
-		return fail(stderr, false, ExitError, "upgrade", err.Error())
-	}
-	if err := script.Close(); err != nil {
-		return fail(stderr, false, ExitError, "upgrade", err.Error())
-	}
 
 	//nolint:gosec // G204: executing trusted, repo-fixed upgrade script.
-	cmd := exec.Command("sh", script.Name())
+	cmd := exec.Command("sh", scriptPath)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		return fail(stderr, false, ExitError, "upgrade", err.Error())
 	}
 	return completeUpgrade(stdout, stderr, daemonsBefore)
+}
+
+func prepareUpgradeScript(ctx context.Context, stderr io.Writer) (string, error) {
+	activity := startActivity(stderr, false, "downloading installer")
+	defer activity.Stop()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upgradeScriptURL, nil)
+	if err != nil {
+		return "", err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download install script: %w", err)
+	}
+	defer func() {
+		_ = res.Body.Close()
+	}()
+
+	if res.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download install script: %s", res.Status)
+	}
+
+	script, err := os.CreateTemp("", "gate-upgrade-*.sh")
+	if err != nil {
+		return "", err
+	}
+	scriptPath := script.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(scriptPath)
+		}
+	}()
+
+	if _, err := io.Copy(script, res.Body); err != nil {
+		_ = script.Close()
+		return "", err
+	}
+	if err := script.Chmod(0o755); err != nil {
+		_ = script.Close()
+		return "", err
+	}
+	if err := script.Close(); err != nil {
+		return "", err
+	}
+	cleanup = false
+	return scriptPath, nil
 }
 
 func daemonStatusesBeforeUpgrade() []daemon.Status {
@@ -169,7 +192,9 @@ func completeUpToDate(stdout, stderr io.Writer, version string, daemonsBefore []
 func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 	scope := scopeFromDaemonStatus(st)
 	client := daemonClientFor(scope)
+	activity := startActivity(stderr, false, "restarting daemon")
 	if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
+		activity.Stop()
 		return fail(stderr, false, ExitError, "upgrade", "failed to restart daemon: "+err.Error())
 	}
 
@@ -177,12 +202,15 @@ func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 	httpAddr := restartListenAddr(st.HTTPAddr, defaultDaemonHTTPAddr)
 	result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), httpsAddr, httpAddr), client, scope)
 	if result.Code != ExitOK {
+		activity.Stop()
 		return fail(stderr, false, result.Code, "upgrade", "failed to restart daemon: "+result.Message)
 	}
 	if err := setDaemonRoutesForScope(scope); err != nil {
 		cleanupStartedDaemon(client, scope, result.PID)
+		activity.Stop()
 		return fail(stderr, false, ExitError, "upgrade", "failed to reload daemon routes: "+err.Error())
 	}
+	activity.Stop()
 	fmt.Fprintf(stdout, "daemon restarted · pid %d · https %s · http %s\n", result.PID, httpsAddr, httpAddr)
 	return ExitOK
 }
@@ -223,6 +251,10 @@ func printUpgradeStatus(stdout io.Writer, msg string) {
 	fmt.Fprintln(stdout, msg)
 }
 
+func printUpgradeCancelled(stdout io.Writer) {
+	printCancelled(stdout, "upgrade")
+}
+
 func printUpgradeWarning(stderr io.Writer, msg string) {
 	if richOut(stderr, false) {
 		fmt.Fprintf(stderr, "%s %s\n", ui.Tint(ui.Warn, "!"), msg)
@@ -235,17 +267,43 @@ func printUpgradeWarning(stderr io.Writer, msg string) {
 // (just Enter) accepts; EOF / no input declines so non-interactive callers that
 // forgot -y don't silently upgrade.
 func confirmUpgrade(stdout io.Writer, current, latest string) bool {
-	fmt.Fprintf(stdout, "%s? [Y/n]: ", upgradePrompt(current, latest))
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && line == "" {
+	confirmed, err := confirmUpgradePrompt(bufio.NewReader(os.Stdin), stdout, current, latest)
+	if err != nil {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "", "y", "yes":
-		return true
+	return confirmed
+}
+
+func confirmUpgradePrompt(reader *bufio.Reader, stdout io.Writer, current, latest string) (bool, error) {
+	value, err := promptInput(reader, stdout, promptInputSpec{
+		Label:       upgradePrompt(current, latest) + "?",
+		Default:     "yes",
+		Placeholder: "yes",
+		Normalize:   normalizeConfirmAnswer,
+		Validate:    validateConfirmAnswer,
+	})
+	if err != nil {
+		return false, err
+	}
+	return value == "yes", nil
+}
+
+func normalizeConfirmAnswer(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "y":
+		return "yes"
+	case "n":
+		return "no"
 	default:
-		return false
+		return strings.ToLower(strings.TrimSpace(value))
 	}
+}
+
+func validateConfirmAnswer(value string) error {
+	if value == "yes" || value == "no" {
+		return nil
+	}
+	return fmt.Errorf("choose yes or no")
 }
 
 func upgradePrompt(current, latest string) string {

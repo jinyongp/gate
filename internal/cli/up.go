@@ -100,7 +100,9 @@ func Up(args []string, stdout, stderr io.Writer) int {
 				return fail(stderr, *jsonOut, ExitConflict, "daemon_start", msg)
 			}
 		} else {
+			activity := startActivity(stderr, *jsonOut, "starting daemon")
 			result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), *httpsAddr, *httpAddr), client, scope)
+			activity.Stop()
 			if result.Code != ExitOK {
 				return fail(stderr, *jsonOut, result.Code, "daemon_start", result.Message)
 			}
@@ -210,12 +212,12 @@ func Down(args []string, stdout, stderr io.Writer) int {
 
 	for _, name := range sortedServices(project) {
 		svc := project.Services[name]
-		_ = dns.Select(svc.Domain, "").Remove(svc.Domain)
+		_ = removeDomainDNS(svc.Domain, "", stderr, *jsonOut)
 	}
 
 	client := daemonClientFor(scope)
 	if client.IsRunning() {
-		_ = client.SetRoutes(routes)
+		_ = setDaemonRoutesWithActivity(scope, routes, stderr, *jsonOut, "reloading routes")
 	}
 	if *jsonOut {
 		return writeJSON(stdout, map[string]any{"project": project.Name, "down": true})
@@ -241,7 +243,7 @@ func resolvePort(reg *registry.Registry, project, name string, svc config.Servic
 func ensureDNS(project *config.Project, mode string, stderr io.Writer, jsonOut bool) int {
 	for _, name := range sortedServices(project) {
 		domain := project.Services[name].Domain
-		if err := dns.Select(domain, mode).Ensure(domain); err != nil {
+		if err := ensureDomainDNS(domain, mode, stderr, jsonOut); err != nil {
 			if os.IsPermission(err) || errors.Is(err, os.ErrPermission) {
 				return fail(stderr, jsonOut, ExitPerm, "permission", err.Error())
 			}

@@ -9,7 +9,9 @@ description: Drive the gate local HTTPS reverse proxy and port registry from the
 machine-wide port registry. Commands write data to stdout and diagnostics to
 stderr. Commands marked `--json` emit a single JSON value on success; JSON-mode
 errors use a stderr envelope. `gate doctor --json` emits its issue report on
-stdout even when issues make it exit non-zero.
+stdout even when issues make it exit non-zero. Longer operations may show a
+TTY-only activity indicator on stderr; JSON mode, redirected stderr,
+`NO_COLOR`, `CI`, and `GATE_NO_INDICATOR=1` disable it.
 
 ## When to use
 

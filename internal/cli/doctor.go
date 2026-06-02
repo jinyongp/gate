@@ -45,7 +45,14 @@ func Doctor(args []string, stdout, stderr io.Writer) int {
 		return usageFail(stderr, *jsonOut, "doctor")
 	}
 
+	var activity activityHandle
+	if *fix {
+		activity = startActivity(stderr, *jsonOut, "repairing local state")
+	}
 	report := doctorReport{Issues: runDoctorChecks(*fix)}
+	if activity != nil {
+		activity.Stop()
+	}
 	report.OK = doctorReportOK(report)
 	if *jsonOut {
 		if code := writeJSON(stdout, report); code != ExitOK {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"gate/internal/paths"
 	"gate/internal/registry"
@@ -33,6 +34,20 @@ func isTTY(w io.Writer) bool { return ui.Enabled(w) }
 // richOut is the single gate for styled (lipgloss) output: a real terminal,
 // NO_COLOR unset, and not emitting JSON.
 func richOut(w io.Writer, jsonOut bool) bool { return !jsonOut && ui.Enabled(w) }
+
+type activityHandle interface {
+	Stop()
+}
+
+var startActivityFunc = func(stderr io.Writer, jsonOut bool, label string) activityHandle {
+	return ui.StartActivity(stderr, label, ui.ActivityOptions{
+		Enabled: ui.ActivityEnabled(stderr, jsonOut),
+	})
+}
+
+func startActivity(stderr io.Writer, jsonOut bool, label string) activityHandle {
+	return startActivityFunc(stderr, jsonOut, label)
+}
 
 func writeJSON(w io.Writer, v any) int {
 	enc := json.NewEncoder(w)
@@ -75,4 +90,13 @@ func statusDot(status string, color bool) string {
 		return ui.Tint(ui.Success, "●") + " live"
 	}
 	return ui.Tint(ui.Muted, "○") + " down"
+}
+
+func printCancelled(stdout io.Writer, action string) {
+	msg := strings.TrimSpace(action) + " cancelled"
+	if richOut(stdout, false) {
+		fmt.Fprintf(stdout, "\n%s %s\n", ui.Tint(ui.Danger, "✗"), msg)
+		return
+	}
+	fmt.Fprintf(stdout, "\n✗ %s\n", msg)
 }

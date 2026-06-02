@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,49 @@ func TestRichOutGate(t *testing.T) {
 	if richOut(&buf, true) {
 		t.Fatal("richOut must be false when emitting JSON")
 	}
+}
+
+func TestPrintCancelledUsesFailureMarkerAndLeadingBlankLine(t *testing.T) {
+	var out bytes.Buffer
+	printCancelled(&out, "init")
+	got := out.String()
+	if !strings.HasPrefix(got, "\n") {
+		t.Fatalf("cancel output should start on a separate line: %q", got)
+	}
+	if !strings.Contains(got, "✗ init cancelled") {
+		t.Fatalf("cancel output = %q", got)
+	}
+	if strings.Contains(got, "✓") {
+		t.Fatalf("cancel output used success marker: %q", got)
+	}
+}
+
+type recordingActivity struct {
+	label  string
+	events *[]string
+}
+
+func (a recordingActivity) Stop() {
+	*a.events = append(*a.events, "stop:"+a.label)
+}
+
+func recordActivities(t *testing.T) *[]string {
+	t.Helper()
+	oldStart := startActivityFunc
+	events := []string{}
+	startActivityFunc = func(_ io.Writer, _ bool, label string) activityHandle {
+		events = append(events, "start:"+label)
+		return recordingActivity{label: label, events: &events}
+	}
+	t.Cleanup(func() { startActivityFunc = oldStart })
+	return &events
+}
+
+func lastEvent(events []string) string {
+	if len(events) == 0 {
+		return ""
+	}
+	return events[len(events)-1]
 }
 
 // TestLsEmptyPlain shows a message, not a bare header, when there are no rows.

@@ -299,6 +299,10 @@ Commands that target multiple daemon scopes, such as `gate daemon status --all
 --json`, write a JSON array. Errors in JSON mode are written to stderr as an
 error envelope.
 
+Some longer operations show a one-line activity indicator on stderr when stderr
+is an interactive terminal. Indicators never appear in JSON mode or when stderr
+is redirected. Set `GATE_NO_INDICATOR=1` to disable them explicitly.
+
 Examples:
 
 ```bash

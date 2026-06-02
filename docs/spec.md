@@ -499,11 +499,19 @@ Rules:
   internal errors still use the JSON error envelope on stderr.
 - Rich output is enabled only when stdout is a terminal and `NO_COLOR` is unset.
 - Piped output stays plain and grep-friendly.
+- Long-running command progress may show a single-line activity indicator on
+  stderr only when stderr is an interactive terminal. Activity indicators are
+  disabled for JSON mode, redirected stderr, `NO_COLOR`, `CI`, and
+  `GATE_NO_INDICATOR`.
+- Activity indicators must stop and clear their line before final success
+  output, errors, warnings, interactive prompts, or child-process stdout/stderr
+  ownership.
 
 The current presentation layer uses `lipgloss` for TTY-only styling and
-borderless tables. There is no fullscreen TUI command in the current public
-surface. Any future interactive TUI must keep the same output contract and must
-not affect non-TTY or JSON behavior.
+borderless tables, plus `internal/ui` activity indicators for selected
+long-running command phases. There is no fullscreen TUI command in the current
+public surface. Any future interactive TUI must keep the same output contract
+and must not affect non-TTY or JSON behavior.
 
 ---
 

@@ -43,6 +43,7 @@ func TestDaemonStartReportsChildStderr(t *testing.T) {
 	if got := errb.String(); !strings.Contains(got, "listen tcp :443: bind: permission denied") {
 		t.Fatalf("stderr missing child failure: %q", got)
 	}
+	assertNoIndicatorBytes(t, "daemon start failure stderr", errb.String())
 	if strings.Contains(errb.String(), "exit status") {
 		t.Fatalf("stderr should prefer child failure over wait status: %q", errb.String())
 	}
