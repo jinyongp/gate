@@ -47,6 +47,13 @@ gate upgrade
 
 This updates gate to the latest GitHub release.
 
+After upgrading from a development build, check for stale local state:
+
+```bash
+gate doctor
+gate doctor --fix
+```
+
 ## Uninstall
 
 Removes user-level config/data/state and binaries.

@@ -8,7 +8,8 @@ description: Drive the gate local HTTPS reverse proxy and port registry from the
 `gate` maps local domains to dev servers over trusted HTTPS and manages a
 machine-wide port registry. Commands write data to stdout and diagnostics to
 stderr. Commands marked `--json` emit a single JSON value on success; JSON-mode
-errors use a stderr envelope.
+errors use a stderr envelope. `gate doctor --json` emits its issue report on
+stdout even when issues make it exit non-zero.
 
 ## When to use
 
@@ -50,6 +51,7 @@ fi
 | `gate daemon restart [-g\|--global] [-p name\|--project name] [--https-addr addr] [--http-addr addr]` | restart one scoped proxy |
 | `gate daemon logs [-g\|--global] [-p name\|--project name] [-a\|--all]` | print scoped proxy logs |
 | `gate daemon status [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | inspect scoped proxy status |
+| `gate doctor [--fix] [--json]` | check and repair local gate state |
 | `gate trust` | install the root CA (one time) |
 | `gate untrust` | remove the root CA from OS/browser trust stores |
 | `gate ca export [--out path]` | export the root CA for other devices |

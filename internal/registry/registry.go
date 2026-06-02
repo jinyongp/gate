@@ -5,6 +5,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,6 +25,24 @@ type Reservation struct {
 	Standalone bool   `json:"standalone,omitempty"`
 	Active     bool   `json:"active,omitempty"`      // true while routed; reservation persists when false
 	ConfigPath string `json:"config_path,omitempty"` // gate.toml that owns this reservation; enables GC
+}
+
+// UnmarshalJSON accepts the pre-standalone development-build `adhoc` flag while
+// keeping the current schema write-only as `standalone`.
+func (r *Reservation) UnmarshalJSON(data []byte) error {
+	type reservation Reservation
+	var raw struct {
+		reservation
+		Adhoc bool `json:"adhoc,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = Reservation(raw.reservation)
+	if raw.Adhoc {
+		r.Standalone = true
+	}
+	return nil
 }
 
 // Registry is the whole on-disk document.

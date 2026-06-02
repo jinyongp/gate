@@ -52,3 +52,23 @@ func TestRunDispatch(t *testing.T) {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 }
+
+func TestRunDoctorHelpIsReachable(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"doctor", "-h"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "gate doctor") {
+		t.Fatalf("stdout = %q, want doctor help", out.String())
+	}
+}
+
+func TestRootUsageIncludesDoctor(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(nil, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "doctor") {
+		t.Fatalf("stdout = %q, want doctor in usage", out.String())
+	}
+}

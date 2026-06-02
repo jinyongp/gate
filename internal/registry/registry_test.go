@@ -109,6 +109,41 @@ func TestStorePersistsStandaloneJSONKey(t *testing.T) {
 	}
 }
 
+func TestStoreMigratesLegacyAdhocOnTypedUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := os.WriteFile(path, []byte(`{
+  "version": 1,
+  "services": {
+    "/web.localhost": {
+      "service": "web.localhost",
+      "domain": "web.localhost",
+      "port": 4312,
+      "adhoc": true,
+      "active": true
+    }
+  }
+}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := Open(path)
+	if err := store.Update(func(r *Registry) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"standalone": true`) {
+		t.Fatalf("typed update did not preserve legacy adhoc as standalone:\n%s", s)
+	}
+	if strings.Contains(s, `"adhoc"`) {
+		t.Fatalf("typed update should remove legacy adhoc key:\n%s", s)
+	}
+}
+
 func TestUsedPortsAndRelease(t *testing.T) {
 	r := New()
 	_ = r.Reserve(Reservation{Project: "a", Service: "web", Domain: "x", Port: 4300})

@@ -38,6 +38,31 @@ Remove gate's root CA from local trust stores:
 gate untrust
 ```
 
+## Doctor
+
+Check local gate-owned state:
+
+```bash
+gate doctor
+```
+
+Repair issues that do not require sudo:
+
+```bash
+gate doctor --fix
+```
+
+Use JSON for scripts:
+
+```bash
+gate doctor --json
+```
+
+`doctor` currently checks legacy single-daemon files, stale scoped daemon pid
+files, and legacy registry entries from pre-scoped development builds. It exits
+with `1` when issues remain. In JSON mode, the issue report is written to stdout
+even when the command exits `1`; usage and internal errors still use stderr.
+
 ## Project Mode
 
 Project mode uses a `gate.toml` file in the repository. This is the shareable,
@@ -553,15 +578,7 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/uninstal
 Legacy single-daemon cleanup, for pre-scoped development builds:
 
 ```bash
-pid_file=~/.config/gate/gate.pid
-if [ -f "$pid_file" ]; then
-  pid="$(tr -dc '0-9' < "$pid_file")"
-  args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-  case "$args" in gate\ __serve*|*/gate\ __serve*) kill "$pid" ;; esac
-fi
-rm -f ~/.config/gate/gate.sock ~/.config/gate/gate.pid
-rm -f ~/Library/Logs/gate/gate.log
-rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/gate/gate.log"
+gate doctor --fix
 ```
 
 ## Exit Codes

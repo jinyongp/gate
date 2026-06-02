@@ -52,6 +52,33 @@ func (s *Store) Read() (*Registry, error) {
 	return s.read()
 }
 
+// UpdateRaw runs fn under an exclusive lock with the raw registry file bytes,
+// then optionally writes the returned bytes atomically. It is for repair
+// tooling that must inspect legacy JSON fields no longer represented by
+// Registry.
+func (s *Store) UpdateRaw(fn func([]byte) ([]byte, bool, error)) error {
+	unlock, err := s.lock(unix.LOCK_EX)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	b, err := os.ReadFile(s.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		b = nil
+	} else if err != nil {
+		return err
+	}
+	next, write, err := fn(b)
+	if err != nil {
+		return err
+	}
+	if !write {
+		return nil
+	}
+	return fsutil.WriteAtomic(s.path, next, 0o600)
+}
+
 // ReadReserve checks whether res can be reserved against a locked snapshot,
 // without writing. It is used as a preflight before external side effects.
 func (s *Store) ReadReserve(res Reservation) error {

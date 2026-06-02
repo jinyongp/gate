@@ -46,6 +46,7 @@ var commands = map[string]command{
 	"prune":   cli.Prune,
 	"run":     cli.Run,
 	"daemon":  cli.Daemon,
+	"doctor":  cli.Doctor,
 	"trust":   cli.Trust,
 	"untrust": cli.Untrust,
 	"ca":      cli.Ca,
@@ -200,7 +201,7 @@ var commandGroups = []struct {
 	{"DAEMON", []string{"daemon"}},
 	{"TLS", []string{"trust", "untrust", "ca"}},
 	{"SHARE", []string{"expose"}},
-	{"MAINTENANCE", []string{"upgrade", "skill", "completion"}},
+	{"MAINTENANCE", []string{"doctor", "upgrade", "skill", "completion"}},
 }
 
 // usageRich renders a styled, grouped usage screen for TTYs.

@@ -441,13 +441,20 @@ func daemonStartExitCode(msg string) int {
 }
 
 func isGateDaemonPID(pid int) bool {
-	//nolint:gosec // G204: fixed executable and fixed flags; pid is data, not a shell command.
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
+	args, err := processArgsForPID(pid)
 	if err != nil {
 		return false
 	}
-	args := strings.TrimSpace(string(out))
 	return isGateDaemonArgs(args)
+}
+
+var processArgsForPID = func(pid int) (string, error) {
+	//nolint:gosec // G204: fixed executable and fixed flags; pid is data, not a shell command.
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func isGateDaemonArgs(args string) bool {

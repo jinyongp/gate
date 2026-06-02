@@ -447,6 +447,7 @@ daemon conflicts only when the new process cannot bind the requested address.
 | `gate daemon restart [-g\|--global] [-p name\|--project name] [--https-addr addr] [--http-addr addr]` | Restart one scoped daemon. | text |
 | `gate daemon logs [-g\|--global] [-p name\|--project name] [-a\|--all]` | Print scoped daemon logs. | text |
 | `gate daemon status [-g\|--global] [-p name\|--project name] [-a\|--all]` | Print scoped daemon status. | text / json |
+| `gate doctor [--fix] [--json]` | Check and repair local gate-owned state. | text / json |
 | `gate trust` | Install the local root CA into trust stores. | text |
 | `gate untrust` | Remove the local root CA from trust stores. | text |
 | `gate ca export` | Export the local root certificate. | text |
@@ -493,6 +494,9 @@ Rules:
 - Diagnostics, warnings, progress, and logs go to stderr.
 - `--json` emits one JSON value and no extra text on stdout.
 - JSON-mode errors are written to stderr as a JSON error envelope.
+- `gate doctor --json` is a check/report command: discovered issues are report
+  data and are written to stdout even when the command exits non-zero. Usage and
+  internal errors still use the JSON error envelope on stderr.
 - Rich output is enabled only when stdout is a terminal and `NO_COLOR` is unset.
 - Piped output stays plain and grep-friendly.
 
