@@ -2,7 +2,7 @@
 set quiet
 
 export GOCACHE := "/tmp/gate-gocache"
-export GOLANGCI_LINT_CACHE := "/tmp/gate-golangci-cache"
+export GOLANGCI_LINT_CACHE := "/tmp/gate-golangci-cache-gate"
 
 [private]
 default:
@@ -66,11 +66,11 @@ fmt-check:
 vet:
   scripts/dev/vet.sh
 
-[doc('lint (human-readable)')]
+[doc('lint (text output)')]
 lint:
   scripts/dev/lint.sh
 
-[doc('lint for AI/scripts: human text -> stderr, JSON diagnostics -> stdout')]
+[doc('lint for AI/scripts: text diagnostics -> stderr, JSON diagnostics -> stdout')]
 lint-json:
   scripts/dev/lint-json.sh
 
