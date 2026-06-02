@@ -137,7 +137,7 @@ jobs:
       needs.release_tag.outputs.tag != '' &&
       needs.release_tag.outputs.on_main == 'true' &&
       needs.build.result == 'success'
-    uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@fdff7ed6b56230488d2a54174aa7b480a62238a3
+    uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@6ec51880d96bf1cfce1ff2b5b4ab11e4c420124e
     with:
       formula: gate
       source-repository: jinyongp/gate
