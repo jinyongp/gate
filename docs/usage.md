@@ -13,20 +13,9 @@ project file.
 curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh | sh
 ```
 
-If the install directory is not in `PATH`, resolve the binary once:
-
-```bash
-if command -v gate >/dev/null 2>&1; then
-  GATE_BIN="$(command -v gate)"
-elif [ -x "$HOME/.local/bin/gate" ]; then
-  GATE_BIN="$HOME/.local/bin/gate"
-else
-  echo "gate not found" >&2
-  exit 1
-fi
-```
-
-The rest of this document uses `gate`; replace it with `"$GATE_BIN"` when needed.
+The installer writes `gate` to `~/.local/bin` by default. If that directory is
+not in `PATH`, the installer offers to update your shell startup file and prints
+the exact line you can add manually.
 
 ## Trust HTTPS
 

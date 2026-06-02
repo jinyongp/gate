@@ -7,21 +7,15 @@ Local HTTPS reverse proxy and port registry for local development.
 
 ## Install
 
-### Agent bootstrap (recommended)
-
-Open the agent setup instructions directly:
-
-```
-https://raw.githubusercontent.com/jinyongp/gate/main/scripts/agent-bootstrap.md
-```
-
-### Manual install
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh | sh
 ```
 
 Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
+
+The installer writes `gate` to `~/.local/bin` by default. If that directory is
+not in `PATH`, the installer offers to update your shell startup file and also
+prints the exact line you can add manually.
 
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
 and internals, see [docs/spec.md](docs/spec.md).
@@ -52,64 +46,31 @@ The script removes only files and directories it discovers on the current machin
 By default it asks for confirmation before removing files.
 Use `-y` to skip it in automation.
 
-## Development Quick Start
+## Quick Start
 
-1. Run a built-in smoke server through the development binary:
+Run this inside your app repository.
 
-```bash
-just hello-go
-```
-
-or:
+1. Trust gate's local HTTPS certificate authority once:
 
 ```bash
-just hello-js
+gate trust
 ```
 
-Custom-domain JS smoke:
+This may ask for administrator approval.
+
+2. Create `gate.toml`:
 
 ```bash
-just hello-js-custom
+gate init
 ```
 
-The default smoke recipes use the spec default front-proxy ports, HTTPS `:443` and HTTP `:80`, so the URLs have no port.
-The upstream dev-server ports are still allocated by gate and injected into the child process with `gate run`.
-If `:443`/`:80` are unavailable, the recipe prints the owning process. Stop that process before running the custom-domain recipe.
-For a quick smoke that avoids `:443`, use `just hello-go-port` or `just hello-js-port`; those recipes use random front-proxy ports and print URLs with ports.
-The `.localhost` recipes do not need sudo for DNS. The custom-domain recipe adds `hello-js.test` to `/etc/hosts` inside a dedicated `<gate:hello-js-custom-hosts>` block, so sudo may ask for your password once.
-Remove that custom-domain hosts entry with `just hello-js-custom-clean`.
-
-2. Open:
+For a non-interactive default:
 
 ```bash
-https://hello-go.localhost
-# or
-https://hello-js.localhost
-# or custom-domain JS
-https://hello-js.test
+gate init -y
 ```
 
-Use `Ctrl-C` to stop the sample server.
-
-The first browser visit may show `ERR_CERT_AUTHORITY_INVALID`. That means the local gate CA is not trusted yet. For smoke testing, use the browser's advanced/proceed flow. To install trust, run the checkout-local `bin/gate trust` command; that may require OS administrator approval.
-
-3. To remove the browser certificate warning, trust the local CA:
-
-```bash
-bin/gate trust
-```
-
-This installs gate's local CA into the OS/browser trust store. It may ask for administrator approval. Restart the browser if the warning remains.
-
-4. For your own project, add `gate.toml` in its root — run the checkout-local binary with `init` to scaffold one interactively, or use `init -y` for defaults:
-
-```bash
-/path/to/gate/bin/gate init
-# or non-interactive default
-/path/to/gate/bin/gate init -y
-```
-
-You can also write it manually:
+Or edit the generated file to add more services:
 
 ```toml
 [project]
@@ -123,7 +84,32 @@ domain = "api.example.localhost"
 port = 3001
 ```
 
-`domain` and `port` can read environment variables:
+3. Start gate and run your dev server through the reserved port:
+
+```bash
+gate up -d
+gate run web -- pnpm dev
+```
+
+Replace `pnpm dev` with your app's dev-server command. `gate run` injects the
+reserved port as `PORT`.
+
+4. Open:
+
+```text
+https://web.my-project.localhost
+```
+
+Use the route printed by `gate up`. If you edited the generated config to match
+the example above, open `https://app.example.localhost` instead.
+
+`.localhost` domains need no DNS setup. Custom domains need `/etc/hosts` or
+another local DNS setup, so `gate up` may ask for administrator approval.
+
+### Environment-backed config
+
+`domain` and `port` can read environment variables when a team needs
+per-developer values:
 
 ```toml
 [project]
@@ -145,61 +131,55 @@ environment values win over dotenv values, and earlier dotenv files win over
 later ones. `${NAME}` is required and fails if unset; `${NAME:-default}` uses
 the default when unset or empty.
 
-5. Start routing and run the service:
+## Contributing
+
+Development uses the repository checkout and the `just` command runner.
+
+Prerequisites:
+
+- Go
+- [`just`](https://github.com/casey/just)
+
+Development recipes fetch Go tools such as `golangci-lint`, `govulncheck`, and
+`goimports` with `go run`, so they do not need separate manual installation.
+
+Set up a checkout:
 
 ```bash
-/path/to/gate/bin/gate up --daemon
-/path/to/gate/bin/gate run web -- pnpm dev
+git clone https://github.com/jinyongp/gate.git
+cd gate
+just build
 ```
 
-6. Open:
+Run from source:
 
 ```bash
-https://app.example.localhost
-https://api.example.localhost
+just gate --help
+just gate ls
 ```
 
-7. Custom domain example:
-
-```toml
-[project]
-name = "my-project"
-
-[services.web]
-domain = "app.example.test"
-```
-
-Then:
+Run validation before opening a pull request:
 
 ```bash
-/path/to/gate/bin/gate trust
-/path/to/gate/bin/gate up --daemon
-/path/to/gate/bin/gate run web -- pnpm dev
+just check
 ```
 
-Custom domains are not automatic like `.localhost`. They need `/etc/hosts` or another local DNS setup, so `up` may require administrator approval. TLS still needs `trust`.
-
-8. Check status:
+Useful development commands:
 
 ```bash
-/path/to/gate/bin/gate ls
-/path/to/gate/bin/gate daemon status
-/path/to/gate/bin/gate down
+just fmt
+just test
+just lint-json
+just vuln
 ```
 
-## Common commands
+Local smoke tests are available for contributors:
 
 ```bash
-just hello-go
-just hello-js
-just hello-js-custom
-bin/gate up
-bin/gate up --daemon
-bin/gate run web -- pnpm dev
-bin/gate ls
-bin/gate daemon status
-bin/gate upgrade
-bin/gate down
+just hello-go-port
+just hello-js-port
 ```
 
-For full usage and all options, run `bin/gate --help`.
+Those recipes build the local `bin/gate` binary from this checkout and run
+sample apps through gate on random front-proxy ports. For full command usage, see
+[docs/usage.md](docs/usage.md).

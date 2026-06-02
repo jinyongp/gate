@@ -210,19 +210,150 @@ else
   chmod 755 "$DEST"
 fi
 
+path_entry_expr() {
+  home_prefix="${HOME}/"
+  case "$DEST_DIR" in
+    "$home_prefix"*)
+      rel="${DEST_DIR#$home_prefix}"
+      printf '$HOME/%s\n' "$rel"
+      ;;
+    *)
+      printf '%s\n' "$DEST_DIR"
+      ;;
+  esac
+}
+
+detected_shell_name() {
+  shell_path="${SHELL:-}"
+  if [ -z "$shell_path" ]; then
+    printf '%s\n' "sh"
+    return
+  fi
+  basename "$shell_path"
+}
+
+shell_rc_file() {
+  shell_name="$1"
+  case "$shell_name" in
+    zsh)
+      printf '%s\n' "${HOME}/.zshrc"
+      ;;
+    bash)
+      if [ "$OS" = "darwin" ]; then
+        if [ -f "${HOME}/.bash_profile" ]; then
+          printf '%s\n' "${HOME}/.bash_profile"
+        elif [ -f "${HOME}/.bash_login" ]; then
+          printf '%s\n' "${HOME}/.bash_login"
+        elif [ -f "${HOME}/.profile" ]; then
+          printf '%s\n' "${HOME}/.profile"
+        else
+          printf '%s\n' "${HOME}/.bash_profile"
+        fi
+      else
+        printf '%s\n' "${HOME}/.bashrc"
+      fi
+      ;;
+    fish)
+      printf '%s\n' "${HOME}/.config/fish/config.fish"
+      ;;
+    *)
+      printf '%s\n' "${HOME}/.profile"
+      ;;
+  esac
+}
+
+path_update_command() {
+  shell_name="$1"
+  entry="$(path_entry_expr)"
+  case "$shell_name" in
+    fish)
+      printf 'set -gx PATH "%s" $PATH\n' "$entry"
+      ;;
+    *)
+      printf 'export PATH="%s:$PATH"\n' "$entry"
+      ;;
+  esac
+}
+
+print_path_instructions() {
+  shell_name="$1"
+  rc_file="$2"
+  cmd="$3"
+  ui_section "PATH setup"
+  echo "gate was installed, but ${DEST_DIR} is not in PATH for this terminal."
+  if [ -n "$rc_file" ]; then
+    echo "Add this to ${rc_file}:"
+  else
+    echo "Add this to your shell startup file:"
+  fi
+  echo
+  echo "  ${cmd}"
+  echo
+  echo "Then open a new terminal, or run the line above in the current shell."
+  if [ "$shell_name" = "fish" ]; then
+    echo "Detected shell: fish"
+  fi
+}
+
+append_path_to_rc() {
+  rc_file="$1"
+  cmd="$2"
+  rc_dir="$(dirname "$rc_file")"
+  if ! mkdir -p "$rc_dir"; then
+    return 1
+  fi
+  {
+    printf '\n# >>> gate PATH >>>\n'
+    printf '%s\n' "$cmd"
+    printf '# <<< gate PATH <<<\n'
+  } >> "$rc_file"
+}
+
+configure_path() {
+  case ":${PATH}:" in
+    *":${DEST_DIR}:"*)
+      ui_ok "gate is already in your current PATH."
+      return
+      ;;
+  esac
+
+  shell_name="$(detected_shell_name)"
+  rc_file="$(shell_rc_file "$shell_name")"
+  entry="$(path_entry_expr)"
+  cmd="$(path_update_command "$shell_name")"
+
+  if [ -f "$rc_file" ] && { grep -F "$DEST_DIR" "$rc_file" >/dev/null 2>&1 || grep -F "$entry" "$rc_file" >/dev/null 2>&1; }; then
+    ui_ok "${DEST_DIR} is already listed in ${rc_file}."
+    echo "Open a new terminal, or run:"
+    echo "  ${cmd}"
+    return
+  fi
+
+  ui_warn_err "PATH does not currently include ${DEST_DIR}."
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '\nAdd %s to PATH in %s? [Y/n]: ' "$DEST_DIR" "$rc_file" > /dev/tty
+    if IFS= read -r response < /dev/tty; then
+      case "$response" in
+        ""|y|Y|yes|Yes|YES)
+          if append_path_to_rc "$rc_file" "$cmd"; then
+            ui_ok "updated ${rc_file}."
+            echo "Open a new terminal, or run:"
+            echo "  ${cmd}"
+            return
+          fi
+          ui_warn_err "could not update ${rc_file}."
+          ;;
+      esac
+    fi
+  fi
+
+  print_path_instructions "$shell_name" "$rc_file" "$cmd"
+}
+
 ui_section "Install complete"
 ui_kv "Binary" "$DEST"
 
-case ":${PATH}:" in
-  *":${DEST_DIR}:"*)
-    ui_ok "gate is already in your current PATH."
-    ;;
-  *)
-    ui_warn_err "PATH does not currently include ${DEST_DIR}."
-    echo "Run one of the following in your shell to use gate:"
-    echo "  export PATH=\"${DEST_DIR}:\$PATH\""
-    ;;
-esac
+configure_path
 
 resolved="$(command -v gate 2>/dev/null || true)"
 if [ -n "$resolved" ] && [ "$resolved" != "$DEST" ]; then
