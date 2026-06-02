@@ -3,7 +3,7 @@
 Local HTTPS reverse proxy and port registry for local development.
 
 > [!WARNING]
-> prx is still under active development. It is useful for local testing, but it is not ready for dependable day-to-day production-style development workflows yet.
+> prx is a local development tool and is still under active development. It is intended for testing local services, not for production traffic or hosted environments.
 
 ## Install
 
@@ -15,7 +15,7 @@ Open the agent setup instructions directly:
 https://raw.githubusercontent.com/jinyongp/prx/main/scripts/agent-bootstrap.md
 ```
 
-### Human install
+### Manual install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/install.sh | sh
@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/prx/main/scripts/install.s
 Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
-and internals, see [docs/spec/plan.md](docs/spec/plan.md).
+and internals, see [docs/spec.md](docs/spec.md).
 
 ## Upgrade
 

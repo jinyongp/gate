@@ -4,7 +4,7 @@ Guide for AI agents working **on the prx codebase**. To use prx as a tool, see
 [`skills/prx/SKILL.md`](skills/prx/SKILL.md) instead — do not duplicate usage docs here.
 
 prx = local-dev global HTTPS reverse proxy + port registry, single Go binary.
-Design spec: [`docs/spec/plan.md`](docs/spec/plan.md). Implementation plan: [`docs/spec/impl.md`](docs/spec/impl.md).
+Design and implementation spec: [`docs/spec.md`](docs/spec.md).
 
 Module path: `prx` (bare; no VCS host dependency). Targets: macOS (arm64/amd64), Linux. Windows unsupported.
 
@@ -60,9 +60,9 @@ skills/prx/         agentskills.io skill (usage docs — not a dev concern)
 
 ## Conventions
 
-- **stdlib first.** Dependencies are two-tier (see `docs/spec/impl.md` 부록 B):
+- **stdlib first.** Dependencies are two-tier (see [`docs/spec.md`](docs/spec.md)):
   - core (proxy / TLS / CA / network / daemon): stdlib + `golang.org/x` only. Must not import TUI deps.
-  - presentation (CLI / config / TUI): minimal third-party — `go-toml`, `term`, and the Charm stack (lipgloss / bubbletea / bubbles / bubblezone / ntcharts), confined to `internal/ui` and `internal/tui`. See [`docs/tui`](docs/tui/plan.md).
+  - presentation (CLI / config / rich terminal output): minimal third-party — `go-toml`, `term`, `cobra`, and `lipgloss`, confined to presentation packages such as `internal/cli` and `internal/ui`.
 - **Output split (pipe-safe):** program data → stdout; logs/diagnostics → stderr. `--json` emits a
   single object/array and nothing else.
 - **Domain separation:** `internal/truststore` is a self-contained vendored library — it must **not**
