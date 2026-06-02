@@ -10,28 +10,16 @@ Module path: `gate` (bare; no VCS host dependency).
 
 ## Commands
 
-Command runner is **`just`** (install: <https://github.com/casey/just>). Prefer recipes over raw `go`.
+Use `just` recipes instead of raw `go` when a recipe exists.
 
-| recipe | action |
-| --- | --- |
-| `just build` | `go build -o bin/gate ./cmd/gate` |
-| `just test` | `go test -race ./...` |
-| `just lint` | `golangci-lint run ./...` |
-| `just lint-json` | JSON diagnostics → stdout, human text → stderr |
-| `just vuln` | `govulncheck ./...` |
-| `just check` | test + lint + vuln (**must pass before opening a PR**) |
-| `just fmt` | gofmt + goimports |
+- `just test`: race-enabled Go tests.
+- `just lint`: golangci-lint.
+- `just lint-json`: structured lint diagnostics; use for lint-fix work.
+- `just check`: test + lint + vuln; run before opening a PR.
+- `just fmt`: gofmt + goimports.
 
-## Working loop
-
-Do **not** "read the code and fix it" blindly. Instead:
-
-1. Run `just lint-json` and parse the JSON diagnostics from stdout.
-2. Fix issues based on the structured output.
-3. Repeat `just check` until green.
-
-For changes that are not lint-driven, still run the narrowest relevant check
-first, then `just check` before opening a PR.
+For ordinary changes, run the narrowest relevant check first, then `just check`
+when the change is ready.
 
 ## Source of truth
 
