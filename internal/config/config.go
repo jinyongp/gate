@@ -60,7 +60,6 @@ type rawService struct {
 	ACMEDNS string `toml:"acme_dns,omitempty"`
 }
 
-var domainRe = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
 var envKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Load reads and validates the gate.toml at path.
@@ -277,14 +276,53 @@ func CanonicalDomain(domain string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 }
 
+// ValidateDomain checks whether domain is a syntactically valid gate hostname.
+func ValidateDomain(domain string) error {
+	domain = CanonicalDomain(domain)
+	if domain == "" || len(domain) > 253 {
+		return fmt.Errorf("invalid domain %q", domain)
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if !validDomainLabel(label) {
+			return fmt.Errorf("invalid domain %q", domain)
+		}
+	}
+	return nil
+}
+
+func validDomainLabel(label string) bool {
+	if label == "" || len(label) > 63 {
+		return false
+	}
+	for i, r := range label {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
+		if !valid {
+			return false
+		}
+		if (i == 0 || i == len(label)-1) && r == '-' {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate checks the project for structural and semantic errors.
 func (p *Project) Validate() error {
+	if strings.TrimSpace(p.Name) == "" {
+		return errors.New("project name must not be empty")
+	}
+	if strings.Contains(p.Name, "/") {
+		return errors.New("project name must not contain /")
+	}
 	for name, svc := range p.Services {
-		if name == "" {
+		if strings.TrimSpace(name) == "" {
 			return errors.New("service name must not be empty")
 		}
-		if !domainRe.MatchString(svc.Domain) {
-			return fmt.Errorf("service %q: invalid domain %q", name, svc.Domain)
+		if strings.Contains(name, "/") {
+			return fmt.Errorf("service %q: name must not contain /", name)
+		}
+		if err := ValidateDomain(svc.Domain); err != nil {
+			return fmt.Errorf("service %q: %w", name, err)
 		}
 		switch svc.TLS {
 		case TLSInternal:

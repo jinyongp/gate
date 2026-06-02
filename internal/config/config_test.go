@@ -48,16 +48,71 @@ port = 3001
 
 func TestLoadInvalid(t *testing.T) {
 	cases := map[string]string{
+		"missing project name": `
+[services.web]
+domain = "web.localhost"
+`,
+		"empty project name": `
+[project]
+name = " "
+
+[services.web]
+domain = "web.localhost"
+`,
+		"slash project name": `
+[project]
+name = "team/demo"
+
+[services.web]
+domain = "web.localhost"
+`,
+		"slash service name": `
+[project]
+name = "demo"
+
+[services."api/web"]
+domain = "api.localhost"
+`,
 		"bad domain": `
+[project]
+name = "demo"
+
 [services.web]
 domain = "no spaces allowed!!"
 `,
+		"empty domain label": `
+[project]
+name = "demo"
+
+[services.web]
+domain = "web.gate....localhost"
+`,
+		"leading hyphen domain label": `
+[project]
+name = "demo"
+
+[services.web]
+domain = "-web.localhost"
+`,
+		"underscore domain label": `
+[project]
+name = "demo"
+
+[services.web]
+domain = "web_gate.localhost"
+`,
 		"acme without dns": `
+[project]
+name = "demo"
+
 [services.web]
 domain = "app.example.com"
 tls = "acme"
 `,
 		"bad tls": `
+[project]
+name = "demo"
+
 [services.web]
 domain = "app.example.com"
 tls = "bogus"

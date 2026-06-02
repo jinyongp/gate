@@ -342,6 +342,9 @@ func Add(args []string, stdout, stderr io.Writer) int {
 		return usageFail(stderr, *jsonOut, "add")
 	}
 	domain := config.CanonicalDomain(rest[0])
+	if err := config.ValidateDomain(domain); err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_domain", err.Error())
+	}
 	p, err := strconv.Atoi(rest[1])
 	if err != nil || p < 1 || p > 65535 {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_port", "port must be 1-65535")
@@ -381,7 +384,7 @@ func Add(args []string, stdout, stderr io.Writer) int {
 		if inProject {
 			_ = config.RemoveService(path, serviceName)
 		}
-		return fail(stderr, *jsonOut, ExitConflict, "port_conflict", ce.Error())
+		return addError(stderr, *jsonOut, err)
 	}
 	if err != nil {
 		if inProject {
@@ -682,6 +685,9 @@ func serviceNameForDomain(domain string) string {
 func addError(stderr io.Writer, jsonOut bool, err error) int {
 	var ce *registry.ConflictError
 	if errors.As(err, &ce) {
+		if ce.Domain != "" {
+			return fail(stderr, jsonOut, ExitConflict, "domain_conflict", ce.Error())
+		}
 		return fail(stderr, jsonOut, ExitConflict, "port_conflict", ce.Error())
 	}
 	return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())

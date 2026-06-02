@@ -73,7 +73,7 @@ func validateEdit(path, name string, svc Service) error {
 	if !serviceNameRe.MatchString(name) {
 		return fmt.Errorf("invalid service name %q", name)
 	}
-	p := &Project{Services: map[string]Service{name: svc}}
+	p := &Project{Name: "edit", Services: map[string]Service{name: svc}}
 	if err := p.Validate(); err != nil {
 		return err
 	}

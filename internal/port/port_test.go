@@ -64,3 +64,19 @@ func TestIsLive(t *testing.T) {
 		t.Fatal("IsLive = true after close")
 	}
 }
+
+func TestParseLsofOwner(t *testing.T) {
+	got, ok := parseLsofOwner("p1234\ncnode\ntIPv4\n")
+	if !ok {
+		t.Fatal("parseLsofOwner ok = false")
+	}
+	if got.PID != 1234 || got.Command != "node" {
+		t.Fatalf("owner = %+v", got)
+	}
+}
+
+func TestParseLsofOwnerEmpty(t *testing.T) {
+	if got, ok := parseLsofOwner(""); ok {
+		t.Fatalf("parseLsofOwner ok = true, owner = %+v", got)
+	}
+}

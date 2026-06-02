@@ -14,10 +14,11 @@ import (
 	"gate/internal/registry"
 )
 
-// isolate points gate's config dir at a temp dir for the duration of the test.
+// isolate points gate's config dir and cwd at temp dirs for the duration of the test.
 func isolate(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 }
 
 type fakeDNSProvider struct {
@@ -77,6 +78,18 @@ func TestAddPortConflictExit4(t *testing.T) {
 	}
 }
 
+func TestAddRejectsInvalidDomain(t *testing.T) {
+	isolate(t)
+	var out, errb bytes.Buffer
+	code := Add([]string{"--json", "web..localhost", "4312"}, &out, &errb)
+	if code != ExitUsage {
+		t.Fatalf("Add exit = %d, want %d; stderr=%s", code, ExitUsage, errb.String())
+	}
+	if !strings.Contains(errb.String(), "bad_domain") {
+		t.Fatalf("missing bad_domain error:\n%s", errb.String())
+	}
+}
+
 func TestAddJSONErrorEnvelope(t *testing.T) {
 	isolate(t)
 	var out, errb bytes.Buffer
@@ -99,6 +112,31 @@ func TestAddJSONErrorEnvelope(t *testing.T) {
 		t.Fatalf("stderr not JSON: %v\n%s", err, errb.String())
 	}
 	if env.Error.Code != "port_conflict" {
+		t.Fatalf("error code = %q", env.Error.Code)
+	}
+}
+
+func TestAddDomainConflictJSONErrorEnvelope(t *testing.T) {
+	isolate(t)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Project: "other", Service: "web", Domain: "a.localhost", Port: 4311})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	code := Add([]string{"--json", "a.localhost", "4313"}, &out, &errb)
+	if code != ExitConflict {
+		t.Fatalf("exit = %d, want %d", code, ExitConflict)
+	}
+	var env struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(errb.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, errb.String())
+	}
+	if env.Error.Code != "domain_conflict" {
 		t.Fatalf("error code = %q", env.Error.Code)
 	}
 }

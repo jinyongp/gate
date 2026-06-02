@@ -39,6 +39,9 @@ func Up(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "up", args, stdout, stderr); handled {
 		return code
 	}
+	if *dnsMode != "" && *dnsMode != "localhost" && *dnsMode != "hosts" {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_dns", "dns must be localhost or hosts")
+	}
 
 	project, path, err := currentProjectPath()
 	if err != nil {

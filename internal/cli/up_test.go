@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gate/internal/daemon"
@@ -56,6 +57,25 @@ func TestUpAllocatesAndReserves(t *testing.T) {
 	api, ok := reg.Get(registry.Key("demo", "api"))
 	if !ok || api.Port != 4501 {
 		t.Fatalf("api should keep fixed port 4501: %+v", api)
+	}
+}
+
+func TestUpRejectsInvalidDNSMode(t *testing.T) {
+	setupUpProject(t)
+	var out, errb bytes.Buffer
+	code := Up([]string{"--json", "--dns", "bogus"}, &out, &errb)
+	if code != ExitUsage {
+		t.Fatalf("Up exit = %d, want %d; stderr=%s", code, ExitUsage, errb.String())
+	}
+	if !strings.Contains(errb.String(), "bad_dns") {
+		t.Fatalf("missing bad_dns error:\n%s", errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Services) != 0 {
+		t.Fatalf("registry changed after invalid dns: %+v", reg.Services)
 	}
 }
 
