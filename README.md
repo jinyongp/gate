@@ -152,8 +152,23 @@ Run this inside your app repository.
 another local DNS setup, so `gate up` may ask for administrator approval.
 
 Gate daemons are scoped. `gate up -d` starts or reloads the current project's
-daemon, while standalone mappings created outside a project are served by the
-global daemon. Use `gate daemon status --all` to inspect every known daemon.
+daemon, while global reservations are served by the global daemon. Use
+`gate daemon status --all` to inspect every known daemon.
+
+Global reservations are machine-local mappings without `gate.toml`:
+
+```bash
+gate add -g web web.localhost 3000
+gate daemon start -g
+gate run -g web -- pnpm dev
+gate rm -g web
+```
+
+Registry commands use the current project by default when `gate.toml` is
+discoverable, and the global scope otherwise. Use `-g`/`--global` for global
+reservations or `-p`/`--project <name>` for a named project. `gate rm` removes by
+service/name. Use `gate clear -y`, `gate clear -g -y`, or
+`gate clear -p <project> -y` to remove every reservation in one scope.
 
 ### Environment-backed config
 

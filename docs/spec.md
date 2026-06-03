@@ -463,6 +463,35 @@ global scope. `gate rm <service>` edits the current project's `gate.toml` when
 the default current-project scope is selected. `gate clear` removes registry,
 route, and DNS state only; it does not edit project config files.
 
+Registry removal selects reservations by service/name in the chosen scope.
+
+`gate clear` is the only project-wide/global-wide registry delete command. In
+TTY text mode it prompts when `-y` is omitted and accepts only `y` or `yes`.
+In non-interactive and JSON contexts it refuses to run unless `-y` is present.
+Single-service `gate rm` operations do not prompt.
+
+Removal text output keeps scope and service readable without synthetic global
+owner strings:
+
+```text
+removed smoke/web
+removed web
+removed project smoke (2 reservations)
+removed global reservations (2 reservations)
+```
+
+Removal JSON output includes explicit scope fields:
+
+```json
+{"scope":"project","project":"smoke","service":"web","removed":true}
+{"scope":"global","service":"web","removed":true}
+{"scope":"project","project":"smoke","removed":true,"reservations":2}
+{"scope":"global","removed":true,"reservations":2}
+```
+
+Tabular registry output uses separate `SCOPE` and `SERVICE` columns; global
+reservations are not displayed as slash-combined owners.
+
 Exit codes:
 
 | Code | Meaning |

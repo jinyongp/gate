@@ -143,6 +143,8 @@ edit this file in place, preserving comments. Outside a project the default
 scope is global; use `-g` explicitly when operating from inside a project.
 `gate clear` removes scoped registry reservations and route/DNS state only; it
 does not edit `gate.toml`.
+Remove reservations by service/name. Use `gate clear -y` for whole-scope
+removal; single-service `gate rm` does not prompt.
 Domains ending in `.localhost` need no sudo; custom domains use `/etc/hosts`
 (sudo). Project reservations are served by that project's daemon. Global
 reservations are served by the global daemon. If the relevant daemon is running,

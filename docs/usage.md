@@ -134,6 +134,7 @@ running, routes are hot-reloaded. If it is stopped, starting it later loads
 active global routes from the registry:
 
 ```bash
+gate up -g
 gate daemon start -g
 ```
 
@@ -158,6 +159,7 @@ https://web.localhost
 Remove the global mapping:
 
 ```bash
+gate down -g
 gate rm -g web
 ```
 
@@ -225,6 +227,16 @@ Add a named project reservation:
 gate add -p myapp web app.localhost 3000
 ```
 
+Activate or deactivate existing global or named-project reservations from the
+registry:
+
+```bash
+gate up -g
+gate down -g
+gate up -p myapp
+gate down -p myapp
+```
+
 Remove one service/name:
 
 ```bash
@@ -252,7 +264,9 @@ gate clear -p myapp -y
 
 `gate clear` removes registry reservations and route/DNS state. It does not edit
 or delete `gate.toml`; use `gate rm <service>` to remove one current-project
-service block.
+service block. Without `-y`, `gate clear` prompts in an interactive terminal and
+refuses to run in JSON or non-interactive contexts. Single-service `gate rm`
+does not prompt.
 
 Prune stale reservations whose owning `gate.toml` no longer exists:
 
