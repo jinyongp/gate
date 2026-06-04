@@ -285,3 +285,15 @@ func TestCompletionScriptsSmoke(t *testing.T) {
 		}
 	}
 }
+
+func TestCompletionZshNoFileCompDoesNotFallbackToFiles(t *testing.T) {
+	isolateCompletion(t)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"completion", "zsh"}, &out, &errb); code != 0 {
+		t.Fatalf("completion zsh exit=%d stderr=%s", code, errb.String())
+	}
+	script := out.String()
+	assertCompletionContains(t, script, "No file completion means gate owns this argument position.", "return 0")
+	assertCompletionExcludes(t, script, "For example zsh can match letters in the middle of words.")
+}

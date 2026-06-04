@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 
 	"gate/internal/cli"
@@ -25,7 +26,40 @@ func configureCompletions(root *cobra.Command) {
 		completionCmd.SetHelpFunc(func(cmd *cobra.Command, _ []string) {
 			cli.WriteHelp(cmd.OutOrStdout(), "completion", commandArgs("completion"), commandSummary("completion"), nil)
 		})
+		configureZshCompletion(completionCmd)
 	}
+}
+
+func configureZshCompletion(completionCmd *cobra.Command) {
+	zsh := findDirectCommand(completionCmd, "zsh")
+	if zsh == nil {
+		return
+	}
+	zsh.RunE = func(cmd *cobra.Command, _ []string) error {
+		var script bytes.Buffer
+		noDesc, _ := cmd.Flags().GetBool("no-descriptions")
+		if noDesc {
+			if err := cmd.Root().GenZshCompletionNoDesc(&script); err != nil {
+				return err
+			}
+		} else if err := cmd.Root().GenZshCompletion(&script); err != nil {
+			return err
+		}
+		_, err := cmd.OutOrStdout().Write([]byte(patchZshNoFileFallback(script.String())))
+		return err
+	}
+}
+
+func patchZshNoFileFallback(script string) string {
+	const old = `                # We must return an error code here to let zsh know that there were no
+                # completions found by _describe; this is what will trigger other
+                # matching algorithms to attempt to find completions.
+                # For example zsh can match letters in the middle of words.
+                return 1`
+	const replacement = `                # No file completion means gate owns this argument position.
+                # Return success so zsh does not fall back to filename completion.
+                return 0`
+	return strings.Replace(script, old, replacement, 1)
 }
 
 func applyCompletionSpec(cmd *cobra.Command, spec completionSpec, dispatchName string, dispatchPrefix []string) {
