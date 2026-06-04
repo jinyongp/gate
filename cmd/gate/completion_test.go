@@ -101,6 +101,11 @@ func assertInOrder(t *testing.T, output string, values ...string) {
 	}
 }
 
+func assertKeepOrderDirective(t *testing.T, output string) {
+	t.Helper()
+	assertCompletionContains(t, output, "ShellCompDirectiveKeepOrder")
+}
+
 func TestCompletionProvidersListLocalState(t *testing.T) {
 	cwd := isolateCompletion(t)
 	path := writeCompletionProject(t, cwd, "demo", "api", "web")
@@ -208,7 +213,7 @@ func TestCompletionPortAllDoesNotCompleteServiceArgs(t *testing.T) {
 	out := completeGate(t, "port", "-a", "")
 
 	assertCompletionExcludes(t, out, "api", "web")
-	assertCompletionContains(t, out, ":4")
+	assertKeepOrderDirective(t, out)
 }
 
 func TestCompletionDaemonStatusHasOnlyListenerFlags(t *testing.T) {
@@ -276,11 +281,17 @@ func TestCompletionExposeScopes(t *testing.T) {
 func TestCompletionStaticSubcommands(t *testing.T) {
 	isolateCompletion(t)
 
-	assertCompletionContains(t, completeGate(t, "daemon", ""), "start", "stop", "restart", "status", "logs")
-	assertInOrder(t, completeGate(t, "daemon", ""), "status", "start", "stop", "restart", "logs")
-	assertCompletionContains(t, completeGate(t, "ca", ""), "export")
-	assertCompletionContains(t, completeGate(t, "skill", ""), "path", "print")
-	assertCompletionContains(t, completeGate(t, "completion", ""), "bash", "zsh", "fish")
+	daemon := completeGate(t, "daemon", "")
+	assertCompletionContains(t, daemon, "start", "stop", "restart", "status", "logs")
+	assertCompletionContains(t, daemon, "show listener daemon status", "print listener daemon logs")
+	assertInOrder(t, daemon, "status", "start", "stop", "restart", "logs")
+	assertKeepOrderDirective(t, daemon)
+	assertCompletionContains(t, completeGate(t, "ca", ""), "export", "export the local CA certificate")
+	assertCompletionContains(t, completeGate(t, "skill", ""), "path", "print", "print the bundled agent skill path")
+	completion := completeGate(t, "completion", "")
+	assertCompletionContains(t, completion, "bash", "zsh", "fish")
+	assertInOrder(t, completion, "bash", "zsh", "fish")
+	assertKeepOrderDirective(t, completion)
 }
 
 func TestCompletionRootHidesInternalCommands(t *testing.T) {
@@ -290,6 +301,7 @@ func TestCompletionRootHidesInternalCommands(t *testing.T) {
 
 	assertCompletionContains(t, out, "add", "up", "daemon")
 	assertInOrder(t, out, "init", "up", "ls", "port", "run", "down", "expose", "daemon", "add", "rm", "clear", "prune")
+	assertKeepOrderDirective(t, out)
 	assertCompletionExcludes(t, out, "__serve")
 }
 

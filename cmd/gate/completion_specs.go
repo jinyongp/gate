@@ -33,6 +33,7 @@ type completionFlagSpec struct {
 
 type completionSpec struct {
 	Command               string
+	Summary               string
 	Children              []completionSpec
 	FlagGroups            []completionFlagGroup
 	Flags                 []completionFlagSpec
@@ -70,11 +71,11 @@ func completionSpecs() []completionSpec {
 		{Command: "prune", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "run", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope}, Args: scopedService, DisableFileCompletion: true, StopAfterDashDash: true},
 		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
-			{Command: "status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "start", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "stop", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "restart", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "logs", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "status", Summary: "show listener daemon status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "start", Summary: "start or reuse the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "stop", Summary: "stop listener daemon(s)", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "restart", Summary: "restart the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "logs", Summary: "print listener daemon logs", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
 		}},
 		{Command: "doctor", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{
 			boolFlag("fix", "", "repair issues that can be fixed without sudo"),
@@ -86,7 +87,7 @@ func completionSpecs() []completionSpec {
 			boolFlag("keep-trust", "", "leave trust store entries in place"),
 		}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "ca", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
-			{Command: "export", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{
+			{Command: "export", Summary: "export the local CA certificate", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{
 				fileFlag("out", "", "output path"),
 			}},
 		}},
@@ -96,18 +97,18 @@ func completionSpecs() []completionSpec {
 		}, Args: func(ctx *completionContext) []string {
 			return scopedService(ctx)
 		}, DisableFileCompletion: true, Children: []completionSpec{
-			{Command: "ls", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScopeAll}, Flags: []completionFlagSpec{
+			{Command: "ls", Summary: "list exposure records", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScopeAll}, Flags: []completionFlagSpec{
 				stringFlag("via", "", "provider: local|lan|cloudflared|tailscale", staticCompletion("local", "lan", "cloudflared", "tailscale")),
 			}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "stop", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
+			{Command: "stop", Summary: "stop one exposure record", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
 				stringFlag("via", "", "provider: local|lan|cloudflared|tailscale", staticCompletion("local", "lan", "cloudflared", "tailscale")),
 				boolFlag("force", "", "forget stale exposure record"),
 			}, Args: scopedService, DisableFileCompletion: true},
 		}},
 		{Command: "upgrade", FlagGroups: []completionFlagGroup{flagsHelp, flagsYes}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "skill", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
-			{Command: "path", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "print", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "path", Summary: "print the bundled agent skill path", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "print", Summary: "print the bundled agent skill", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
 		}},
 	}
 }
@@ -135,6 +136,6 @@ func staticCompletion(values ...string) func(*completionContext) []string {
 func completeFunc(fn func(*completionContext) []string) cobra.CompletionFunc {
 	return func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		ctx := newCompletionContext(cmd, args, toComplete)
-		return filterCompletionValues(fn(ctx), toComplete), cobra.ShellCompDirectiveNoFileComp
+		return filterCompletionValues(fn(ctx), toComplete), orderedNoFileDirective()
 	}
 }

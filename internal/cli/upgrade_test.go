@@ -489,7 +489,7 @@ func TestConfirmUpgradeRichPromptIsStyled(t *testing.T) {
 	if !got {
 		t.Fatal("yes should confirm upgrade")
 	}
-	if !strings.Contains(out.String(), "Upgrade available") {
+	if !strings.Contains(out.String(), "! upgrade available") {
 		t.Fatalf("missing rich upgrade heading: %q", out.String())
 	}
 	if !strings.Contains(out.String(), "current  v1.1.3") {

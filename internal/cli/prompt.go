@@ -32,12 +32,8 @@ func promptLabel(label string) string {
 	return label + ": "
 }
 
-func renderPromptLabel(stdout io.Writer, label string) string {
-	prompt := promptLabel(label)
-	if ui.Enabled(stdout) {
-		return ui.Dim.Render(prompt)
-	}
-	return prompt
+func renderPromptLabel(label string) string {
+	return promptLabel(label)
 }
 
 func renderPromptHeading(stdout io.Writer, label string) string {
@@ -102,7 +98,7 @@ func promptInput(reader *bufio.Reader, stdout io.Writer, spec promptInputSpec) (
 }
 
 func promptInputFallback(reader *bufio.Reader, stdout io.Writer, spec promptInputSpec) (string, error) {
-	prompt := renderPromptLabel(stdout, spec.Label)
+	prompt := renderPromptLabel(spec.Label)
 	if spec.Default == "" {
 		fmt.Fprintf(stdout, "%s", prompt)
 	} else {
@@ -124,7 +120,7 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 		_ = term.Restore(int(os.Stdin.Fd()), oldState)
 	}()
 
-	prompt := renderPromptLabel(stdout, spec.Label)
+	prompt := renderPromptLabel(spec.Label)
 	frame := promptInputFrame{Prompt: prompt}
 	value := ""
 	skipEscape := 0

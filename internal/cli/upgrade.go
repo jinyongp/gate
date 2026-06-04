@@ -398,16 +398,18 @@ func renderUpgradePromptIntro(stdout io.Writer, current, latest string) string {
 
 func renderUpgradePromptIntroRich(current, latest string) string {
 	if latest != "" {
-		return fmt.Sprintf("%s\n  %s  %s\n  %s   %s\n\n",
-			ui.Header.Render("Upgrade available"),
+		return fmt.Sprintf("%s %s\n  %s  %s\n  %s   %s\n\n",
+			ui.Tint(ui.Warn, "!"),
+			"upgrade available",
 			ui.Dim.Render("current"),
-			ui.Dim.Render(current),
+			current,
 			ui.Dim.Render("latest"),
 			ui.Tint(ui.Brand, latest),
 		)
 	}
-	return fmt.Sprintf("%s\n%s\n\n",
-		ui.Header.Render("Upgrade available"),
+	return fmt.Sprintf("%s %s\n%s\n\n",
+		ui.Tint(ui.Warn, "!"),
+		"upgrade available",
 		ui.Dim.Render("gate can install the latest release"),
 	)
 }

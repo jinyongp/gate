@@ -11,6 +11,7 @@ import (
 )
 
 func configureCompletions(root *cobra.Command) {
+	root.ValidArgsFunction = keepOrderCompletion
 	for _, spec := range completionSpecs() {
 		if cmd := findDirectCommand(root, spec.Command); cmd != nil {
 			applyCompletionSpec(cmd, spec, spec.Command, nil)
@@ -19,6 +20,7 @@ func configureCompletions(root *cobra.Command) {
 
 	if completionCmd, _, err := root.Find([]string{"completion"}); err == nil {
 		completionCmd.Short = commandSummary("completion")
+		completionCmd.ValidArgsFunction = keepOrderCompletion
 		for _, sub := range completionCmd.Commands() {
 			switch sub.Name() {
 			case "bash":
@@ -81,7 +83,7 @@ func applyCompletionSpec(cmd *cobra.Command, spec completionSpec, dispatchName s
 	for _, childSpec := range spec.Children {
 		child := findDirectCommand(cmd, childSpec.Command)
 		if child == nil {
-			child = completionChildCommand(childSpec.Command, dispatchName, append(dispatchPrefix, childSpec.Command))
+			child = completionChildCommand(childSpec, dispatchName, append(dispatchPrefix, childSpec.Command))
 			cmd.AddCommand(child)
 		}
 		applyCompletionSpec(child, childSpec, dispatchName, append(dispatchPrefix, childSpec.Command))
@@ -153,7 +155,7 @@ func completionArgsFunction(spec completionSpec) cobra.CompletionFunc {
 		}
 		if spec.Args == nil {
 			if spec.DisableFileCompletion {
-				return nil, cobra.ShellCompDirectiveNoFileComp
+				return nil, orderedNoFileDirective()
 			}
 			return nil, cobra.ShellCompDirectiveDefault
 		}
@@ -161,7 +163,7 @@ func completionArgsFunction(spec completionSpec) cobra.CompletionFunc {
 		values := filterCompletionValues(spec.Args(ctx), toComplete)
 		directive := cobra.ShellCompDirectiveDefault
 		if spec.DisableFileCompletion {
-			directive = cobra.ShellCompDirectiveNoFileComp
+			directive = orderedNoFileDirective()
 		}
 		return values, directive
 	}
@@ -184,9 +186,9 @@ func completePendingFlagValue(spec completionSpec, cmd *cobra.Command, args []st
 		}
 		if flag.Complete != nil {
 			ctx := newCompletionContext(cmd, contextArgs, valuePrefix)
-			return filterCompletionValues(flag.Complete(ctx), valuePrefix), cobra.ShellCompDirectiveNoFileComp, true
+			return filterCompletionValues(flag.Complete(ctx), valuePrefix), orderedNoFileDirective(), true
 		}
-		return nil, cobra.ShellCompDirectiveNoFileComp, true
+		return nil, orderedNoFileDirective(), true
 	}
 	return nil, cobra.ShellCompDirectiveDefault, false
 }
@@ -230,10 +232,14 @@ func expandedCompletionFlags(spec completionSpec) []completionFlagSpec {
 	return out
 }
 
-func completionChildCommand(name, dispatchName string, dispatchPrefix []string) *cobra.Command {
+func completionChildCommand(spec completionSpec, dispatchName string, dispatchPrefix []string) *cobra.Command {
+	summary := spec.Summary
+	if summary == "" {
+		summary = commandSummary(dispatchName)
+	}
 	return &cobra.Command{
-		Use:                name,
-		Short:              commandSummary(dispatchName),
+		Use:                spec.Command,
+		Short:              summary,
 		Args:               cobra.ArbitraryArgs,
 		DisableFlagParsing: true,
 		SilenceUsage:       true,
@@ -305,9 +311,17 @@ func addCompletionFlag(cmd *cobra.Command, spec completionFlagSpec) {
 	}
 	if spec.Kind == completionFlagString || spec.NoValues {
 		_ = cmd.RegisterFlagCompletionFunc(spec.Name, func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
-			return nil, cobra.ShellCompDirectiveNoFileComp
+			return nil, orderedNoFileDirective()
 		})
 	}
+}
+
+func keepOrderCompletion(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return nil, orderedNoFileDirective()
+}
+
+func orderedNoFileDirective() cobra.ShellCompDirective {
+	return cobra.ShellCompDirectiveNoFileComp | cobra.ShellCompDirectiveKeepOrder
 }
 
 func findDirectCommand(parent *cobra.Command, name string) *cobra.Command {
