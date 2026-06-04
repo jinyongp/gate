@@ -162,7 +162,7 @@ func buildDotStackFrames() []string {
 
 	for _, target := range fillOrder {
 		withoutTarget := settled &^ brailleDotMask(target)
-		for _, dot := range fallingPathFrom(target) {
+		for _, dot := range fallingPathOutFrom(target) {
 			frames = append(frames, brailleCellFromMask(withoutTarget|brailleDotMask(dot)))
 		}
 		settled = withoutTarget
@@ -182,12 +182,22 @@ func fallingPathTo(target int) []int {
 	}
 }
 
-func fallingPathFrom(target int) []int {
-	path := fallingPathTo(target)
-	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
-		path[i], path[j] = path[j], path[i]
+func fallingPathOutFrom(target int) []int {
+	var path []int
+	switch target {
+	case 1, 2, 3, 7:
+		path = []int{1, 2, 3, 7}
+	case 4, 5, 6, 8:
+		path = []int{4, 5, 6, 8}
+	default:
+		return nil
 	}
-	return path
+	for i, dot := range path {
+		if dot == target {
+			return path[i:]
+		}
+	}
+	return nil
 }
 
 func leftPathLen(target int) int {

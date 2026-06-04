@@ -159,6 +159,15 @@ func TestDotStackFramesFallFillAndRelease(t *testing.T) {
 	if !containsSubsequence(frames, wantRelease) {
 		t.Fatalf("frames do not contain bottom-up release prefix %#v; frames=%#v", wantRelease, frames)
 	}
+
+	wantFallingRelease := []string{
+		brailleCell(1, 2, 3, 4, 5, 6),
+		brailleCell(1, 2, 4, 5, 6, 7),
+		brailleCell(1, 2, 4, 5, 6),
+	}
+	if !containsSubsequence(frames, wantFallingRelease) {
+		t.Fatalf("frames do not contain falling release %#v; frames=%#v", wantFallingRelease, frames)
+	}
 	if frames[len(frames)-1] != brailleCell() {
 		t.Fatalf("last frame = %q, want blank", frames[len(frames)-1])
 	}
