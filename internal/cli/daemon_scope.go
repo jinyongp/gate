@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -267,7 +268,8 @@ func allListenerRefs() ([]listenerDaemonRef, error) {
 			if !strings.HasPrefix(key, "listener-") {
 				continue
 			}
-			ref := listenerDaemonRef{Key: listener.Key(strings.TrimPrefix(key, "listener-"))}
+			listenerKey := listener.Key(strings.TrimPrefix(key, "listener-"))
+			ref := listenerDaemonRef{Key: listenerKey, Pair: listenerPairForKey(listenerKey)}
 			seen[ref.fileKey()] = ref
 		}
 	}
@@ -281,6 +283,31 @@ func allListenerRefs() ([]listenerDaemonRef, error) {
 		out = append(out, seen[key])
 	}
 	return out, nil
+}
+
+func listenerPairForKey(key listener.Key) listener.Pair {
+	rest, ok := strings.CutPrefix(string(key), "https-")
+	if !ok {
+		return listener.Pair{}
+	}
+	httpsKey, httpKey, ok := strings.Cut(rest, "-http-")
+	if !ok {
+		return listener.Pair{}
+	}
+	httpsPort, httpsOK := listenerPortKey(httpsKey)
+	httpPort, httpOK := listenerPortKey(httpKey)
+	if !httpsOK || !httpOK {
+		return listener.Pair{}
+	}
+	return listener.Pair{HTTPSAddr: ":" + httpsPort, HTTPAddr: ":" + httpPort}
+}
+
+func listenerPortKey(key string) (string, bool) {
+	port, err := strconv.Atoi(key)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", false
+	}
+	return key, true
 }
 
 func slug(s string) string {

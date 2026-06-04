@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"gate/internal/ca"
@@ -21,6 +22,7 @@ import (
 	"gate/internal/listener"
 	"gate/internal/paths"
 	"gate/internal/proxy"
+	"gate/internal/ui"
 )
 
 var newDaemonServeCommand = func(exe, socketPath, httpsAddr, httpAddr string) *exec.Cmd {
@@ -91,32 +93,88 @@ func daemonStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		return writeJSON(stdout, statuses)
 	}
-	for _, st := range statuses {
-		printDaemonStatus(stdout, st)
-	}
+	printDaemonStatuses(stdout, statuses)
 	return ExitOK
 }
 
 func daemonStatusForRef(ref listenerDaemonRef) daemon.Status {
 	st, err := daemonClientForRef(ref).Status()
 	if err != nil {
-		return daemon.Status{Scope: ref.String(), ScopeKey: ref.fileKey(), Running: false}
+		return daemon.Status{Scope: ref.String(), ScopeKey: ref.fileKey(), Running: false, HTTPSAddr: ref.Pair.HTTPSAddr, HTTPAddr: ref.Pair.HTTPAddr}
 	}
 	st.Scope = ref.String()
 	st.ScopeKey = ref.fileKey()
+	if st.HTTPSAddr == "" {
+		st.HTTPSAddr = ref.Pair.HTTPSAddr
+	}
+	if st.HTTPAddr == "" {
+		st.HTTPAddr = ref.Pair.HTTPAddr
+	}
 	return st
 }
 
 func printDaemonStatus(stdout io.Writer, st daemon.Status) {
+	printDaemonStatuses(stdout, []daemon.Status{st})
+}
+
+func printDaemonStatuses(stdout io.Writer, statuses []daemon.Status) {
+	headers := []string{"STATUS", "HTTPS", "HTTP", "PID", "UPTIME", "ROUTES"}
+	rows := make([][]string, 0, len(statuses))
+	for _, st := range statuses {
+		rows = append(rows, daemonStatusRow(st))
+	}
+	if richOut(stdout, false) {
+		fmt.Fprintln(stdout, ui.Render(headers, rows))
+		return
+	}
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, strings.Join(headers, "\t"))
+	for _, row := range rows {
+		fmt.Fprintln(tw, strings.Join(row, "\t"))
+	}
+	_ = tw.Flush()
+}
+
+func daemonStatusRow(st daemon.Status) []string {
 	if !st.Running {
-		printInfo(stdout, "stopped · "+st.Scope)
-		return
+		return []string{"stopped", daemonStatusAddr(st.HTTPSAddr), daemonStatusAddr(st.HTTPAddr), "-", "-", "-"}
 	}
-	if st.HTTPSAddr != "" || st.HTTPAddr != "" {
-		printSuccess(stdout, fmt.Sprintf("running · %s · pid %d · uptime %ds · %d routes · https %s · http %s", st.Scope, st.PID, st.UptimeSec, st.Routes, st.HTTPSAddr, st.HTTPAddr))
-		return
+	return []string{
+		"running",
+		daemonStatusAddr(displayListenAddr(st.HTTPSAddr)),
+		daemonStatusAddr(displayListenAddr(st.HTTPAddr)),
+		strconv.Itoa(st.PID),
+		formatDaemonUptime(st.UptimeSec),
+		strconv.Itoa(st.Routes),
 	}
-	printSuccess(stdout, fmt.Sprintf("running · %s · pid %d · uptime %ds · %d routes", st.Scope, st.PID, st.UptimeSec, st.Routes))
+}
+
+func formatDaemonUptime(seconds int64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	d := time.Duration(seconds) * time.Second
+	hours := int(d / time.Hour)
+	d -= time.Duration(hours) * time.Hour
+	minutes := int(d / time.Minute)
+	d -= time.Duration(minutes) * time.Minute
+	secs := int(d / time.Second)
+	parts := make([]string, 0, 3)
+	if hours > 0 {
+		parts = append(parts, strconv.Itoa(hours)+"h")
+	}
+	if minutes > 0 || hours > 0 {
+		parts = append(parts, strconv.Itoa(minutes)+"m")
+	}
+	parts = append(parts, strconv.Itoa(secs)+"s")
+	return strings.Join(parts, " ")
+}
+
+func daemonStatusAddr(addr string) string {
+	if strings.TrimSpace(addr) == "" || addr == "unknown" {
+		return "-"
+	}
+	return addr
 }
 
 func daemonStart(args []string, stdout, stderr io.Writer) int {
@@ -133,14 +191,14 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 	client := daemonClientForRef(ref)
 	if st, err := client.Status(); err == nil {
 		if !daemonExplicitListenMatches(st, *httpsAddr, *httpAddr, httpsSet, httpSet) {
-			msg := fmt.Sprintf("daemon already running on https %s · http %s; requested https %s · http %s; run `gate daemon stop` first",
+			msg := fmt.Sprintf("daemon already running on https %s and http %s; requested https %s and http %s; run `gate daemon stop` first",
 				displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr), *httpsAddr, *httpAddr)
 			return fail(stderr, false, ExitConflict, "start", msg)
 		}
 		if err := setListenerRoutesWithActivity(ref, stderr, false, "reloading routes"); err != nil {
 			return fail(stderr, false, ExitError, "reload_failed", err.Error())
 		}
-		printSuccess(stdout, fmt.Sprintf("already running · %s · https %s · http %s", ref.String(), displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr)))
+		printDaemonRunResult(stdout, "daemon already running", st.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
 	if err := replaceScopedDaemonsForListener(pair); err != nil {
@@ -156,10 +214,10 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 		}
 		st, err := client.Status()
 		if err != nil {
-			printSuccess(stdout, fmt.Sprintf("started · %s · pid %d · https %s · http %s", ref.String(), result.PID, pair.HTTPSAddr, pair.HTTPAddr))
+			printDaemonRunResult(stdout, "daemon started", result.PID, pair.HTTPSAddr, pair.HTTPAddr)
 			return ExitOK
 		}
-		printSuccess(stdout, fmt.Sprintf("started · %s · pid %d · https %s · http %s", ref.String(), result.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr)))
+		printDaemonRunResult(stdout, "daemon started", result.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
 	return fail(stderr, false, result.Code, "start", result.Message)
@@ -206,11 +264,22 @@ func daemonRestart(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, false, ExitError, "reload_failed", err.Error())
 	}
 	if st, err := client.Status(); err == nil {
-		printSuccess(stdout, fmt.Sprintf("restarted · %s · pid %d · https %s · http %s", ref.String(), st.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr)))
+		printDaemonRunResult(stdout, "daemon restarted", st.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
-	printSuccess(stdout, fmt.Sprintf("restarted · %s · pid %d · https %s · http %s", ref.String(), result.PID, pair.HTTPSAddr, pair.HTTPAddr))
+	printDaemonRunResult(stdout, "daemon restarted", result.PID, pair.HTTPSAddr, pair.HTTPAddr)
 	return ExitOK
+}
+
+func printDaemonRunResult(stdout io.Writer, msg string, pid int, httpsAddr, httpAddr string) {
+	printSuccess(stdout, msg)
+	printDaemonListenAddrs(stdout, httpsAddr, httpAddr)
+	printKV(stdout, "pid", strconv.Itoa(pid))
+}
+
+func printDaemonListenAddrs(stdout io.Writer, httpsAddr, httpAddr string) {
+	printKV(stdout, "https", httpsAddr)
+	printKV(stdout, "http", httpAddr)
 }
 
 func replaceScopedDaemonsForListener(pair listener.Pair) error {

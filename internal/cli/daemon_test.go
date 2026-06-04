@@ -185,6 +185,143 @@ func TestDaemonStatusSingleJSONIsObject(t *testing.T) {
 	}
 }
 
+func TestPrintDaemonStatusUsesTable(t *testing.T) {
+	var out bytes.Buffer
+	printDaemonStatus(&out, daemon.Status{
+		Scope:     "listener:https-443-http-80",
+		Running:   true,
+		PID:       50216,
+		Routes:    5,
+		UptimeSec: 45,
+		HTTPSAddr: "[::]:443",
+		HTTPAddr:  "[::]:80",
+	})
+	got := out.String()
+	assertTableFields(t, got, 0, []string{"STATUS", "HTTPS", "HTTP", "PID", "UPTIME", "ROUTES"})
+	assertTableFields(t, got, 1, []string{"running", "[::]:443", "[::]:80", "50216", "45s", "5"})
+	if strings.Contains(got, " · ") || strings.Contains(got, "listener") {
+		t.Fatalf("daemon status output is still cramped:\n%s", got)
+	}
+}
+
+func TestPrintDaemonStoppedStatusUsesListenAddrs(t *testing.T) {
+	var out bytes.Buffer
+	printDaemonStatus(&out, daemon.Status{
+		Scope:     "listener:https-443-http-80",
+		Running:   false,
+		HTTPSAddr: ":443",
+		HTTPAddr:  ":80",
+	})
+	got := out.String()
+	assertTableFields(t, got, 0, []string{"STATUS", "HTTPS", "HTTP", "PID", "UPTIME", "ROUTES"})
+	assertTableFields(t, got, 1, []string{"stopped", ":443", ":80", "-", "-", "-"})
+	if strings.Contains(got, "listener") {
+		t.Fatalf("daemon stopped output leaked listener key:\n%s", got)
+	}
+}
+
+func TestPrintDaemonStatusesUsesOneTableForMultipleDaemons(t *testing.T) {
+	var out bytes.Buffer
+	printDaemonStatuses(&out, []daemon.Status{
+		{Running: true, PID: 50216, Routes: 5, UptimeSec: 45, HTTPSAddr: "[::]:443", HTTPAddr: "[::]:80"},
+		{Running: false, HTTPSAddr: ":9443", HTTPAddr: ":9080"},
+	})
+	got := out.String()
+	assertTableFields(t, got, 0, []string{"STATUS", "HTTPS", "HTTP", "PID", "UPTIME", "ROUTES"})
+	assertTableFields(t, got, 1, []string{"running", "[::]:443", "[::]:80", "50216", "45s", "5"})
+	assertTableFields(t, got, 2, []string{"stopped", ":9443", ":9080", "-", "-", "-"})
+	if strings.Count(got, "STATUS") != 1 {
+		t.Fatalf("daemon status should render one table header:\n%s", got)
+	}
+}
+
+func TestPrintDaemonStatusSeparatesUptimeUnits(t *testing.T) {
+	var out bytes.Buffer
+	printDaemonStatus(&out, daemon.Status{
+		Running:   true,
+		PID:       50216,
+		Routes:    5,
+		UptimeSec: 2476,
+		HTTPSAddr: "[::]:443",
+		HTTPAddr:  "[::]:80",
+	})
+	got := out.String()
+	if !strings.Contains(got, "41m 16s") {
+		t.Fatalf("daemon status should space uptime units:\n%s", got)
+	}
+	if strings.Contains(got, "41m16s") {
+		t.Fatalf("daemon status still uses compact uptime:\n%s", got)
+	}
+}
+
+func TestFormatDaemonUptime(t *testing.T) {
+	cases := []struct {
+		seconds int64
+		want    string
+	}{
+		{0, "0s"},
+		{45, "45s"},
+		{2476, "41m 16s"},
+		{3723, "1h 2m 3s"},
+		{-1, "0s"},
+	}
+	for _, tc := range cases {
+		if got := formatDaemonUptime(tc.seconds); got != tc.want {
+			t.Fatalf("formatDaemonUptime(%d) = %q, want %q", tc.seconds, got, tc.want)
+		}
+	}
+}
+
+func TestPrintDaemonRunResultUsesReadableFields(t *testing.T) {
+	var out bytes.Buffer
+	printDaemonRunResult(&out, "daemon started", 50216, "[::]:443", "[::]:80")
+	got := out.String()
+	wants := []string{
+		"daemon started\n",
+		"  https: [::]:443\n",
+		"  http: [::]:80\n",
+		"  pid: 50216\n",
+	}
+	for _, want := range wants {
+		if !strings.Contains(got, want) {
+			t.Fatalf("daemon start output missing %q in:\n%s", want, got)
+		}
+	}
+	assertTextInOrder(t, got, wants...)
+	if strings.Contains(got, " · ") || strings.Contains(got, "listener") {
+		t.Fatalf("daemon start output is still cramped:\n%s", got)
+	}
+}
+
+func assertTextInOrder(t *testing.T, output string, values ...string) {
+	t.Helper()
+	pos := 0
+	for _, value := range values {
+		idx := strings.Index(output[pos:], value)
+		if idx < 0 {
+			t.Fatalf("output missing %q after offset %d:\n%s", value, pos, output)
+		}
+		pos += idx + len(value)
+	}
+}
+
+func assertTableFields(t *testing.T, output string, line int, want []string) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if line >= len(lines) {
+		t.Fatalf("missing table line %d in:\n%s", line, output)
+	}
+	got := strings.Fields(lines[line])
+	if len(got) != len(want) {
+		t.Fatalf("line %d fields = %v, want %v\n%s", line, got, want, output)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("line %d fields = %v, want %v\n%s", line, got, want, output)
+		}
+	}
+}
+
 func TestDaemonSubcommandHelpShowsScopeFlags(t *testing.T) {
 	cases := []struct {
 		name string

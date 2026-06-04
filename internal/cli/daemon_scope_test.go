@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"gate/internal/listener"
 	"gate/internal/registry"
 )
 
@@ -161,6 +162,20 @@ func TestDaemonScopeFileKeySlug(t *testing.T) {
 	}
 	if a, b := projectDaemonScope("Demo").fileKey(), projectDaemonScope("demo").fileKey(); a == b {
 		t.Fatalf("case-sensitive project fileKey collision: %q", a)
+	}
+}
+
+func TestListenerPairForKeyRestoresPortOnlyListener(t *testing.T) {
+	pair := listenerPairForKey(listener.Key("https-443-http-80"))
+	if pair.HTTPSAddr != ":443" || pair.HTTPAddr != ":80" {
+		t.Fatalf("pair = %+v", pair)
+	}
+}
+
+func TestListenerPairForKeyLeavesHashedListenerUnknown(t *testing.T) {
+	pair := listenerPairForKey(listener.Key("https-hdeadbeef-443-http-80"))
+	if pair.HTTPSAddr != "" || pair.HTTPAddr != "" {
+		t.Fatalf("hashed listener should not be guessed: %+v", pair)
 	}
 }
 
