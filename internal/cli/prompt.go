@@ -79,6 +79,11 @@ type promptInputState struct {
 	Confirmed bool
 }
 
+type promptInputFrame struct {
+	Prompt string
+	Status bool
+}
+
 func promptInput(reader *bufio.Reader, stdout io.Writer, spec promptInputSpec) (string, error) {
 	if placeholderPromptEnabled(stdout) {
 		return promptInputPlaceholder(stdout, spec)
@@ -120,9 +125,10 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 	}()
 
 	prompt := renderPromptLabel(stdout, spec.Label)
+	frame := promptInputFrame{Prompt: prompt}
 	value := ""
 	skipEscape := 0
-	if err := renderPromptInput(stdout, prompt, value, spec); err != nil {
+	if err := renderPromptInput(stdout, &frame, value, spec); err != nil {
 		return "", err
 	}
 	input := bufio.NewReader(os.Stdin)
@@ -139,8 +145,10 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 		case r == '\r' || r == '\n':
 			result := promptInputValue(spec, value)
 			if err := validatePromptInput(spec, result); err == nil {
-				_, err := fmt.Fprintf(stdout, "\r\x1b[2K%s", prompt)
-				if err != nil {
+				if err := clearPromptStatus(stdout, &frame); err != nil {
+					return "", err
+				}
+				if _, err := fmt.Fprintf(stdout, "\r\x1b[2K%s", prompt); err != nil {
 					return "", err
 				}
 				if err := renderPromptInputValue(stdout, value, result, spec, promptInputState{Confirmed: true}); err != nil {
@@ -169,7 +177,7 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 		default:
 			continue
 		}
-		if err := renderPromptInput(stdout, prompt, value, spec); err != nil {
+		if err := renderPromptInput(stdout, &frame, value, spec); err != nil {
 			return "", err
 		}
 	}
@@ -193,15 +201,18 @@ func validatePromptInput(spec promptInputSpec, value string) error {
 	return spec.Validate(value)
 }
 
-func renderPromptInput(stdout io.Writer, prompt, raw string, spec promptInputSpec) error {
-	if _, err := fmt.Fprintf(stdout, "\r\x1b[2K%s", prompt); err != nil {
+func renderPromptInput(stdout io.Writer, frame *promptInputFrame, raw string, spec promptInputSpec) error {
+	if err := clearPromptStatus(stdout, frame); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "\r\x1b[2K%s", frame.Prompt); err != nil {
 		return err
 	}
 	value := promptInputValue(spec, raw)
 	if err := renderPromptInputValue(stdout, raw, value, spec, promptInputState{}); err != nil {
 		return err
 	}
-	return renderPromptStatus(stdout, validatePromptInput(spec, value))
+	return renderPromptStatus(stdout, frame, validatePromptInput(spec, value))
 }
 
 func renderPromptInputValue(stdout io.Writer, raw, value string, spec promptInputSpec, state promptInputState) error {
@@ -398,7 +409,19 @@ func showCursor(stdout io.Writer) {
 	_, _ = fmt.Fprint(stdout, "\x1b[?25h")
 }
 
-func renderPromptStatus(stdout io.Writer, err error) error {
+func clearPromptStatus(stdout io.Writer, frame *promptInputFrame) error {
+	if !frame.Status {
+		return nil
+	}
+	if _, err := fmt.Fprint(stdout, "\r\n\x1b[2K\x1b8"); err != nil {
+		return err
+	}
+	frame.Status = false
+	return nil
+}
+
+func renderPromptStatus(stdout io.Writer, frame *promptInputFrame, err error) error {
+	frame.Status = true
 	if _, writeErr := fmt.Fprint(stdout, "\r\n\x1b[2K"); writeErr != nil {
 		return writeErr
 	}

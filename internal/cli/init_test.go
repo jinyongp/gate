@@ -323,7 +323,8 @@ func TestPromptOptionalPortFailsOnRegistryReadError(t *testing.T) {
 
 func TestRenderPortPromptShowsInvalidPort(t *testing.T) {
 	var out bytes.Buffer
-	if err := renderPromptInput(&out, "What fixed port should web use? ", "0", portPromptSpec("Fixed port")); err != nil {
+	frame := promptInputFrame{Prompt: "What fixed port should web use? "}
+	if err := renderPromptInput(&out, &frame, "0", portPromptSpec("Fixed port")); err != nil {
 		t.Fatalf("renderPromptInput: %v", err)
 	}
 	if !strings.Contains(out.String(), `invalid port "0"`) {
@@ -390,7 +391,8 @@ func TestPromptCustomBaseDomainRejectsInvalidDomain(t *testing.T) {
 
 func TestRenderCustomBaseDomainPromptShowsInvalidDomain(t *testing.T) {
 	var out bytes.Buffer
-	if err := renderPromptInput(&out, "What base custom domain should gate use? ", "custom", customDomainPromptSpec("Base custom domain", "local.demo.test")); err != nil {
+	frame := promptInputFrame{Prompt: "What base custom domain should gate use? "}
+	if err := renderPromptInput(&out, &frame, "custom", customDomainPromptSpec("Base custom domain", "local.demo.test")); err != nil {
 		t.Fatalf("renderPromptInput: %v", err)
 	}
 	if !strings.Contains(out.String(), `custom domain "custom" must include at least one dot`) {
@@ -400,7 +402,8 @@ func TestRenderCustomBaseDomainPromptShowsInvalidDomain(t *testing.T) {
 
 func TestRenderLocalhostPrefixPromptShowsInvalidDomain(t *testing.T) {
 	var out bytes.Buffer
-	if err := renderPromptInput(&out, "What localhost name should web use? ", "web.gate...", localhostPromptSpec("Localhost prefix", "web.gate")); err != nil {
+	frame := promptInputFrame{Prompt: "What localhost name should web use? "}
+	if err := renderPromptInput(&out, &frame, "web.gate...", localhostPromptSpec("Localhost prefix", "web.gate")); err != nil {
 		t.Fatalf("renderPromptInput: %v", err)
 	}
 	if !strings.Contains(out.String(), `invalid domain "web.gate...localhost"`) {

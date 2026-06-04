@@ -252,6 +252,57 @@ func TestConfirmUpgradeFallbackNormalizesAnswers(t *testing.T) {
 		if strings.Contains(out.String(), "[Y/n]") {
 			t.Fatalf("upgrade prompt used legacy y/n prompt: %q", out.String())
 		}
+		if !strings.Contains(out.String(), "A newer gate release is available.") {
+			t.Fatalf("missing upgrade explanation: %q", out.String())
+		}
+		if !strings.Contains(out.String(), "Upgrade now?") {
+			t.Fatalf("missing upgrade question: %q", out.String())
+		}
+	}
+}
+
+func TestConfirmUpgradeFallbackExplainsInvalidAnswer(t *testing.T) {
+	var out bytes.Buffer
+	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("later\nno\n")), &out, "v1.1.3", "v1.2.2")
+	if err != nil {
+		t.Fatalf("confirmUpgradePrompt: %v", err)
+	}
+	if got {
+		t.Fatal("invalid answer followed by no should decline upgrade")
+	}
+	if !strings.Contains(out.String(), "Current version: v1.1.3") {
+		t.Fatalf("missing current version explanation: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "Latest version: v1.2.2") {
+		t.Fatalf("missing latest version explanation: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "type yes to upgrade, or no to cancel") {
+		t.Fatalf("missing invalid answer guidance: %q", out.String())
+	}
+}
+
+func TestConfirmUpgradeRichPromptIsStyled(t *testing.T) {
+	t.Setenv("FORCE_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("CLICOLOR", "")
+	t.Setenv("CLICOLOR_FORCE", "")
+
+	var out bytes.Buffer
+	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("yes\n")), &out, "v1.1.3", "v1.2.2")
+	if err != nil {
+		t.Fatalf("confirmUpgradePrompt: %v", err)
+	}
+	if !got {
+		t.Fatal("yes should confirm upgrade")
+	}
+	if !strings.Contains(out.String(), "Upgrade available") {
+		t.Fatalf("missing rich upgrade heading: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "current  v1.1.3") {
+		t.Fatalf("missing rich current version row: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "latest   v1.2.2") {
+		t.Fatalf("missing rich latest version row: %q", out.String())
 	}
 }
 

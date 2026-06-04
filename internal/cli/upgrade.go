@@ -275,8 +275,11 @@ func confirmUpgrade(stdout io.Writer, current, latest string) bool {
 }
 
 func confirmUpgradePrompt(reader *bufio.Reader, stdout io.Writer, current, latest string) (bool, error) {
+	if _, err := fmt.Fprint(stdout, renderUpgradePromptIntro(stdout, current, latest)); err != nil {
+		return false, err
+	}
 	value, err := promptInput(reader, stdout, promptInputSpec{
-		Label:       upgradePrompt(current, latest) + "?",
+		Label:       "Upgrade now?",
 		Default:     "yes",
 		Placeholder: "yes",
 		Normalize:   normalizeConfirmAnswer,
@@ -303,14 +306,37 @@ func validateConfirmAnswer(value string) error {
 	if value == "yes" || value == "no" {
 		return nil
 	}
-	return fmt.Errorf("choose yes or no")
+	return fmt.Errorf("type yes to upgrade, or no to cancel")
 }
 
-func upgradePrompt(current, latest string) string {
-	if latest != "" {
-		return fmt.Sprintf("upgrade %s -> %s", current, latest)
+func renderUpgradePromptIntro(stdout io.Writer, current, latest string) string {
+	if richOut(stdout, false) {
+		return renderUpgradePromptIntroRich(current, latest)
 	}
-	return "upgrade gate to the latest release"
+	return renderUpgradePromptIntroPlain(current, latest)
+}
+
+func renderUpgradePromptIntroRich(current, latest string) string {
+	if latest != "" {
+		return fmt.Sprintf("%s\n  %s  %s\n  %s   %s\n\n",
+			ui.Header.Render("Upgrade available"),
+			ui.Dim.Render("current"),
+			ui.Dim.Render(current),
+			ui.Dim.Render("latest"),
+			ui.Tint(ui.Brand, latest),
+		)
+	}
+	return fmt.Sprintf("%s\n%s\n\n",
+		ui.Header.Render("Upgrade available"),
+		ui.Dim.Render("gate can install the latest release"),
+	)
+}
+
+func renderUpgradePromptIntroPlain(current, latest string) string {
+	if latest != "" {
+		return fmt.Sprintf("A newer gate release is available.\nCurrent version: %s\nLatest version: %s\n\n", current, latest)
+	}
+	return "gate can install the latest release.\n\n"
 }
 
 type githubRelease struct {

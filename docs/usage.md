@@ -571,6 +571,9 @@ gate ca export --out gate-root.crt
 gate upgrade
 ```
 
+When a newer release is available, gate shows the current and latest versions
+and asks whether to upgrade.
+
 Skip confirmation:
 
 ```bash
