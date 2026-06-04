@@ -60,6 +60,7 @@ var commands = map[string]command{
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	cobra.EnableCommandSorting = false
 	root := &cobra.Command{
 		Use:           "gate",
 		Short:         "local-dev HTTPS reverse proxy + port registry",
@@ -81,6 +82,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root.SetArgs(args)
 	root.Version = version
 	root.SetVersionTemplate("{{.Version}}\n")
+	root.SetHelpCommand(&cobra.Command{Use: "help", Short: "show help for a command"})
 	// Override help for the root only; subcommands (e.g. the built-in
 	// completion command) keep cobra's default help so their own argument
 	// usage is shown instead of gate's top-level usage.
@@ -101,7 +103,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return defaultUsage(cmd)
 	})
 
-	for _, name := range cobraCommandNames() {
+	for _, spec := range cli.Specs {
+		name := spec.Name
+		if name == "completion" {
+			root.InitDefaultCompletionCmd()
+			continue
+		}
+		commandFn, ok := commands[name]
+		if !ok {
+			continue
+		}
+		sub := &cobra.Command{
+			Use:                name,
+			Short:              commandSummary(name),
+			Args:               cobra.ArbitraryArgs,
+			DisableFlagParsing: true,
+			SilenceUsage:       true,
+			SilenceErrors:      true,
+			RunE: func(cmd *cobra.Command, cmdArgs []string) error {
+				code := commandFn(cmdArgs, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				if code == 0 {
+					return nil
+				}
+				return exitCodeError{code: code}
+			},
+		}
+		sub.Hidden = strings.HasPrefix(name, "__")
+		root.AddCommand(sub)
+	}
+	for _, name := range extraCommandNames() {
 		commandFn := commands[name]
 		sub := &cobra.Command{
 			Use:                name,
@@ -137,14 +167,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func cobraCommandNames() []string {
+func extraCommandNames() []string {
 	seen := map[string]bool{}
-	names := make([]string, 0, len(commands))
 	for _, spec := range cli.Specs {
-		if _, ok := commands[spec.Name]; ok {
-			names = append(names, spec.Name)
-			seen[spec.Name] = true
-		}
+		seen[spec.Name] = true
 	}
 	var extra []string
 	for name := range commands {
@@ -153,7 +179,7 @@ func cobraCommandNames() []string {
 		}
 	}
 	sort.Strings(extra)
-	return append(names, extra...)
+	return extra
 }
 
 // commandSummary returns a subcommand's one-line summary from cli.Specs, the
@@ -185,7 +211,11 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `gate — local-dev HTTPS reverse proxy + port registry
 
 usage:
-  gate [--version] <command> [args]
+  gate [-h|--help] [-v|--version] <command> [args]
+
+flags:
+  -h, --help     show help
+  -v, --version  print version
 
 commands:
 `)
@@ -206,12 +236,12 @@ var commandGroups = []struct {
 	title string
 	names []string
 }{
-	{"PROJECT", []string{"init", "up", "down", "ls", "run", "port"}},
-	{"REGISTRY", []string{"add", "rm", "clear", "prune"}},
-	{"DAEMON", []string{"daemon"}},
-	{"TLS", []string{"trust", "untrust", "ca"}},
+	{"PROJECT", []string{"init", "up", "ls", "port", "run", "down"}},
 	{"SHARE", []string{"expose"}},
-	{"MAINTENANCE", []string{"doctor", "upgrade", "uninstall", "skill", "completion"}},
+	{"DAEMON", []string{"daemon"}},
+	{"REGISTRY", []string{"add", "rm", "clear", "prune"}},
+	{"TLS", []string{"trust", "untrust", "ca"}},
+	{"MAINTENANCE", []string{"doctor", "upgrade", "completion", "skill", "uninstall"}},
 }
 
 // usageRich renders a styled, grouped usage screen for TTYs.
@@ -226,7 +256,10 @@ func usageRich(w io.Writer) {
 	}
 
 	fmt.Fprintln(w, ui.Title("gate", "local-dev HTTPS reverse proxy + port registry"))
-	fmt.Fprintf(w, "\n%s\n  gate [--version] <command> [args]\n", ui.Section("USAGE"))
+	fmt.Fprintf(w, "\n%s\n  gate [-h|--help] [-v|--version] <command> [args]\n", ui.Section("USAGE"))
+	fmt.Fprintf(w, "\n%s\n", ui.Section("FLAGS"))
+	fmt.Fprintf(w, "  %s  %s\n", ui.Command("-h, --help", 13), "show help")
+	fmt.Fprintf(w, "  %s  %s\n", ui.Command("-v, --version", 13), "print version")
 
 	grouped := map[string]bool{}
 	for _, g := range commandGroups {

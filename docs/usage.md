@@ -129,13 +129,13 @@ Add a mapping:
 gate add -g web web.localhost 3000
 ```
 
-Global reservations are served by the global daemon. If the global daemon is
-running, routes are hot-reloaded. If it is stopped, starting it later loads
-active global routes from the registry:
+Global reservations are served by the listener daemon. If that daemon is
+running, routes are hot-reloaded. If it is stopped, starting it later loads all
+active routes for that listener from the registry:
 
 ```bash
 gate up -g
-gate daemon start -g
+gate daemon start
 ```
 
 Run a dev server through the global reservation:
@@ -177,11 +177,11 @@ All reservations:
 gate ls -a
 ```
 
-Only live or down reservations:
+Filter by route state or upstream liveness:
 
 ```bash
-gate ls --status live
-gate ls --status down
+gate ls --route active
+gate ls --upstream down
 ```
 
 Port-focused view for the current project:
@@ -279,10 +279,11 @@ owning config file.
 
 ## Daemon
 
-Daemons are scoped. Inside a project, daemon commands target that project's
-daemon by default. Outside a project, they target the global daemon.
+Daemon processes are keyed by listener address pair. The default listener is
+HTTPS `:443` and HTTP `:80`, so one default daemon serves active routes from all
+projects and global reservations that target that listener.
 
-Start, stop, restart, and inspect the current scoped proxy:
+Start, stop, restart, and inspect the default listener proxy:
 
 ```bash
 gate daemon start
@@ -292,39 +293,20 @@ gate daemon status
 gate daemon logs
 ```
 
-Control the global daemon from inside any project:
-
-```bash
-gate daemon status --global
-gate daemon stop --global
-```
-
-Target a named project daemon:
-
-```bash
-gate daemon status --project myapp
-```
-
-Inspect or stop all known daemons:
+Inspect or stop all known listener daemons:
 
 ```bash
 gate daemon status --all
 gate daemon stop --all
 ```
 
-Start on custom front-proxy ports:
-
-```bash
-gate daemon start --https-addr 127.0.0.1:18443 --http-addr 127.0.0.1:18080
-```
-
-`gate up -d` starts the current project daemon when needed and reloads only that
-project's routes.
+`gate up -d` starts the listener daemon when needed and reloads the merged route
+table for that listener.
 
 ## JSON Output
 
 Commands that support `--json` usually write a single JSON object to stdout.
-Commands that target multiple daemon scopes, such as `gate daemon status --all
+Commands that target multiple listener daemons, such as `gate daemon status --all
 --json`, write a JSON array. Errors in JSON mode are written to stderr as an
 error envelope.
 
@@ -495,6 +477,22 @@ gate expose web --via cloudflared --auth user:pass
 > [!IMPORTANT]
 > Without `--auth`, anyone with the public URL can reach your dev server.
 
+List exposure records:
+
+```bash
+gate expose ls
+gate expose ls --all --json
+```
+
+Stop one exposure after provider teardown succeeds:
+
+```bash
+gate expose stop web --via cloudflared
+```
+
+Use `--force` only to forget stale local exposure records when the provider state
+is already gone or must be cleaned up manually.
+
 Limitations:
 
 - The URL is temporary and random.
@@ -531,11 +529,13 @@ Limitations:
 gate expose web --via tailscale
 ```
 
-This runs `tailscale serve --bg https://<service-domain>`. Tear it down with
-Tailscale's serve controls, for example:
+This runs `tailscale serve --bg https://<service-domain>`. `gate expose stop`
+reports Tailscale records as `unverified`; tear them down with Tailscale's serve
+controls, then pass `--force` to forget the local record if needed:
 
 ```bash
 tailscale serve reset
+gate expose stop web --via tailscale --force
 ```
 
 ### Expose Command Reference
@@ -548,6 +548,10 @@ Supported providers:
 | `lan` | same-network access | requires a `.local` service domain |
 | `cloudflared` | temporary public URL | requires `cloudflared` |
 | `tailscale` | tailnet access | requires `tailscale` |
+
+`gate expose ls` reports provider runtime state as `live`, `down`, or
+`unverified`. `unverified` means gate has a local exposure record but cannot
+prove the external provider is currently serving it.
 
 `gate expose` targets a scoped service/name:
 
@@ -595,13 +599,14 @@ gate completion fish
 Completion is read-only. It reads local registry state and nearby `gate.toml`
 files when available, but it does not start daemons, edit DNS, trust
 certificates, or write project/config files. Broken or missing local state
-returns no candidates instead of noisy shell errors. Candidates are
-stable-sorted.
+returns no candidates instead of noisy shell errors. Candidates use a stable
+task-oriented order.
 
 Installed completion offers:
 
-- command/action candidates: root commands, `daemon start|stop|restart|status|logs`,
-  `ca export`, `skill path|print`, and `completion bash|zsh|fish`
+- command/action candidates: root commands, `daemon status|start|stop|restart|logs`,
+  `ca export`, `expose ls|stop`, `skill path|print`, and
+  `completion bash|zsh|fish`
 - flag candidates: `--<tab>` shows long flags and `-<tab>` shows short flags for
   the current command or subcommand, including common `-h|--help`
 - scope candidates: `-g|--global`, `-p|--project`, and `-a|--all` where that
@@ -609,8 +614,9 @@ Installed completion offers:
 - service/name candidates: scoped service names for `add`, `rm`, `run`, `port`,
   and `expose`; inside a project the default scope is the current project,
   outside a project it is global
-- enum values: `ls --status` completes `live|down`, `up --dns` completes
-  `localhost|hosts`, and `expose --via` completes
+- enum values: `ls --route` completes `active|inactive`, `ls --upstream`
+  completes `live|down`, `up --dns` completes `localhost|hosts`, and
+  `expose --via` completes
   `local|lan|cloudflared|tailscale`
 - file paths only where meaningful, such as `ca export --out`
 

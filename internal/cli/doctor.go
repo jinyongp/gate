@@ -75,6 +75,9 @@ func runDoctorChecks(fix bool) []doctorIssue {
 	if issue, ok := checkLegacyRegistryAdhoc(fix); ok {
 		issues = append(issues, issue)
 	}
+	if issue, ok := checkOldScopedDaemonState(fix); ok {
+		issues = append(issues, issue)
+	}
 	if issue, ok := checkStaleScopedPIDs(fix); ok {
 		issues = append(issues, issue)
 	}
@@ -327,6 +330,9 @@ func checkStaleScopedPIDs(fix bool) (doctorIssue, bool) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".pid") {
 			continue
 		}
+		if strings.HasPrefix(entry.Name(), "listener-") {
+			continue
+		}
 		path := filepath.Join(dir, entry.Name())
 		if scopedPIDStale(path) {
 			stale = append(stale, path)
@@ -353,6 +359,73 @@ func checkStaleScopedPIDs(fix bool) (doctorIssue, bool) {
 	issue.Fixed = true
 	issue.Message = fmt.Sprintf("removed %d stale scoped daemon pid file(s)", len(stale))
 	return issue, true
+}
+
+func checkOldScopedDaemonState(fix bool) (doctorIssue, bool) {
+	files, err := oldScopedDaemonFiles()
+	if err != nil {
+		return doctorIssue{Code: "old_scoped_daemon_scan_error", Message: "old scoped daemon state could not be read", Error: err.Error()}, true
+	}
+	if len(files) == 0 {
+		return doctorIssue{}, false
+	}
+	issue := doctorIssue{
+		Code:    "old_scoped_daemon_files",
+		Message: fmt.Sprintf("%d old scoped daemon file(s) found", len(files)),
+		Paths:   files,
+	}
+	if !fix {
+		return issue, true
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, ".pid") {
+			client := daemon.NewClient(strings.TrimSuffix(path, ".pid") + ".sock")
+			if pid, err := readPIDFile(path); err == nil && oldScopedDaemonPIDMatchesSocket(client, pid) {
+				_ = stopDaemonProcess(client, pid, 2*time.Second)
+			}
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			issue.Error = err.Error()
+			return issue, true
+		}
+	}
+	issue.Fixed = true
+	issue.Message = fmt.Sprintf("removed %d old scoped daemon file(s)", len(files))
+	return issue, true
+}
+
+func oldScopedDaemonFiles() ([]string, error) {
+	var out []string
+	for _, dir := range []string{filepath.Join(paths.ConfigDir(), "daemons"), filepath.Join(paths.StateDir(), "daemons")} {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			if strings.HasPrefix(name, "listener-") {
+				continue
+			}
+			if strings.HasSuffix(name, ".sock") || strings.HasSuffix(name, ".pid") || strings.HasSuffix(name, ".log") {
+				out = append(out, filepath.Join(dir, name))
+			}
+		}
+	}
+	return uniquePaths(out), nil
+}
+
+func oldScopedDaemonPIDMatchesSocket(client *daemon.Client, pid int) bool {
+	if pid <= 0 || !isGateDaemonPID(pid) {
+		return false
+	}
+	st, err := client.Status()
+	return err == nil && st.PID == pid
 }
 
 func scopedPIDStale(path string) bool {

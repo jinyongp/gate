@@ -72,3 +72,36 @@ func TestRootUsageIncludesDoctor(t *testing.T) {
 		t.Fatalf("stdout = %q, want doctor in usage", out.String())
 	}
 }
+
+func TestRootUsageIncludesFlags(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(nil, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	for _, want := range []string{"flags:", "-h, --help", "-v, --version"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("stdout = %q, want %q", out.String(), want)
+		}
+	}
+}
+
+func TestDispatcherHelpIncludesCommands(t *testing.T) {
+	cases := map[string][]string{
+		"daemon":     {"COMMANDS", "status", "start", "stop", "restart", "logs"},
+		"expose":     {"COMMANDS", "ls", "stop"},
+		"ca":         {"COMMANDS", "export"},
+		"skill":      {"COMMANDS", "path", "print"},
+		"completion": {"COMMANDS", "bash", "zsh", "fish"},
+	}
+	for cmd, wants := range cases {
+		var out, errb bytes.Buffer
+		if code := run([]string{cmd, "-h"}, &out, &errb); code != 0 {
+			t.Fatalf("run %s -h exit = %d; stderr=%s", cmd, code, errb.String())
+		}
+		for _, want := range wants {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("%s help = %q, want %q", cmd, out.String(), want)
+			}
+		}
+	}
+}

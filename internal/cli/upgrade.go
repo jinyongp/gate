@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gate/internal/daemon"
+	"gate/internal/listener"
 	"gate/internal/ui"
 )
 
@@ -174,22 +175,18 @@ func prepareUpgradeScript(ctx context.Context, stderr io.Writer) (string, error)
 }
 
 func daemonStatusesBeforeUpgrade() []daemon.Status {
-	scopes, err := allDaemonScopes()
+	refs, err := allListenerRefs()
 	if err != nil {
-		scope, serr := currentDaemonScope()
-		if serr != nil {
-			scope = globalDaemonScope()
-		}
-		scopes = []daemonScope{scope}
+		refs = []listenerDaemonRef{defaultListenerRef()}
 	}
 	var statuses []daemon.Status
-	for _, scope := range scopes {
-		st, err := daemonClientFor(scope).Status()
+	for _, ref := range refs {
+		st, err := daemonClientForRef(ref).Status()
 		if err != nil {
 			continue
 		}
-		st.Scope = scope.String()
-		st.ScopeKey = scope.fileKey()
+		st.Scope = ref.String()
+		st.ScopeKey = ref.fileKey()
 		statuses = append(statuses, st)
 	}
 	return statuses
@@ -224,8 +221,8 @@ func completeUpToDate(stdout, stderr io.Writer, version string, daemonsBefore []
 }
 
 func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
-	scope := scopeFromDaemonStatus(st)
-	client := daemonClientFor(scope)
+	ref := listenerRefFromDaemonStatus(st)
+	client := daemonClientForRef(ref)
 	activity := startActivity(stderr, false, "restarting daemon")
 	if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
 		activity.Stop()
@@ -234,13 +231,16 @@ func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 
 	httpsAddr := restartListenAddr(st.HTTPSAddr, defaultDaemonHTTPSAddr)
 	httpAddr := restartListenAddr(st.HTTPAddr, defaultDaemonHTTPAddr)
-	result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), httpsAddr, httpAddr), client, scope)
+	pair := listener.FromFlags(httpsAddr, httpAddr)
+	ref = listenerRefFor(pair)
+	client = daemonClientForRef(ref)
+	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), httpsAddr, httpAddr), client, ref)
 	if result.Code != ExitOK {
 		activity.Stop()
 		return fail(stderr, false, result.Code, "upgrade", "failed to restart daemon: "+result.Message)
 	}
-	if err := setDaemonRoutesForScope(scope); err != nil {
-		cleanupStartedDaemon(client, scope, result.PID)
+	if err := setListenerRoutesForRef(ref); err != nil {
+		cleanupStartedDaemon(client, ref, result.PID)
 		activity.Stop()
 		return fail(stderr, false, ExitError, "upgrade", "failed to reload daemon routes: "+err.Error())
 	}
@@ -249,17 +249,20 @@ func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func scopeFromDaemonStatus(st daemon.Status) daemonScope {
-	if st.ScopeKey != "" {
-		if strings.HasPrefix(st.ScopeKey, "project-") {
-			return daemonScope{Kind: daemonScopeProject, Name: strings.TrimPrefix(st.Scope, "project:"), Key: st.ScopeKey}
-		}
-		return daemonScope{Kind: daemonScopeGlobal, Key: st.ScopeKey}
+func listenerRefFromDaemonStatus(st daemon.Status) listenerDaemonRef {
+	if st.HTTPSAddr != "" || st.HTTPAddr != "" {
+		return listenerRefFor(listener.FromFlags(
+			restartListenAddr(st.HTTPSAddr, defaultDaemonHTTPSAddr),
+			restartListenAddr(st.HTTPAddr, defaultDaemonHTTPAddr),
+		))
 	}
-	if strings.HasPrefix(st.Scope, "project:") {
-		return projectDaemonScope(strings.TrimPrefix(st.Scope, "project:"))
+	if strings.HasPrefix(st.ScopeKey, "listener-") {
+		return listenerDaemonRef{Key: listener.Key(strings.TrimPrefix(st.ScopeKey, "listener-"))}
 	}
-	return globalDaemonScope()
+	if strings.HasPrefix(st.Scope, "listener:") {
+		return listenerDaemonRef{Key: listener.Key(strings.TrimPrefix(st.Scope, "listener:"))}
+	}
+	return defaultListenerRef()
 }
 
 func restartListenAddr(actual, fallback string) string {

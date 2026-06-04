@@ -49,13 +49,14 @@ func completionSpecs() []completionSpec {
 			stringFlag("name", "", "project name", nil),
 			boolFlag("force", "", "overwrite an existing gate.toml"),
 		}, Args: noArgs, DisableFileCompletion: true},
-		{Command: "up", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope, flagsDaemonListen}, Flags: []completionFlagSpec{
+		{Command: "up", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
 			boolFlag("daemon", "d", "start the background daemon before reloading routes"),
 			stringFlag("dns", "", "force DNS mode: localhost|hosts", staticCompletion("localhost", "hosts")),
 		}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "down", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "ls", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScopeAll}, Flags: []completionFlagSpec{
-			stringFlag("status", "", "filter by status: live|down", staticCompletion("live", "down")),
+			stringFlag("route", "", "filter by route: active|inactive", staticCompletion("active", "inactive")),
+			stringFlag("upstream", "", "filter by upstream: live|down", staticCompletion("live", "down")),
 		}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "port", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScopeAll}, Args: func(ctx *completionContext) []string {
 			if ctx.hasAnyFlag("a", "all") {
@@ -68,12 +69,12 @@ func completionSpecs() []completionSpec {
 		{Command: "clear", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope, flagsYes}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "prune", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "run", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope}, Args: scopedService, DisableFileCompletion: true, StopAfterDashDash: true},
-		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: staticCompletion("start", "stop", "restart", "status", "logs"), DisableFileCompletion: true, Children: []completionSpec{
-			{Command: "start", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope, flagsDaemonListen}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "restart", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope, flagsDaemonListen}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "stop", FlagGroups: []completionFlagGroup{flagsHelp, flagsScopeAll}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScopeAll}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "logs", FlagGroups: []completionFlagGroup{flagsHelp, flagsScopeAll}, Args: noArgs, DisableFileCompletion: true},
+		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
+			{Command: "status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "start", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "stop", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "restart", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "logs", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
 		}},
 		{Command: "doctor", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{
 			boolFlag("fix", "", "repair issues that can be fixed without sudo"),
@@ -84,7 +85,7 @@ func completionSpecs() []completionSpec {
 			boolFlag("keep-brew", "", "do not run brew uninstall for Homebrew installs"),
 			boolFlag("keep-trust", "", "leave trust store entries in place"),
 		}, Args: noArgs, DisableFileCompletion: true},
-		{Command: "ca", FlagGroups: []completionFlagGroup{flagsHelp}, Args: staticCompletion("export"), DisableFileCompletion: true, Children: []completionSpec{
+		{Command: "ca", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
 			{Command: "export", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{
 				fileFlag("out", "", "output path"),
 			}},
@@ -92,9 +93,19 @@ func completionSpecs() []completionSpec {
 		{Command: "expose", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
 			stringFlag("via", "", "provider: local|lan|cloudflared|tailscale", staticCompletion("local", "lan", "cloudflared", "tailscale")),
 			noValueFlag("auth", "", "require basic auth as user:pass"),
-		}, Args: scopedService, DisableFileCompletion: true},
+		}, Args: func(ctx *completionContext) []string {
+			return scopedService(ctx)
+		}, DisableFileCompletion: true, Children: []completionSpec{
+			{Command: "ls", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScopeAll}, Flags: []completionFlagSpec{
+				stringFlag("via", "", "provider: local|lan|cloudflared|tailscale", staticCompletion("local", "lan", "cloudflared", "tailscale")),
+			}, Args: noArgs, DisableFileCompletion: true},
+			{Command: "stop", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
+				stringFlag("via", "", "provider: local|lan|cloudflared|tailscale", staticCompletion("local", "lan", "cloudflared", "tailscale")),
+				boolFlag("force", "", "forget stale exposure record"),
+			}, Args: scopedService, DisableFileCompletion: true},
+		}},
 		{Command: "upgrade", FlagGroups: []completionFlagGroup{flagsHelp, flagsYes}, Args: noArgs, DisableFileCompletion: true},
-		{Command: "skill", FlagGroups: []completionFlagGroup{flagsHelp}, Args: staticCompletion("path", "print"), DisableFileCompletion: true, Children: []completionSpec{
+		{Command: "skill", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
 			{Command: "path", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
 			{Command: "print", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
 		}},

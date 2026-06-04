@@ -243,10 +243,10 @@ func assertNoIndicatorBytes(t *testing.T, label, s string) {
 func TestAddStandaloneActivatesDNSAndRoutes(t *testing.T) {
 	isolate(t)
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var ensured []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -258,7 +258,7 @@ func TestAddStandaloneActivatesDNSAndRoutes(t *testing.T) {
 		}
 	}
 	var routes []proxy.Route
-	setDaemonRoutesFunc = func(_ daemonScope, next []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, next []proxy.Route) error {
 		routes = append([]proxy.Route{}, next...)
 		return nil
 	}
@@ -286,13 +286,13 @@ func TestAddStandaloneActivatesDNSAndRoutes(t *testing.T) {
 func TestAddGlobalTextDoesNotPrefixName(t *testing.T) {
 	isolate(t)
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error { return nil }
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return nil }
 
 	var out, errb bytes.Buffer
 	if code := Add([]string{"-g", "web", "web.localhost", "4312"}, &out, &errb); code != ExitOK {
@@ -300,6 +300,17 @@ func TestAddGlobalTextDoesNotPrefixName(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "global"+"/") || !strings.Contains(out.String(), "web  web.localhost") {
 		t.Fatalf("unexpected stdout: %q", out.String())
+	}
+}
+
+func TestAddRejectsExposeReservedServiceNames(t *testing.T) {
+	isolate(t)
+	var out, errb bytes.Buffer
+	if code := Add([]string{"-g", "stop", "stop.localhost", "4312"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("Add reserved exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "reserved service name") {
+		t.Fatalf("stderr = %q", errb.String())
 	}
 }
 
@@ -318,10 +329,10 @@ func TestAddGlobalUpdateRemovesOldDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var ensured, removed []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -336,7 +347,7 @@ func TestAddGlobalUpdateRemovesOldDNS(t *testing.T) {
 			},
 		}
 	}
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error { return nil }
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return nil }
 
 	var out, errb bytes.Buffer
 	if code := Add([]string{"-g", "web", "new.localhost", "4312"}, &out, &errb); code != ExitOK {
@@ -396,10 +407,10 @@ func TestAddStandaloneRestoresExistingReservationWhenReloadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var removed []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -411,7 +422,7 @@ func TestAddStandaloneRestoresExistingReservationWhenReloadFails(t *testing.T) {
 		}
 	}
 	calls := 0
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		calls++
 		if calls == 1 {
 			return errors.New("reload failed")
@@ -439,10 +450,10 @@ func TestAddStandaloneRestoresExistingReservationWhenReloadFails(t *testing.T) {
 func TestAddStandaloneRemovesNewReservationWhenReloadFails(t *testing.T) {
 	isolate(t)
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var removed []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -455,7 +466,7 @@ func TestAddStandaloneRemovesNewReservationWhenReloadFails(t *testing.T) {
 	}
 	var scopes []string
 	var routesCalls [][]proxy.Route
-	setDaemonRoutesFunc = func(scope daemonScope, routes []proxy.Route) error {
+	setListenerRoutesFunc = func(scope listenerDaemonRef, routes []proxy.Route) error {
 		scopes = append(scopes, scope.String())
 		routesCalls = append(routesCalls, append([]proxy.Route{}, routes...))
 		if len(scopes) == 1 {
@@ -478,7 +489,8 @@ func TestAddStandaloneRemovesNewReservationWhenReloadFails(t *testing.T) {
 	if len(removed) != 1 || removed[0] != "web.localhost" {
 		t.Fatalf("DNS removed = %v", removed)
 	}
-	if len(scopes) != 2 || scopes[0] != "global" || scopes[1] != "global" {
+	wantListener := defaultListenerRef().String()
+	if len(scopes) != 2 || scopes[0] != wantListener || scopes[1] != wantListener {
 		t.Fatalf("reload scopes = %v", scopes)
 	}
 	if len(routesCalls[1]) != 0 {
@@ -501,10 +513,10 @@ func TestRmStandaloneRemovesDNSAndRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var removed []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -516,7 +528,7 @@ func TestRmStandaloneRemovesDNSAndRoutes(t *testing.T) {
 		}
 	}
 	var routes []proxy.Route
-	setDaemonRoutesFunc = func(_ daemonScope, next []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, next []proxy.Route) error {
 		routes = append([]proxy.Route{}, next...)
 		return nil
 	}
@@ -555,10 +567,10 @@ func TestRmStandaloneRestoresReservationWhenReloadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var removed []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -570,7 +582,7 @@ func TestRmStandaloneRestoresReservationWhenReloadFails(t *testing.T) {
 		}
 	}
 	var scopes []string
-	setDaemonRoutesFunc = func(scope daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(scope listenerDaemonRef, _ []proxy.Route) error {
 		scopes = append(scopes, scope.String())
 		if len(scopes) == 1 {
 			return errors.New("reload failed")
@@ -592,7 +604,8 @@ func TestRmStandaloneRestoresReservationWhenReloadFails(t *testing.T) {
 	if len(removed) != 0 {
 		t.Fatalf("DNS should not be removed before reload succeeds: %v", removed)
 	}
-	if len(scopes) != 2 || scopes[0] != "global" || scopes[1] != "global" {
+	wantListener := defaultListenerRef().String()
+	if len(scopes) != 2 || scopes[0] != wantListener || scopes[1] != wantListener {
 		t.Fatalf("reload scopes = %v", scopes)
 	}
 }
@@ -612,10 +625,10 @@ func TestRmStandaloneRestoresReservationWhenDNSFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	selectDNSProvider = func(_, _ string) dns.Provider {
 		return fakeDNSProvider{
@@ -626,7 +639,7 @@ func TestRmStandaloneRestoresReservationWhenDNSFails(t *testing.T) {
 	}
 	var scopes []string
 	var routesCalls [][]proxy.Route
-	setDaemonRoutesFunc = func(scope daemonScope, routes []proxy.Route) error {
+	setListenerRoutesFunc = func(scope listenerDaemonRef, routes []proxy.Route) error {
 		scopes = append(scopes, scope.String())
 		routesCalls = append(routesCalls, append([]proxy.Route{}, routes...))
 		return nil
@@ -643,7 +656,8 @@ func TestRmStandaloneRestoresReservationWhenDNSFails(t *testing.T) {
 	if _, ok := reg.Get(registry.Key("", "web")); !ok {
 		t.Fatal("standalone reservation should be restored after DNS failure")
 	}
-	if len(scopes) != 2 || scopes[0] != "global" || scopes[1] != "global" {
+	wantListener := defaultListenerRef().String()
+	if len(scopes) != 2 || scopes[0] != wantListener || scopes[1] != wantListener {
 		t.Fatalf("reload scopes = %v", scopes)
 	}
 	if len(routesCalls) != 2 || len(routesCalls[1]) != 1 || routesCalls[1][0].Domain != "web.localhost" {
@@ -673,14 +687,14 @@ func TestRmStandaloneInsideUnrelatedProjectUsesGlobalScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
 	var scopes []string
-	setDaemonRoutesFunc = func(scope daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(scope listenerDaemonRef, _ []proxy.Route) error {
 		scopes = append(scopes, scope.String())
 		return nil
 	}
@@ -692,7 +706,8 @@ func TestRmStandaloneInsideUnrelatedProjectUsesGlobalScope(t *testing.T) {
 	if got, err := os.ReadFile(path); err != nil || string(got) != body {
 		t.Fatalf("project config changed or read failed: %v\n%s", err, got)
 	}
-	if len(scopes) != 1 || scopes[0] != "global" {
+	wantListener := defaultListenerRef().String()
+	if len(scopes) != 1 || scopes[0] != wantListener {
 		t.Fatalf("reload scopes = %v", scopes)
 	}
 }
@@ -791,10 +806,10 @@ func TestAddUpdatesActiveProjectServiceReloadsAndCleansOldDNS(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	var ensured, removed []string
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -810,7 +825,7 @@ func TestAddUpdatesActiveProjectServiceReloadsAndCleansOldDNS(t *testing.T) {
 		}
 	}
 	var routes []proxy.Route
-	setDaemonRoutesFunc = func(_ daemonScope, next []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, next []proxy.Route) error {
 		routes = append([]proxy.Route{}, next...)
 		return nil
 	}
@@ -840,12 +855,12 @@ func TestAddUpdatesActiveProjectServiceReloadsAndCleansOldDNS(t *testing.T) {
 
 func TestRmProjectServiceRestoresConfigAndRegistryWhenReloadFails(t *testing.T) {
 	isolate(t)
-	oldSetRoutes := setDaemonRoutesFunc
-	t.Cleanup(func() { setDaemonRoutesFunc = oldSetRoutes })
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
 	calls := 0
-	setDaemonRoutesFunc = func(scope daemonScope, _ []proxy.Route) error {
-		if scope.String() != "project:demo" {
-			t.Fatalf("scope = %q, want project:demo", scope.String())
+	setListenerRoutesFunc = func(scope listenerDaemonRef, _ []proxy.Route) error {
+		if scope.String() != defaultListenerRef().String() {
+			t.Fatalf("scope = %q, want %q", scope.String(), defaultListenerRef().String())
 		}
 		calls++
 		if calls == 1 {
@@ -938,7 +953,7 @@ func TestLsDefaultsToCurrentProjectReservations(t *testing.T) {
 	}
 }
 
-func TestLsAllAndStatusFilter(t *testing.T) {
+func TestLsAllRouteAndUpstreamFilters(t *testing.T) {
 	isolate(t)
 	err := registryStore().Update(func(r *registry.Registry) error {
 		if err := r.Reserve(registry.Reservation{Project: "demo", Service: "web", Domain: "app.localhost", Port: 4400}); err != nil {
@@ -951,13 +966,14 @@ func TestLsAllAndStatusFilter(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := Ls([]string{"--all", "--status=down", "--json"}, &out, &errb); code != ExitOK {
+	if code := Ls([]string{"--all", "--route=inactive", "--upstream=down", "--json"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Ls exit = %d, stderr=%s", code, errb.String())
 	}
 	var got struct {
 		Services []struct {
-			Domain string `json:"domain"`
-			Status string `json:"status"`
+			Domain   string `json:"domain"`
+			Route    string `json:"route"`
+			Upstream string `json:"upstream"`
 		} `json:"services"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
@@ -967,9 +983,15 @@ func TestLsAllAndStatusFilter(t *testing.T) {
 		t.Fatalf("services = %+v", got.Services)
 	}
 	for _, svc := range got.Services {
-		if svc.Status != "down" {
-			t.Fatalf("status = %q", svc.Status)
+		if svc.Route != "inactive" || svc.Upstream != "down" {
+			t.Fatalf("service status = %+v", svc)
 		}
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := Ls([]string{"--all", "--status=down", "--json"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("Ls --status exit = %d, want usage", code)
 	}
 }
 
@@ -1113,10 +1135,10 @@ func TestRmProjectRemovesNamedProjectReservations(t *testing.T) {
 
 func TestRmProjectRestoresRegistryWhenReloadFails(t *testing.T) {
 	isolate(t)
-	oldSetRoutes := setDaemonRoutesFunc
-	t.Cleanup(func() { setDaemonRoutesFunc = oldSetRoutes })
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
 	calls := 0
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		calls++
 		if calls == 1 {
 			return errors.New("reload failed")
@@ -1151,9 +1173,9 @@ func TestRmProjectRestoresRegistryWhenReloadFails(t *testing.T) {
 
 func TestRmProjectReportsRollbackFailureWhenRouteRestoreFails(t *testing.T) {
 	isolate(t)
-	oldSetRoutes := setDaemonRoutesFunc
-	t.Cleanup(func() { setDaemonRoutesFunc = oldSetRoutes })
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		return errors.New("routes failed")
 	}
 	err := registryStore().Update(func(r *registry.Registry) error {
@@ -1184,13 +1206,13 @@ func TestRmProjectReportsRollbackFailureWhenRouteRestoreFails(t *testing.T) {
 
 func TestRmProjectRestoresRegistryAndDNSWhenDNSFails(t *testing.T) {
 	isolate(t)
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	oldSelect := selectDNSProvider
 	t.Cleanup(func() {
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 		selectDNSProvider = oldSelect
 	})
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		return nil
 	}
 	var ensured []string
@@ -1239,13 +1261,13 @@ func TestRmProjectRestoresRegistryAndDNSWhenDNSFails(t *testing.T) {
 
 func TestRmProjectReportsRollbackFailureWhenDNSRestoreFails(t *testing.T) {
 	isolate(t)
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	oldSelect := selectDNSProvider
 	t.Cleanup(func() {
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 		selectDNSProvider = oldSelect
 	})
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		return nil
 	}
 	selectDNSProvider = func(_, _ string) dns.Provider {
@@ -1334,7 +1356,7 @@ func TestPortListsReservedPorts(t *testing.T) {
 		t.Fatalf("Port exit = %d, stderr=%s", code, errb.String())
 	}
 	s := out.String()
-	for _, want := range []string{"PORT", "SCOPE", "SERVICE", "TARGET", "STATUS", "4400", "demo", "web", "https://app.localhost"} {
+	for _, want := range []string{"PORT", "SCOPE", "SERVICE", "TARGET", "ROUTE", "UPSTREAM", "4400", "demo", "web", "https://app.localhost"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("port list missing %q in:\n%s", want, s)
 		}

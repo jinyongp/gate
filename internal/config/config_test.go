@@ -73,6 +73,13 @@ name = "demo"
 [services."api/web"]
 domain = "api.localhost"
 `,
+		"reserved service name": `
+[project]
+name = "demo"
+
+[services.stop]
+domain = "stop.localhost"
+`,
 		"bad domain": `
 [project]
 name = "demo"

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gate/internal/daemon"
+	"gate/internal/listener"
 	"gate/internal/proxy"
 	"gate/internal/registry"
 )
@@ -204,17 +205,17 @@ func TestRestartListenAddrFallsBackWhenStatusIsMissingAddr(t *testing.T) {
 }
 
 func TestScopeFromDaemonStatusPreservesScopeKey(t *testing.T) {
-	st := daemon.Status{Scope: "project:state-only", ScopeKey: "project-state-only-deadbeef"}
-	scope := scopeFromDaemonStatus(st)
-	if got, want := scope.fileKey(), st.ScopeKey; got != want {
+	st := daemon.Status{Scope: "listener:state-only-deadbeef", ScopeKey: "listener-state-only-deadbeef"}
+	ref := listenerRefFromDaemonStatus(st)
+	if got, want := ref.fileKey(), st.ScopeKey; got != want {
 		t.Fatalf("fileKey = %q, want %q", got, want)
 	}
-	if got, want := scope.String(), st.Scope; got != want {
-		t.Fatalf("scope = %q, want %q", got, want)
+	if got, want := ref.String(), st.Scope; got != want {
+		t.Fatalf("ref = %q, want %q", got, want)
 	}
 }
 
-func TestRestartDaemonAfterUpgradeReloadsScopedRoutes(t *testing.T) {
+func TestRestartDaemonAfterUpgradeReloadsListenerRoutes(t *testing.T) {
 	isolate(t)
 	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
 	if err != nil {
@@ -223,50 +224,57 @@ func TestRestartDaemonAfterUpgradeReloadsScopedRoutes(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
 	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
 	t.Setenv("XDG_STATE_HOME", shortConfigDir)
-	scope := projectDaemonScope("demo")
+	ref := listenerRefFor(listener.FromFlags("[::]:18443", "[::]:18080"))
 	if err := registryStore().Update(func(r *registry.Registry) error {
-		return r.Reserve(registry.Reservation{Project: "demo", Service: "web", Domain: "web.localhost", Port: 4300, Active: true})
+		return r.Reserve(registry.Reservation{
+			Project:  "demo",
+			Service:  "web",
+			Domain:   "web.localhost",
+			Port:     4300,
+			Active:   true,
+			Listener: &registry.ListenerTarget{HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"},
+		})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	oldNewDaemonServeCommand := newDaemonServeCommand
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		newDaemonServeCommand = oldNewDaemonServeCommand
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 
-	oldCmd := startHelperAdminDaemon(t, scope)
+	oldCmd := startHelperAdminDaemon(t, ref)
 	newDaemonServeCommand = func(_, socketPath, _, _ string) *exec.Cmd {
 		return helperAdminCommand(t, socketPath)
 	}
-	var reloadedScope daemonScope
+	var reloadedRef listenerDaemonRef
 	var reloadedRoutes []proxy.Route
-	setDaemonRoutesFunc = func(scope daemonScope, routes []proxy.Route) error {
-		reloadedScope = scope
+	setListenerRoutesFunc = func(ref listenerDaemonRef, routes []proxy.Route) error {
+		reloadedRef = ref
 		reloadedRoutes = append([]proxy.Route{}, routes...)
-		return setDaemonRoutes(scope, routes)
+		return setListenerRoutes(ref, routes)
 	}
 
 	var out, errb bytes.Buffer
-	st := daemon.Status{Scope: scope.String(), ScopeKey: scope.fileKey(), PID: oldCmd.Process.Pid, HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"}
+	st := daemon.Status{Scope: ref.String(), ScopeKey: ref.fileKey(), PID: oldCmd.Process.Pid, HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"}
 	if code := restartDaemonAfterUpgrade(st, &out, &errb); code != ExitOK {
 		t.Fatalf("restartDaemonAfterUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
-	if reloadedScope.fileKey() != scope.fileKey() {
-		t.Fatalf("reload scope = %+v, want %+v", reloadedScope, scope)
+	if reloadedRef.fileKey() != ref.fileKey() {
+		t.Fatalf("reload ref = %+v, want %+v", reloadedRef, ref)
 	}
 	if len(reloadedRoutes) != 1 || reloadedRoutes[0].Domain != "web.localhost" {
 		t.Fatalf("reloaded routes = %+v", reloadedRoutes)
 	}
-	newStatus, err := daemonClientFor(scope).Status()
+	newStatus, err := daemonClientForRef(ref).Status()
 	if err != nil {
 		t.Fatalf("new daemon status: %v", err)
 	}
 	if newStatus.PID == oldCmd.Process.Pid {
 		t.Fatal("daemon pid did not change after restart")
 	}
-	_ = stopDaemonProcess(daemonClientFor(scope), newStatus.PID, 2*time.Second)
+	_ = stopDaemonProcess(daemonClientForRef(ref), newStatus.PID, 2*time.Second)
 }
 
 func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {
@@ -401,10 +409,10 @@ func TestPrintUpgradeCancelledUsesFailureMarker(t *testing.T) {
 	}
 }
 
-func startHelperAdminDaemon(t *testing.T, scope daemonScope) *exec.Cmd {
+func startHelperAdminDaemon(t *testing.T, ref daemonStateRef) *exec.Cmd {
 	t.Helper()
 	var stderr bytes.Buffer
-	cmd := helperAdminCommand(t, scope.socketPath())
+	cmd := helperAdminCommand(t, ref.socketPath())
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -415,7 +423,7 @@ func startHelperAdminDaemon(t *testing.T, scope daemonScope) *exec.Cmd {
 			_, _ = cmd.Process.Wait()
 		}
 	})
-	client := daemonClientFor(scope)
+	client := daemonClientForRef(ref)
 	for i := 0; i < 100; i++ {
 		if _, err := client.Status(); err == nil {
 			return cmd

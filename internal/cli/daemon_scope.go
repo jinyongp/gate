@@ -13,6 +13,7 @@ import (
 
 	"gate/internal/config"
 	"gate/internal/daemon"
+	"gate/internal/listener"
 	"gate/internal/paths"
 )
 
@@ -25,6 +26,19 @@ type daemonScope struct {
 	Kind string
 	Name string
 	Key  string
+}
+
+type daemonStateRef interface {
+	String() string
+	fileKey() string
+	socketPath() string
+	pidPath() string
+	logPath() string
+}
+
+type listenerDaemonRef struct {
+	Pair listener.Pair
+	Key  listener.Key
 }
 
 type daemonScopeFlags struct {
@@ -56,6 +70,15 @@ func projectDaemonScope(name string) daemonScope {
 	return daemonScope{Kind: daemonScopeProject, Name: strings.TrimSpace(name)}
 }
 
+func defaultListenerRef() listenerDaemonRef {
+	return listenerRefFor(listener.DefaultPair())
+}
+
+func listenerRefFor(pair listener.Pair) listenerDaemonRef {
+	pair = listener.Normalize(pair)
+	return listenerDaemonRef{Pair: pair, Key: listener.KeyFor(pair)}
+}
+
 func (s daemonScope) String() string {
 	if s.Kind == daemonScopeProject {
 		return "project:" + s.Name
@@ -85,18 +108,38 @@ func (s daemonScope) logPath() string {
 	return paths.DaemonLogPath(s.fileKey())
 }
 
+func (r listenerDaemonRef) String() string {
+	return "listener:" + string(r.Key)
+}
+
+func (r listenerDaemonRef) fileKey() string {
+	return "listener-" + string(r.Key)
+}
+
+func (r listenerDaemonRef) socketPath() string {
+	return paths.ListenerDaemonSocketPath(string(r.Key))
+}
+
+func (r listenerDaemonRef) pidPath() string {
+	return paths.ListenerDaemonPIDPath(string(r.Key))
+}
+
+func (r listenerDaemonRef) logPath() string {
+	return paths.ListenerDaemonLogPath(string(r.Key))
+}
+
 func defineDaemonScopeFlags(fs *flag.FlagSet, allowAll bool) daemonScopeFlags {
 	project := &daemonProjectFlag{}
 	flags := daemonScopeFlags{
-		global:  fs.Bool("global", false, "target the global daemon"),
+		global:  fs.Bool("global", false, "target global reservations"),
 		project: project,
 	}
-	fs.BoolVar(flags.global, "g", false, "target the global daemon")
-	fs.Var(project, "project", "target a project daemon")
-	fs.Var(project, "p", "target a project daemon")
+	fs.BoolVar(flags.global, "g", false, "target global reservations")
+	fs.Var(project, "project", "target project reservations")
+	fs.Var(project, "p", "target project reservations")
 	if allowAll {
-		flags.all = fs.Bool("all", false, "target all known daemons")
-		fs.BoolVar(flags.all, "a", false, "target all known daemons")
+		flags.all = fs.Bool("all", false, "target all reservation scopes")
+		fs.BoolVar(flags.all, "a", false, "target all reservation scopes")
 	}
 	return flags
 }
@@ -145,14 +188,6 @@ func daemonScopesFromCurrentDirAndFlags(flags daemonScopeFlags, allowAll bool) (
 		return nil, err
 	}
 	return []daemonScope{scope}, nil
-}
-
-func singleDaemonScopeFromFlags(flags daemonScopeFlags) (daemonScope, error) {
-	scopes, err := daemonScopesFromCurrentDirAndFlags(flags, false)
-	if err != nil {
-		return daemonScope{}, err
-	}
-	return scopes[0], nil
 }
 
 func allDaemonScopes() ([]daemonScope, error) {
@@ -208,6 +243,44 @@ func allDaemonScopes() ([]daemonScope, error) {
 
 func daemonClientFor(scope daemonScope) *daemon.Client {
 	return daemon.NewClient(scope.socketPath())
+}
+
+func daemonClientForRef(ref daemonStateRef) *daemon.Client {
+	return daemon.NewClient(ref.socketPath())
+}
+
+func allListenerRefs() ([]listenerDaemonRef, error) {
+	seen := map[string]listenerDaemonRef{defaultListenerRef().fileKey(): defaultListenerRef()}
+	for _, dir := range []string{
+		filepath.Join(paths.RuntimeDir(), "daemons"),
+		filepath.Join(paths.ConfigDir(), "daemons"),
+	} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, entry := range entries {
+			key := strings.TrimSuffix(strings.TrimSuffix(entry.Name(), ".sock"), ".pid")
+			if !strings.HasPrefix(key, "listener-") {
+				continue
+			}
+			ref := listenerDaemonRef{Key: listener.Key(strings.TrimPrefix(key, "listener-"))}
+			seen[ref.fileKey()] = ref
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]listenerDaemonRef, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, seen[key])
+	}
+	return out, nil
 }
 
 func slug(s string) string {

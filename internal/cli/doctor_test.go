@@ -221,3 +221,44 @@ func TestDoctorFixRemovesStaleScopedPIDFiles(t *testing.T) {
 		t.Fatalf("%s still exists or stat failed: %v", stale, err)
 	}
 }
+
+func TestDoctorFixRemovesOldScopedDaemonFilesButKeepsListenerFiles(t *testing.T) {
+	configDir, stateDir := isolateDoctor(t)
+	configDaemonDir := filepath.Join(configDir, "daemons")
+	stateDaemonDir := filepath.Join(stateDir, "daemons")
+	for _, dir := range []string{configDaemonDir, stateDaemonDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldFiles := []string{
+		filepath.Join(configDaemonDir, "global.sock"),
+		filepath.Join(configDaemonDir, "project-demo.pid"),
+		filepath.Join(stateDaemonDir, "project-demo.log"),
+	}
+	keepFiles := []string{
+		filepath.Join(configDaemonDir, "listener-https-443-http-80.sock"),
+		filepath.Join(configDaemonDir, "listener-https-443-http-80.pid"),
+		filepath.Join(stateDaemonDir, "listener-https-443-http-80.log"),
+	}
+	for _, path := range append(oldFiles, keepFiles...) {
+		if err := os.WriteFile(path, []byte("state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out, errb bytes.Buffer
+	if code := Doctor([]string{"--fix"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Doctor fix exit = %d, stderr=%s", code, errb.String())
+	}
+	for _, path := range oldFiles {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed: %v", path, err)
+		}
+	}
+	for _, path := range keepFiles {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s missing: %v", path, err)
+		}
+	}
+}

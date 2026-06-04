@@ -6,7 +6,9 @@ package expose
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
+	"time"
 )
 
 // Provider names.
@@ -23,10 +25,28 @@ type Opts struct {
 	Auth string
 }
 
-// Provider establishes external reachability for a domain and reports the URL
-// to use. Close tears it down.
+const (
+	StatusLive       = "live"
+	StatusDown       = "down"
+	StatusUnverified = "unverified"
+)
+
+type Result struct {
+	URL     string
+	PID     int
+	Command string
+}
+
+type StopOpts struct {
+	Force bool
+}
+
+// Provider establishes external reachability for a domain and manages the
+// provider-owned state referenced by persisted exposure records.
 type Provider interface {
-	Expose(ctx context.Context, domain string, opts Opts) (publicURL string, err error)
+	Expose(ctx context.Context, domain string, opts Opts) (Result, error)
+	Status(ctx context.Context, record Record) (string, error)
+	Stop(ctx context.Context, record Record, opts StopOpts) error
 	Close() error
 }
 
@@ -50,8 +70,16 @@ func For(name string) (Provider, error) {
 type Local struct{}
 
 // Expose returns the local HTTPS URL.
-func (Local) Expose(_ context.Context, domain string, _ Opts) (string, error) {
-	return "https://" + domain, nil
+func (Local) Expose(_ context.Context, domain string, _ Opts) (Result, error) {
+	return Result{URL: "https://" + domain}, nil
+}
+
+func (Local) Status(_ context.Context, record Record) (string, error) {
+	return localStatus(record.Target), nil
+}
+
+func (Local) Stop(_ context.Context, _ Record, _ StopOpts) error {
+	return nil
 }
 
 // Close is a no-op.
@@ -62,12 +90,33 @@ type LAN struct{}
 
 // Expose validates the mDNS constraint and returns the LAN URL. Other devices
 // must install the gate root CA (gate ca export) to trust it.
-func (LAN) Expose(_ context.Context, domain string, _ Opts) (string, error) {
+func (LAN) Expose(_ context.Context, domain string, _ Opts) (Result, error) {
 	if !strings.HasSuffix(domain, ".local") {
-		return "", fmt.Errorf("expose: lan requires a .local domain, got %q", domain)
+		return Result{}, fmt.Errorf("expose: lan requires a .local domain, got %q", domain)
 	}
-	return "https://" + domain, nil
+	return Result{URL: "https://" + domain}, nil
+}
+
+func (LAN) Status(_ context.Context, record Record) (string, error) {
+	return localStatus(record.Target), nil
+}
+
+func (LAN) Stop(_ context.Context, _ Record, _ StopOpts) error {
+	return nil
 }
 
 // Close is a no-op.
 func (LAN) Close() error { return nil }
+
+func localStatus(domain string) string {
+	host := strings.TrimSpace(domain)
+	if host == "" {
+		return StatusDown
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, "443"), 150*time.Millisecond)
+	if err != nil {
+		return StatusDown
+	}
+	_ = conn.Close()
+	return StatusLive
+}

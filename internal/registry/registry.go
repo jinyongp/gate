@@ -9,22 +9,31 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"gate/internal/listener"
 )
 
 // SchemaVersion is the current on-disk schema version.
-const SchemaVersion = 1
+const SchemaVersion = 2
+
+// ListenerTarget records a non-default front listener for a reservation.
+type ListenerTarget struct {
+	HTTPSAddr string `json:"https_addr"`
+	HTTPAddr  string `json:"http_addr"`
+}
 
 // Reservation is a persisted service↔port binding.
 type Reservation struct {
-	Project    string `json:"project"`
-	Service    string `json:"service"`
-	Domain     string `json:"domain"`
-	Port       int    `json:"port"`
-	TLS        string `json:"tls,omitempty"`
-	DNS        string `json:"dns,omitempty"`
-	Standalone bool   `json:"standalone,omitempty"`
-	Active     bool   `json:"active,omitempty"`      // true while routed; reservation persists when false
-	ConfigPath string `json:"config_path,omitempty"` // gate.toml that owns this reservation; enables GC
+	Project    string          `json:"project"`
+	Service    string          `json:"service"`
+	Domain     string          `json:"domain"`
+	Port       int             `json:"port"`
+	TLS        string          `json:"tls,omitempty"`
+	DNS        string          `json:"dns,omitempty"`
+	Standalone bool            `json:"standalone,omitempty"`
+	Active     bool            `json:"active,omitempty"`      // true while routed; reservation persists when false
+	ConfigPath string          `json:"config_path,omitempty"` // gate.toml that owns this reservation; enables GC
+	Listener   *ListenerTarget `json:"listener,omitempty"`
 }
 
 // UnmarshalJSON accepts the pre-standalone development-build `adhoc` flag while
@@ -79,6 +88,7 @@ func (e *ConflictError) Error() string {
 // across all other keys; otherwise a *ConflictError naming the owner is returned.
 func (r *Registry) Reserve(res Reservation) error {
 	res.Domain = canonicalDomain(res.Domain)
+	res.SetListenerPair(res.ListenerPair())
 	self := Key(res.Project, res.Service)
 	for key, ex := range r.Services {
 		if key == self {
@@ -96,6 +106,25 @@ func (r *Registry) Reserve(res Reservation) error {
 	}
 	r.Services[self] = res
 	return nil
+}
+
+// ListenerPair returns the target listener for res. Missing metadata means the
+// default listener pair.
+func (r Reservation) ListenerPair() listener.Pair {
+	if r.Listener == nil {
+		return listener.DefaultPair()
+	}
+	return listener.FromFlags(r.Listener.HTTPSAddr, r.Listener.HTTPAddr)
+}
+
+// SetListenerPair stores pair on res. The default listener is omitted on disk.
+func (r *Reservation) SetListenerPair(pair listener.Pair) {
+	pair = listener.Normalize(pair)
+	if listener.Equivalent(pair, listener.DefaultPair()) {
+		r.Listener = nil
+		return
+	}
+	r.Listener = &ListenerTarget{HTTPSAddr: pair.HTTPSAddr, HTTPAddr: pair.HTTPAddr}
 }
 
 // Get returns the reservation for key.
@@ -167,8 +196,10 @@ func migrate(r *Registry) {
 	if r.Services == nil {
 		r.Services = map[string]Reservation{}
 	}
-	if r.Version < 1 {
-		r.Version = 1
+	for key, res := range r.Services {
+		res.Domain = canonicalDomain(res.Domain)
+		res.SetListenerPair(res.ListenerPair())
+		r.Services[key] = res
 	}
 	r.Version = SchemaVersion
 }

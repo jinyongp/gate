@@ -134,7 +134,19 @@ func ValidateServiceName(name string) error {
 	if !serviceNameRe.MatchString(name) {
 		return fmt.Errorf("invalid service name %q", name)
 	}
+	if IsReservedServiceName(name) {
+		return fmt.Errorf("reserved service name %q", name)
+	}
 	return nil
+}
+
+func IsReservedServiceName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ls", "stop":
+		return true
+	default:
+		return false
+	}
 }
 
 func upsertServiceBlock(block []string, svc Service) []string {

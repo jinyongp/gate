@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"gate/internal/daemon"
+	"gate/internal/listener"
 	"gate/internal/proxy"
 	"gate/internal/registry"
 	"os"
@@ -53,12 +54,12 @@ func TestDaemonStartCleansUpStartedDaemonWhenRouteReloadFails(t *testing.T) {
 	isolate(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	oldNewDaemonServeCommand := newDaemonServeCommand
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		newDaemonServeCommand = oldNewDaemonServeCommand
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		return errors.New("reload failed")
 	}
 	newDaemonServeCommand = func(_, socketPath, _, _ string) *exec.Cmd {
@@ -77,17 +78,62 @@ func TestDaemonStartCleansUpStartedDaemonWhenRouteReloadFails(t *testing.T) {
 	if code != ExitError {
 		t.Fatalf("daemonStart exit = %d, want reload failure; stderr=%s", code, errb.String())
 	}
-	scope := globalDaemonScope()
-	if _, err := os.Stat(scope.pidPath()); !os.IsNotExist(err) {
+	ref := listenerRefFor(listener.FromFlags("127.0.0.1:0", "127.0.0.1:0"))
+	if _, err := os.Stat(ref.pidPath()); !os.IsNotExist(err) {
 		t.Fatalf("pid file still exists or stat failed: %v", err)
 	}
-	client := daemonClientFor(scope)
+	client := daemonClientForRef(ref)
 	for i := 0; i < 50 && client.IsRunning(); i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if client.IsRunning() {
 		t.Fatal("started daemon still running after reload failure")
 	}
+}
+
+func TestDaemonStartReplacesOldScopedDaemon(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+
+	oldSrv := proxy.New(nil, nil)
+	stopOld, err := daemon.ServeAdmin(context.Background(), globalDaemonScope().socketPath(), oldSrv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopOld()
+
+	oldNewDaemonServeCommand := newDaemonServeCommand
+	t.Cleanup(func() { newDaemonServeCommand = oldNewDaemonServeCommand })
+	newDaemonServeCommand = func(_, socketPath, _, _ string) *exec.Cmd {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: test launches this same test binary as a helper process.
+		cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+		cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=serve-admin", "GATE_TEST_DAEMON_SOCKET="+socketPath)
+		return cmd
+	}
+
+	var out, errb bytes.Buffer
+	if code := daemonStart([]string{"--https-addr", "127.0.0.1:0", "--http-addr", "127.0.0.1:0"}, &out, &errb); code != ExitOK {
+		t.Fatalf("daemonStart exit = %d, stderr=%s", code, errb.String())
+	}
+	if daemonClientFor(globalDaemonScope()).IsRunning() {
+		t.Fatal("old scoped daemon still running")
+	}
+	ref := listenerRefFor(listener.FromFlags("127.0.0.1:0", "127.0.0.1:0"))
+	st, err := daemonClientForRef(ref).Status()
+	if err != nil {
+		t.Fatalf("listener status: %v", err)
+	}
+	_ = stopDaemonProcess(daemonClientForRef(ref), st.PID, 2*time.Second)
 }
 
 func TestDaemonStatusAllJSONIncludesKnownScopes(t *testing.T) {
@@ -117,7 +163,7 @@ func TestDaemonStatusAllJSONIncludesKnownScopes(t *testing.T) {
 	for _, st := range got {
 		scopes[st.Scope] = true
 	}
-	for _, want := range []string{"global", "project:demo"} {
+	for _, want := range []string{defaultListenerRef().String()} {
 		if !scopes[want] {
 			t.Fatalf("statuses = %+v, missing %q", got, want)
 		}
@@ -127,14 +173,14 @@ func TestDaemonStatusAllJSONIncludesKnownScopes(t *testing.T) {
 func TestDaemonStatusSingleJSONIsObject(t *testing.T) {
 	isolate(t)
 	var out, errb bytes.Buffer
-	if code := daemonStatus([]string{"--global", "--json"}, &out, &errb); code != ExitOK {
+	if code := daemonStatus([]string{"--json"}, &out, &errb); code != ExitOK {
 		t.Fatalf("daemonStatus exit = %d, stderr=%s", code, errb.String())
 	}
 	var got daemon.Status
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("status json should be object: %v\n%s", err, out.String())
 	}
-	if got.Scope != "global" || got.Running {
+	if got.Scope != defaultListenerRef().String() || got.Running {
 		t.Fatalf("status = %+v", got)
 	}
 }
@@ -145,10 +191,10 @@ func TestDaemonSubcommandHelpShowsScopeFlags(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{name: "status", args: []string{"status", "-h"}, want: []string{"--json", "-g, --global", "-p, --project", "-a, --all"}},
-		{name: "logs", args: []string{"logs", "-h"}, want: []string{"-g, --global", "-p, --project", "-a, --all"}},
-		{name: "start", args: []string{"start", "-h"}, want: []string{"--https-addr", "--http-addr", "-g, --global", "-p, --project"}},
-		{name: "restart", args: []string{"restart", "-h"}, want: []string{"--https-addr", "--http-addr", "-g, --global", "-p, --project"}},
+		{name: "status", args: []string{"status", "-h"}, want: []string{"--json", "-a, --all"}},
+		{name: "logs", args: []string{"logs", "-h"}, want: []string{"-a, --all"}},
+		{name: "start", args: []string{"start", "-h"}, want: []string{}},
+		{name: "restart", args: []string{"restart", "-h"}, want: []string{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,11 +220,11 @@ func TestDaemonLogsAllSkipsMissingScopeLogs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	projectScope := projectDaemonScope("demo")
-	if err := os.MkdirAll(filepath.Dir(projectScope.logPath()), 0o700); err != nil {
+	ref := defaultListenerRef()
+	if err := os.MkdirAll(filepath.Dir(ref.logPath()), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(projectScope.logPath(), []byte("project log\n"), 0o600); err != nil {
+	if err := os.WriteFile(ref.logPath(), []byte("listener log\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,44 +233,28 @@ func TestDaemonLogsAllSkipsMissingScopeLogs(t *testing.T) {
 		t.Fatalf("daemonLogs exit = %d, stderr=%s", code, errb.String())
 	}
 	s := out.String()
-	if !strings.Contains(s, "== project:demo ==") || !strings.Contains(s, "project log") {
+	if s != "listener log\n" {
 		t.Fatalf("logs output = %q", s)
 	}
 }
 
-func TestDaemonLogsScopedSelection(t *testing.T) {
+func TestDaemonLogsDefaultSelection(t *testing.T) {
 	isolate(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	globalScope := globalDaemonScope()
-	projectScope := projectDaemonScope("demo")
-	for _, item := range []struct {
-		scope daemonScope
-		body  string
-	}{
-		{globalScope, "global log\n"},
-		{projectScope, "project log\n"},
-	} {
-		if err := os.MkdirAll(filepath.Dir(item.scope.logPath()), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(item.scope.logPath(), []byte(item.body), 0o600); err != nil {
-			t.Fatal(err)
-		}
+	ref := defaultListenerRef()
+	if err := os.MkdirAll(filepath.Dir(ref.logPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ref.logPath(), []byte("listener log\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	var out, errb bytes.Buffer
-	if code := daemonLogs([]string{"--global"}, &out, &errb); code != ExitOK {
-		t.Fatalf("daemonLogs global exit = %d, stderr=%s", code, errb.String())
+	if code := daemonLogs(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("daemonLogs exit = %d, stderr=%s", code, errb.String())
 	}
-	if out.String() != "global log\n" {
-		t.Fatalf("global logs = %q", out.String())
-	}
-	out.Reset()
-	if code := daemonLogs([]string{"--project", "demo"}, &out, &errb); code != ExitOK {
-		t.Fatalf("daemonLogs project exit = %d, stderr=%s", code, errb.String())
-	}
-	if out.String() != "project log\n" {
-		t.Fatalf("project logs = %q", out.String())
+	if out.String() != "listener log\n" {
+		t.Fatalf("logs = %q", out.String())
 	}
 }
 
@@ -292,6 +322,27 @@ func TestDaemonListenMatches(t *testing.T) {
 	}
 }
 
+func TestDaemonStatusMatchesListenerKeepsHostSpecificity(t *testing.T) {
+	if !daemonStatusMatchesListener(
+		daemon.Status{HTTPSAddr: "127.0.0.1:443", HTTPAddr: "127.0.0.1:80"},
+		listener.Pair{HTTPSAddr: "127.0.0.1:443", HTTPAddr: "127.0.0.1:80"},
+	) {
+		t.Fatal("same loopback listener did not match")
+	}
+	if daemonStatusMatchesListener(
+		daemon.Status{HTTPSAddr: "127.0.0.1:443", HTTPAddr: "127.0.0.1:80"},
+		listener.Pair{HTTPSAddr: ":443", HTTPAddr: ":80"},
+	) {
+		t.Fatal("loopback listener matched wildcard listener")
+	}
+	if daemonStatusMatchesListener(
+		daemon.Status{HTTPSAddr: ":443", HTTPAddr: ":80"},
+		listener.Pair{HTTPSAddr: "127.0.0.1:443", HTTPAddr: "127.0.0.1:80"},
+	) {
+		t.Fatal("wildcard listener matched loopback listener")
+	}
+}
+
 func TestDaemonExplicitListenMatchesOnlyChecksSetFlags(t *testing.T) {
 	st := daemon.Status{HTTPSAddr: "[::]:58393", HTTPAddr: "[::]:58394"}
 	if !daemonExplicitListenMatches(st, ":443", ":80", false, false) {
@@ -319,6 +370,9 @@ func TestIsGateDaemonArgsMatchesServeWithFlags(t *testing.T) {
 	}
 	if isGateDaemonArgs("not-gate __serve --socket /tmp/gate.sock") {
 		t.Fatal("non-gate args matched")
+	}
+	if isGateDaemonArgs("python /tmp/gate __serve --socket /tmp/gate.sock") {
+		t.Fatal("non-gate executable mentioning gate __serve matched")
 	}
 }
 

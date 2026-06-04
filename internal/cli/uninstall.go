@@ -269,20 +269,20 @@ func cleanupHostsBlock(stdout, stderr io.Writer) uninstallStep {
 }
 
 func stopAllKnownDaemons(stdout, stderr io.Writer) uninstallStep {
-	scopes, err := allDaemonScopes()
+	refs, err := allListenerRefs()
 	if err != nil {
 		fmt.Fprintf(stderr, "error: failed to list daemons: %v\n", err)
 		return uninstallStepFailed
 	}
 	result := uninstallStepNoop
-	for _, scope := range scopes {
-		client := daemonClientFor(scope)
+	for _, ref := range refs {
+		client := daemonClientForRef(ref)
 		if _, err := client.Status(); err != nil {
-			if _, statErr := os.Stat(scope.pidPath()); statErr != nil {
+			if _, statErr := os.Stat(ref.pidPath()); statErr != nil {
 				continue
 			}
 		}
-		if code := daemonStopScope(scope, stdout, stderr, len(scopes) > 1); code != ExitOK {
+		if code := daemonStopRef(ref, stdout, stderr, len(refs) > 1); code != ExitOK {
 			result = uninstallStepFailed
 			continue
 		}

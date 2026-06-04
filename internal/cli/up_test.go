@@ -14,6 +14,7 @@ import (
 
 	"gate/internal/daemon"
 	"gate/internal/dns"
+	"gate/internal/listener"
 	"gate/internal/port"
 	"gate/internal/proxy"
 	"gate/internal/registry"
@@ -312,19 +313,19 @@ func TestDownGlobalRestoresRegistryWhenReloadFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := proxy.New(nil, nil)
-	stop, err := daemon.ServeAdmin(context.Background(), globalDaemonScope().socketPath(), srv)
+	stop, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
 	if err != nil {
 		t.Fatalf("ServeAdmin: %v", err)
 	}
 	defer stop()
 	oldSelect := selectDNSProvider
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		selectDNSProvider = oldSelect
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error { return errors.New("reload failed") }
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return errors.New("reload failed") }
 
 	var out, errb bytes.Buffer
 	if code := Down([]string{"-g"}, &out, &errb); code != ExitError {
@@ -340,6 +341,49 @@ func TestDownGlobalRestoresRegistryWhenReloadFails(t *testing.T) {
 	}
 }
 
+func TestDownCurrentProjectRestoresRegistryWhenReloadFails(t *testing.T) {
+	setupUpProject(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{Project: "demo", Service: "web", Domain: "web.demo.localhost", Port: 4400, DNS: "localhost", Active: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := proxy.New(nil, nil)
+	stop, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
+	if err != nil {
+		t.Fatalf("ServeAdmin: %v", err)
+	}
+	defer stop()
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return errors.New("reload failed") }
+
+	var out, errb bytes.Buffer
+	if code := Down(nil, &out, &errb); code != ExitError {
+		t.Fatalf("Down exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := reg.Services[registry.Key("demo", "web")]
+	if !res.Active {
+		t.Fatalf("reservation not restored: %+v", res)
+	}
+}
+
 func TestUpDownReloadRunningDaemon(t *testing.T) {
 	setupUpProject(t)
 	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
@@ -350,7 +394,7 @@ func TestUpDownReloadRunningDaemon(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
 	t.Setenv("XDG_STATE_HOME", shortConfigDir)
 	srv := proxy.New(nil, nil)
-	stop, err := daemon.ServeAdmin(context.Background(), projectDaemonScope("demo").socketPath(), srv)
+	stop, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
 	if err != nil {
 		t.Fatalf("ServeAdmin: %v", err)
 	}
@@ -389,7 +433,8 @@ func TestUpDaemonStartsAndReloads(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
 	t.Setenv("XDG_STATE_HOME", shortConfigDir)
 	srv := proxy.New(nil, nil)
-	stop, err := daemon.ServeAdmin(context.Background(), projectDaemonScope("demo").socketPath(), srv)
+	ref := listenerRefFor(listener.FromFlags("127.0.0.1:0", "127.0.0.1:0"))
+	stop, err := daemon.ServeAdmin(context.Background(), ref.socketPath(), srv)
 	if err != nil {
 		t.Fatalf("ServeAdmin: %v", err)
 	}
@@ -440,21 +485,21 @@ func TestUpDaemonSpawnsScopedDaemonAndWritesState(t *testing.T) {
 	if code := Up([]string{"--daemon", "--json"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
 	}
-	scope := projectDaemonScope("demo")
-	if _, err := os.Stat(scope.pidPath()); err != nil {
+	ref := defaultListenerRef()
+	if _, err := os.Stat(ref.pidPath()); err != nil {
 		t.Fatalf("pid file missing: %v", err)
 	}
-	if _, err := os.Stat(scope.logPath()); err != nil {
+	if _, err := os.Stat(ref.logPath()); err != nil {
 		t.Fatalf("log file missing: %v", err)
 	}
-	st, err := daemonClientFor(scope).Status()
+	st, err := daemonClientForRef(ref).Status()
 	if err != nil {
 		t.Fatalf("daemon status: %v", err)
 	}
 	if st.Routes != 2 {
 		t.Fatalf("routes = %d, want 2", st.Routes)
 	}
-	_ = stopDaemonProcess(daemonClientFor(scope), st.PID, 2*time.Second)
+	_ = stopDaemonProcess(daemonClientForRef(ref), st.PID, 2*time.Second)
 }
 
 func TestUpDaemonCleansUpSpawnedDaemonWhenReloadFails(t *testing.T) {
@@ -467,10 +512,10 @@ func TestUpDaemonCleansUpSpawnedDaemonWhenReloadFails(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
 	t.Setenv("XDG_STATE_HOME", shortConfigDir)
 	oldNewDaemonServeCommand := newDaemonServeCommand
-	oldSetRoutes := setDaemonRoutesFunc
+	oldSetRoutes := setListenerRoutesFunc
 	t.Cleanup(func() {
 		newDaemonServeCommand = oldNewDaemonServeCommand
-		setDaemonRoutesFunc = oldSetRoutes
+		setListenerRoutesFunc = oldSetRoutes
 	})
 	newDaemonServeCommand = func(_, socketPath, _, _ string) *exec.Cmd {
 		exe, err := os.Executable()
@@ -482,7 +527,7 @@ func TestUpDaemonCleansUpSpawnedDaemonWhenReloadFails(t *testing.T) {
 		cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=serve-admin", "GATE_TEST_DAEMON_SOCKET="+socketPath)
 		return cmd
 	}
-	setDaemonRoutesFunc = func(_ daemonScope, _ []proxy.Route) error {
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
 		return errors.New("reload failed")
 	}
 
@@ -490,39 +535,15 @@ func TestUpDaemonCleansUpSpawnedDaemonWhenReloadFails(t *testing.T) {
 	if code := Up([]string{"--daemon", "--json"}, &out, &errb); code != ExitError {
 		t.Fatalf("Up exit = %d, want reload failure", code)
 	}
-	scope := projectDaemonScope("demo")
-	if _, err := os.Stat(scope.pidPath()); !os.IsNotExist(err) {
+	ref := defaultListenerRef()
+	if _, err := os.Stat(ref.pidPath()); !os.IsNotExist(err) {
 		t.Fatalf("pid file still exists or stat failed: %v", err)
 	}
-	client := daemonClientFor(scope)
+	client := daemonClientForRef(ref)
 	for i := 0; i < 50 && client.IsRunning(); i++ {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if client.IsRunning() {
 		t.Fatal("spawned daemon still running after reload failure")
-	}
-}
-
-func TestActiveRoutesForScope(t *testing.T) {
-	reg := registry.New()
-	for _, res := range []registry.Reservation{
-		{Project: "demo", Service: "web", Domain: "web.localhost", Port: 4300, Active: true},
-		{Project: "other", Service: "web", Domain: "other.localhost", Port: 4301, Active: true},
-		{Service: "standalone.localhost", Domain: "standalone.localhost", Port: 4302, Standalone: true, Active: true},
-		{Service: "legacy.localhost", Domain: "legacy.localhost", Port: 4304, Active: true},
-		{Project: "demo", Service: "off", Domain: "off.localhost", Port: 4303},
-	} {
-		if err := reg.Reserve(res); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	projectRoutes := activeRoutesForScope(reg, projectDaemonScope("demo"))
-	if len(projectRoutes) != 1 || projectRoutes[0].Domain != "web.localhost" {
-		t.Fatalf("project routes = %+v", projectRoutes)
-	}
-	globalRoutes := activeRoutesForScope(reg, globalDaemonScope())
-	if len(globalRoutes) != 1 || globalRoutes[0].Domain != "standalone.localhost" {
-		t.Fatalf("global routes = %+v", globalRoutes)
 	}
 }

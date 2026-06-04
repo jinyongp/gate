@@ -41,30 +41,36 @@ fi
 
 | command | purpose |
 | --- | --- |
-| `gate init [--json] [--name name] [--force] [-y\|--yes]` | scaffold a starter `gate.toml` |
-| `gate up [-g\|--global] [-p name\|--project name] [--json] [-d\|--daemon] [--dns localhost\|hosts] [--https-addr addr] [--http-addr addr]` | reserve current-project ports or activate scoped reservations |
-| `gate down [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes (reservations kept) |
-| `gate ls [-g\|--global] [-p name\|--project name] [-a\|--all] [--status live\|down] [--json]` | list scoped reservations with live/down status |
+| `gate init [--name name] [--force] [-y\|--yes] [--json]` | scaffold a starter `gate.toml` |
+| `gate up [-d\|--daemon] [--dns localhost\|hosts] [-g\|--global] [-p name\|--project name] [--json]` | reserve current-project ports or activate scoped reservations |
+| `gate ls [--route active\|inactive] [--upstream live\|down] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list scoped reservations with route/upstream status |
 | `gate port [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one scoped service port, or list reserved ports |
 | `gate run [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a command with `PORT` injected |
+| `gate down [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes (reservations kept) |
+| `gate expose [--via <provider>] [--auth user:pass] [-g\|--global] [-p name\|--project name] <service> [--json]` | reach a scoped service externally |
+| `gate expose ls [--via provider] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
+| `gate expose stop [--via <provider>] [--force] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop one exposure |
+| `gate daemon status [-a\|--all] [--json]` | inspect listener proxy status |
 | `gate add [-g\|--global] [-p name\|--project name] <service> <domain> <port> [--json]` | reserve a scoped service/name mapping |
 | `gate rm [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one scoped reservation |
 | `gate clear [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
 | `gate prune [--json]` | GC reservations whose gate.toml is gone |
-| `gate daemon start [-g\|--global] [-p name\|--project name] [--https-addr addr] [--http-addr addr]` | start one scoped proxy |
-| `gate daemon stop [-g\|--global] [-p name\|--project name] [-a\|--all]` | stop scoped proxy daemon(s) |
-| `gate daemon restart [-g\|--global] [-p name\|--project name] [--https-addr addr] [--http-addr addr]` | restart one scoped proxy |
-| `gate daemon logs [-g\|--global] [-p name\|--project name] [-a\|--all]` | print scoped proxy logs |
-| `gate daemon status [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | inspect scoped proxy status |
+| `gate daemon start` | start the default listener proxy |
+| `gate daemon stop [-a\|--all]` | stop listener proxy daemon(s) |
+| `gate daemon restart` | restart the default listener proxy |
+| `gate daemon logs [-a\|--all]` | print listener proxy logs |
 | `gate doctor [--fix] [--json]` | check and repair local gate state |
 | `gate trust` | install the root CA (one time) |
 | `gate untrust` | remove the root CA from OS/browser trust stores |
-| `gate uninstall [-y\|--yes] [--keep-trust] [--keep-brew]` | remove gate state, binaries, and Homebrew package when applicable |
 | `gate ca export [--out path]` | export the root CA for other devices |
-| `gate expose [-g\|--global] [-p name\|--project name] <service> --via <provider> [--auth user:pass] [--json]` | reach a scoped service externally |
 | `gate upgrade [-y\|--yes]` | upgrade to the latest GitHub release |
 | `gate completion bash\|zsh\|fish` | print shell completion script |
 | `gate skill path\|print` | locate or print this skill file |
+| `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | remove gate state, binaries, and Homebrew package when applicable |
+
+`gate expose ls` status values are `live`, `down`, or `unverified`.
+`unverified` means gate has a local exposure record but cannot prove the
+external provider is currently serving it.
 
 ## Exit codes
 
@@ -147,23 +153,23 @@ does not edit `gate.toml`.
 Remove reservations by service/name. Use `gate clear -y` for whole-scope
 removal; single-service `gate rm` does not prompt.
 Domains ending in `.localhost` need no sudo; custom domains use `/etc/hosts`
-(sudo). Project reservations are served by that project's daemon. Global
-reservations are served by the global daemon. If the relevant daemon is running,
-`up`/`down`/`add`/`rm`/`clear` hot-reload only that scope. If it is stopped,
-`gate daemon start` inside a project starts the project daemon; outside a project
-it starts the global daemon. Use `gate daemon status --all` to inspect all known
-daemon scopes. Outside a project, `gate port <name>` and
+(sudo). Active reservations are served by listener daemons, defaulting to
+HTTPS `:443` / HTTP `:80`. If the relevant listener daemon is running,
+`up`/`down`/`add`/`rm`/`clear` hot-reload the merged route table for that
+listener. Use `gate daemon status --all` to inspect all known listener daemons.
+Outside a project, `gate port <name>` and
 `gate run <name> -- ...` resolve global reservations by name.
 
 Shell completion is read-only, local-state aware, quiet on missing/broken local
-state, and stable-sorted. It completes root commands,
-`daemon start|stop|restart|status|logs`, `ca export`, `skill path|print`, and
-`completion bash|zsh|fish`. `--<tab>` shows long flags and `-<tab>` shows short
+state, and uses a stable task-oriented order. It completes root commands,
+`daemon status|start|stop|restart|logs`, `ca export`, `expose ls|stop`,
+`skill path|print`, and `completion bash|zsh|fish`. `--<tab>` shows long flags and `-<tab>` shows short
 flags for the current command/subcommand. `--project` completes registry
 project names. Scoped service/name arguments for `add`, `rm`, `run`, `port`,
 and `expose` complete current-project services inside a project, global
 reservation names outside a project, global names with `-g|--global`, and known
 named-project services with `-p|--project`. Enum completions include
-`ls --status` (`live|down`), `up --dns` (`localhost|hosts`), and
+`ls --route` (`active|inactive`), `ls --upstream` (`live|down`),
+`up --dns` (`localhost|hosts`), and
 `expose --via` (`local|lan|cloudflared|tailscale`). `ca export --out` keeps
 file path completion; service/name positionals do not mix in local file names.

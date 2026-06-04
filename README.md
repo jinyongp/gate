@@ -155,15 +155,17 @@ Run this inside your app repository.
 `.localhost` domains need no DNS setup. Custom domains need `/etc/hosts` or
 another local DNS setup, so `gate up` may ask for administrator approval.
 
-Gate daemons are scoped. `gate up -d` starts or reloads the current project's
-daemon, while global reservations are served by the global daemon. Use
-`gate daemon status --all` to inspect every known daemon.
+Gate daemons are keyed by listener address, not by project. The default listener
+owns HTTPS `:443` and HTTP `:80`, so project and global reservations that use the
+same listener are served by the same daemon. `gate up -d` starts that listener
+daemon when needed, then reloads its routes. Use `gate daemon status --all` to
+inspect every known listener daemon.
 
 Global reservations are machine-local mappings without `gate.toml`:
 
 ```bash
 gate add -g web web.localhost 3000
-gate daemon start -g
+gate daemon start
 gate run -g web -- pnpm dev
 gate rm -g web
 ```

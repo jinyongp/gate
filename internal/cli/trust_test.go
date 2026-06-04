@@ -18,17 +18,39 @@ import (
 )
 
 type fakeExposeProvider struct {
-	called *int
+	called  *int
+	stopped *int
+	closed  *int
+	result  expose.Result
 }
 
-func (p fakeExposeProvider) Expose(_ context.Context, domain string, _ expose.Opts) (string, error) {
+func (p fakeExposeProvider) Expose(_ context.Context, domain string, _ expose.Opts) (expose.Result, error) {
 	if p.called != nil {
 		*p.called++
 	}
-	return "https://" + domain, nil
+	if p.result.URL != "" {
+		return p.result, nil
+	}
+	return expose.Result{URL: "https://" + domain}, nil
 }
 
-func (fakeExposeProvider) Close() error { return nil }
+func (fakeExposeProvider) Status(context.Context, expose.Record) (string, error) {
+	return expose.StatusLive, nil
+}
+
+func (p fakeExposeProvider) Stop(context.Context, expose.Record, expose.StopOpts) error {
+	if p.stopped != nil {
+		*p.stopped++
+	}
+	return nil
+}
+
+func (p fakeExposeProvider) Close() error {
+	if p.closed != nil {
+		*p.closed++
+	}
+	return nil
+}
 
 func TestUntrustDoesNotGenerateMissingCA(t *testing.T) {
 	isolate(t)
@@ -202,26 +224,20 @@ func TestExposeScopedGlobalAndNamedProjectReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	globalSrv := proxy.New(nil, nil)
-	stopGlobal, err := daemon.ServeAdmin(context.Background(), globalDaemonScope().socketPath(), globalSrv)
+	srv := proxy.New(nil, nil)
+	stopListener, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
 	if err != nil {
-		t.Fatalf("ServeAdmin global: %v", err)
+		t.Fatalf("ServeAdmin listener: %v", err)
 	}
-	defer stopGlobal()
-	projectSrv := proxy.New(nil, nil)
-	stopProject, err := daemon.ServeAdmin(context.Background(), projectDaemonScope("demo").socketPath(), projectSrv)
-	if err != nil {
-		t.Fatalf("ServeAdmin project: %v", err)
-	}
-	defer stopProject()
+	defer stopListener()
 
-	oldSetRoutes := setDaemonRoutesFunc
-	t.Cleanup(func() { setDaemonRoutesFunc = oldSetRoutes })
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
 	var calls []struct {
 		scope  string
 		routes []proxy.Route
 	}
-	setDaemonRoutesFunc = func(scope daemonScope, routes []proxy.Route) error {
+	setListenerRoutesFunc = func(scope listenerDaemonRef, routes []proxy.Route) error {
 		calls = append(calls, struct {
 			scope  string
 			routes []proxy.Route
@@ -239,11 +255,11 @@ func TestExposeScopedGlobalAndNamedProjectReload(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("reload calls = %+v", calls)
 	}
-	if calls[0].scope != "global" || len(calls[0].routes) != 1 || calls[0].routes[0].Domain != "web.localhost" || !calls[0].routes[0].Exposed {
-		t.Fatalf("global reload = %+v", calls[0])
+	if calls[0].scope != defaultListenerRef().String() || len(calls[0].routes) != 2 || !routeExposed(calls[0].routes, "web.localhost", "") {
+		t.Fatalf("first reload = %+v", calls[0])
 	}
-	if calls[1].scope != "project:demo" || len(calls[1].routes) != 1 || calls[1].routes[0].Domain != "api.localhost" || !calls[1].routes[0].Exposed || calls[1].routes[0].Auth != "user:pass" {
-		t.Fatalf("project reload = %+v", calls[1])
+	if calls[1].scope != defaultListenerRef().String() || len(calls[1].routes) != 2 || !routeExposed(calls[1].routes, "web.localhost", "") || !routeExposed(calls[1].routes, "api.localhost", "user:pass") {
+		t.Fatalf("second reload = %+v", calls[1])
 	}
 }
 
@@ -270,6 +286,57 @@ func TestExposeRejectsInactiveReservationBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestExposeCleansUpRecordAndProviderWhenReloadFails(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Service: "web", Domain: "web.localhost", Port: 4400, Standalone: true, Active: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := proxy.New(nil, nil)
+	stopListener, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopListener()
+
+	oldProvider := exposeProviderFor
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		exposeProviderFor = oldProvider
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var stopped, closed int
+	exposeProviderFor = func(string) (expose.Provider, error) {
+		return fakeExposeProvider{stopped: &stopped, closed: &closed}, nil
+	}
+	setListenerRoutesFunc = func(listenerDaemonRef, []proxy.Route) error {
+		return errors.New("reload failed")
+	}
+
+	var out, errb bytes.Buffer
+	if code := Expose([]string{"-g", "web", "--via", "local"}, &out, &errb); code != ExitError {
+		t.Fatalf("Expose exit = %d, stderr=%s", code, errb.String())
+	}
+	records, err := exposureStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records = %+v", records)
+	}
+	if stopped == 0 || closed == 0 {
+		t.Fatalf("cleanup stopped=%d closed=%d", stopped, closed)
+	}
+}
+
 func TestExposePreservesExistingSessionRoutesInScope(t *testing.T) {
 	isolate(t)
 	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
@@ -287,17 +354,17 @@ func TestExposePreservesExistingSessionRoutesInScope(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	globalSrv := proxy.New(nil, nil)
-	stopGlobal, err := daemon.ServeAdmin(context.Background(), globalDaemonScope().socketPath(), globalSrv)
+	srv := proxy.New(nil, nil)
+	stopListener, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
 	if err != nil {
-		t.Fatalf("ServeAdmin global: %v", err)
+		t.Fatalf("ServeAdmin listener: %v", err)
 	}
-	defer stopGlobal()
-	oldSetRoutes := setDaemonRoutesFunc
-	t.Cleanup(func() { setDaemonRoutesFunc = oldSetRoutes })
+	defer stopListener()
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
 	var calls [][]proxy.Route
-	setDaemonRoutesFunc = func(scope daemonScope, routes []proxy.Route) error {
-		if scope.String() != "global" {
+	setListenerRoutesFunc = func(scope listenerDaemonRef, routes []proxy.Route) error {
+		if scope.String() != defaultListenerRef().String() {
 			t.Fatalf("scope = %s", scope.String())
 		}
 		calls = append(calls, append([]proxy.Route{}, routes...))
@@ -327,4 +394,132 @@ func TestExposePreservesExistingSessionRoutesInScope(t *testing.T) {
 	if !sawWeb || !sawAPI {
 		t.Fatalf("final routes = %+v", final)
 	}
+}
+
+func TestExposeLsAndStop(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Service: "web", Domain: "web.localhost", Port: 4400, Standalone: true, Active: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := proxy.New(nil, nil)
+	stopListener, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopListener()
+
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
+	var calls [][]proxy.Route
+	setListenerRoutesFunc = func(_ listenerDaemonRef, routes []proxy.Route) error {
+		calls = append(calls, append([]proxy.Route{}, routes...))
+		return oldSetRoutes(defaultListenerRef(), routes)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Expose([]string{"-g", "web", "--via", "local", "--auth", "user:pass"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose exit = %d, stderr=%s", code, errb.String())
+	}
+	out.Reset()
+	if code := Expose([]string{"ls", "-g", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose ls exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), `"auth": true`) || !strings.Contains(out.String(), `"provider": "local"`) {
+		t.Fatalf("ls json = %s", out.String())
+	}
+	out.Reset()
+	if code := Expose([]string{"stop", "-g", "web", "--via", "local", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose stop exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), `"removed": true`) {
+		t.Fatalf("stop json = %s", out.String())
+	}
+	if len(calls) < 2 {
+		t.Fatalf("reload calls = %+v", calls)
+	}
+	final := calls[len(calls)-1]
+	if routeExposed(final, "web.localhost", "user:pass") {
+		t.Fatalf("final routes should not be exposed: %+v", final)
+	}
+}
+
+func TestExposeStopPreservesRecordWhenReloadFails(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Service: "web", Domain: "web.localhost", Port: 4400, Standalone: true, Active: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "web", Provider: expose.ProviderLocal,
+		PublicURL: "https://web.localhost", Target: "web.localhost",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := proxy.New(nil, nil)
+	stopListener, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stopListener()
+
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() { setListenerRoutesFunc = oldSetRoutes })
+	setListenerRoutesFunc = func(listenerDaemonRef, []proxy.Route) error {
+		return errors.New("reload failed")
+	}
+
+	var out, errb bytes.Buffer
+	if code := Expose([]string{"stop", "-g", "web", "--via", "local"}, &out, &errb); code != ExitError {
+		t.Fatalf("Expose stop exit = %d, stderr=%s", code, errb.String())
+	}
+	records, err := exposureStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Service != "web" {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestExposeStopTailscaleRequiresForce(t *testing.T) {
+	isolate(t)
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "web", Provider: expose.ProviderTailscale,
+		PublicURL: "https://web.localhost", Target: "web.localhost",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Expose([]string{"stop", "-g", "web", "--via", "tailscale"}, &out, &errb); code != ExitError {
+		t.Fatalf("Expose stop exit = %d, want error", code)
+	}
+	if code := Expose([]string{"stop", "-g", "web", "--via", "tailscale", "--force"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose stop --force exit = %d, stderr=%s", code, errb.String())
+	}
+}
+
+func routeExposed(routes []proxy.Route, domain, auth string) bool {
+	for _, route := range routes {
+		if route.Domain == domain && route.Exposed && route.Auth == auth {
+			return true
+		}
+	}
+	return false
 }

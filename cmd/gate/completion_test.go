@@ -89,6 +89,18 @@ func assertCompletionExcludes(t *testing.T, output string, values ...string) {
 	}
 }
 
+func assertInOrder(t *testing.T, output string, values ...string) {
+	t.Helper()
+	offset := 0
+	for _, value := range values {
+		i := strings.Index(output[offset:], value)
+		if i < 0 {
+			t.Fatalf("%q missing after byte %d in:\n%s", value, offset, output)
+		}
+		offset += i + len(value)
+	}
+}
+
 func TestCompletionProvidersListLocalState(t *testing.T) {
 	cwd := isolateCompletion(t)
 	path := writeCompletionProject(t, cwd, "demo", "api", "web")
@@ -199,29 +211,43 @@ func TestCompletionPortAllDoesNotCompleteServiceArgs(t *testing.T) {
 	assertCompletionContains(t, out, ":4")
 }
 
-func TestCompletionDaemonStatusProjectValues(t *testing.T) {
+func TestCompletionDaemonStatusHasOnlyListenerFlags(t *testing.T) {
 	isolateCompletion(t)
-	reserveCompletion(t, registry.Reservation{Project: "smoke", Service: "web", Domain: "web.smoke.localhost", Port: 4400})
 
-	assertCompletionContains(t, completeGate(t, "daemon", "status", "--project", ""), "smoke")
+	out := completeGate(t, "daemon", "status", "--")
+	assertCompletionContains(t, out, "--help", "--json", "--all")
+	assertCompletionExcludes(t, out, "--global", "--project")
 }
 
 func TestCompletionEnumFlagValues(t *testing.T) {
 	isolateCompletion(t)
 
-	assertCompletionContains(t, completeGate(t, "ls", "--status", ""), "live", "down")
+	assertCompletionContains(t, completeGate(t, "ls", "--route", ""), "active", "inactive")
+	assertCompletionContains(t, completeGate(t, "ls", "--upstream", ""), "live", "down")
 	assertCompletionContains(t, completeGate(t, "up", "--dns", ""), "localhost", "hosts")
 	assertCompletionContains(t, completeGate(t, "expose", "web", "--via", ""), "local", "lan", "cloudflared", "tailscale")
+	assertCompletionContains(t, completeGate(t, "expose", "ls", "--via", ""), "local", "lan", "cloudflared", "tailscale")
 }
 
 func TestCompletionFlagPrefixes(t *testing.T) {
 	isolateCompletion(t)
 
 	longFlags := completeGate(t, "up", "--")
-	assertCompletionContains(t, longFlags, "--help", "--global", "--project", "--json", "--dns", "--daemon", "--http-addr", "--https-addr")
+	assertCompletionContains(t, longFlags, "--help", "--global", "--project", "--json", "--dns", "--daemon")
+	assertInOrder(t, longFlags, "--daemon", "--dns", "--global", "--project", "--json", "--help")
+	assertCompletionExcludes(t, longFlags, "--http-addr", "--https-addr")
 	shortFlags := completeGate(t, "up", "-")
 	assertCompletionContains(t, shortFlags, "-h", "-g", "-p", "-d")
 	assertCompletionContains(t, completeGate(t, "trust", "--"), "--help")
+}
+
+func TestHelpFlagsUseTaskOrder(t *testing.T) {
+	isolateCompletion(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"up", "-h"}, &out, &errb); code != 0 {
+		t.Fatalf("run up -h exit=%d stderr=%s", code, errb.String())
+	}
+	assertInOrder(t, out.String(), "-d, --daemon", "--dns", "-g, --global", "-p, --project", "--json")
 }
 
 func TestCompletionRunStopsAfterDashDash(t *testing.T) {
@@ -251,6 +277,7 @@ func TestCompletionStaticSubcommands(t *testing.T) {
 	isolateCompletion(t)
 
 	assertCompletionContains(t, completeGate(t, "daemon", ""), "start", "stop", "restart", "status", "logs")
+	assertInOrder(t, completeGate(t, "daemon", ""), "status", "start", "stop", "restart", "logs")
 	assertCompletionContains(t, completeGate(t, "ca", ""), "export")
 	assertCompletionContains(t, completeGate(t, "skill", ""), "path", "print")
 	assertCompletionContains(t, completeGate(t, "completion", ""), "bash", "zsh", "fish")
@@ -262,6 +289,7 @@ func TestCompletionRootHidesInternalCommands(t *testing.T) {
 	out := completeGate(t, "")
 
 	assertCompletionContains(t, out, "add", "up", "daemon")
+	assertInOrder(t, out, "init", "up", "ls", "port", "run", "down", "expose", "daemon", "add", "rm", "clear", "prune")
 	assertCompletionExcludes(t, out, "__serve")
 }
 

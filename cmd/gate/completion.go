@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"sort"
 	"strings"
 
 	"gate/internal/cli"
@@ -16,10 +17,17 @@ func configureCompletions(root *cobra.Command) {
 		}
 	}
 
-	root.InitDefaultCompletionCmd()
 	if completionCmd, _, err := root.Find([]string{"completion"}); err == nil {
+		completionCmd.Short = commandSummary("completion")
 		for _, sub := range completionCmd.Commands() {
-			if sub.Name() == "powershell" {
+			switch sub.Name() {
+			case "bash":
+				sub.Short = "print bash completion script"
+			case "zsh":
+				sub.Short = "print zsh completion script"
+			case "fish":
+				sub.Short = "print fish completion script"
+			case "powershell":
 				completionCmd.RemoveCommand(sub)
 			}
 		}
@@ -63,12 +71,8 @@ func patchZshNoFileFallback(script string) string {
 }
 
 func applyCompletionSpec(cmd *cobra.Command, spec completionSpec, dispatchName string, dispatchPrefix []string) {
-	for _, group := range spec.FlagGroups {
-		for _, flag := range completionFlagGroupSpecs(group) {
-			addCompletionFlag(cmd, flag)
-		}
-	}
-	for _, flag := range spec.Flags {
+	cmd.Flags().SortFlags = false
+	for _, flag := range sortedCompletionFlags(spec) {
 		addCompletionFlag(cmd, flag)
 	}
 	if spec.Args != nil || spec.DisableFileCompletion || spec.StopAfterDashDash {
@@ -81,6 +85,61 @@ func applyCompletionSpec(cmd *cobra.Command, spec completionSpec, dispatchName s
 			cmd.AddCommand(child)
 		}
 		applyCompletionSpec(child, childSpec, dispatchName, append(dispatchPrefix, childSpec.Command))
+	}
+}
+
+func sortedCompletionFlags(spec completionSpec) []completionFlagSpec {
+	var flags []completionFlagSpec
+	for _, group := range spec.FlagGroups {
+		flags = append(flags, completionFlagGroupSpecs(group)...)
+	}
+	flags = append(flags, spec.Flags...)
+	sort.SliceStable(flags, func(i, j int) bool {
+		return completionFlagRank(flags[i].Name) < completionFlagRank(flags[j].Name)
+	})
+	return flags
+}
+
+func completionFlagRank(name string) int {
+	switch name {
+	case "daemon":
+		return 10
+	case "dns":
+		return 20
+	case "route":
+		return 30
+	case "upstream":
+		return 40
+	case "via":
+		return 50
+	case "auth":
+		return 60
+	case "force":
+		return 70
+	case "fix":
+		return 80
+	case "name":
+		return 90
+	case "out":
+		return 100
+	case "keep-trust":
+		return 110
+	case "keep-brew":
+		return 120
+	case "global":
+		return 200
+	case "project":
+		return 210
+	case "all":
+		return 220
+	case "json":
+		return 900
+	case "yes":
+		return 910
+	case "help":
+		return 990
+	default:
+		return 500
 	}
 }
 
@@ -198,14 +257,14 @@ func completionFlagGroupSpecs(group completionFlagGroup) []completionFlagSpec {
 		return []completionFlagSpec{boolFlag("json", "", "emit JSON")}
 	case flagsScope:
 		return []completionFlagSpec{
-			boolFlag("global", "g", "target the global daemon"),
-			stringFlag("project", "p", "target a project daemon", completeProjects),
+			boolFlag("global", "g", "target global reservations"),
+			stringFlag("project", "p", "target project reservations", completeProjects),
 		}
 	case flagsScopeAll:
 		return []completionFlagSpec{
-			boolFlag("global", "g", "target the global daemon"),
-			stringFlag("project", "p", "target a project daemon", completeProjects),
-			boolFlag("all", "a", "target all known daemons"),
+			boolFlag("global", "g", "target global reservations"),
+			stringFlag("project", "p", "target project reservations", completeProjects),
+			boolFlag("all", "a", "target all reservation scopes"),
 		}
 	case flagsYes:
 		return []completionFlagSpec{boolFlag("yes", "y", "skip confirmation")}

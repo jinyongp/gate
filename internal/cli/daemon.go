@@ -18,6 +18,7 @@ import (
 
 	"gate/internal/ca"
 	"gate/internal/daemon"
+	"gate/internal/listener"
 	"gate/internal/paths"
 	"gate/internal/proxy"
 )
@@ -32,7 +33,7 @@ const (
 	defaultDaemonHTTPAddr  = ":80"
 )
 
-// Daemon dispatches `gate daemon start|stop|restart|status|logs`.
+// Daemon dispatches `gate daemon status|start|stop|restart|logs`.
 func Daemon(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		sp := specFor("daemon")
@@ -64,19 +65,27 @@ func Daemon(args []string, stdout, stderr io.Writer) int {
 func daemonStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	scopeFlags := defineDaemonScopeFlags(fs, true)
+	all := fs.Bool("all", false, "target all known listener daemons")
+	fs.BoolVar(all, "a", false, "target all known listener daemons")
 	if handled, code := parseFlags(fs, "daemon status", args, stdout, stderr); handled {
 		return code
 	}
-	scopes, err := daemonScopesFromCurrentDirAndFlags(scopeFlags, true)
-	if err != nil {
-		return fail(stderr, *jsonOut, ExitUsage, "scope", err.Error())
+	refs := []listenerDaemonRef{defaultListenerRef()}
+	if *all {
+		var err error
+		refs, err = allListenerRefs()
+		if err != nil {
+			return fail(stderr, *jsonOut, ExitError, "listener", err.Error())
+		}
 	}
-	statuses := make([]daemon.Status, 0, len(scopes))
-	for _, scope := range scopes {
-		statuses = append(statuses, daemonStatusForScope(scope))
+	statuses := make([]daemon.Status, 0, len(refs))
+	for _, ref := range refs {
+		statuses = append(statuses, daemonStatusForRef(ref))
 	}
 	if *jsonOut {
+		if *all {
+			return writeJSON(stdout, statuses)
+		}
 		if len(statuses) == 1 {
 			return writeJSON(stdout, statuses[0])
 		}
@@ -88,66 +97,69 @@ func daemonStatus(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func daemonStatusForScope(scope daemonScope) daemon.Status {
-	st, err := daemonClientFor(scope).Status()
+func daemonStatusForRef(ref listenerDaemonRef) daemon.Status {
+	st, err := daemonClientForRef(ref).Status()
 	if err != nil {
-		return daemon.Status{Scope: scope.String(), ScopeKey: scope.fileKey(), Running: false}
+		return daemon.Status{Scope: ref.String(), ScopeKey: ref.fileKey(), Running: false}
 	}
-	st.Scope = scope.String()
-	st.ScopeKey = scope.fileKey()
+	st.Scope = ref.String()
+	st.ScopeKey = ref.fileKey()
 	return st
 }
 
 func printDaemonStatus(stdout io.Writer, st daemon.Status) {
 	if !st.Running {
-		fmt.Fprintf(stdout, "stopped · scope %s\n", st.Scope)
+		fmt.Fprintf(stdout, "stopped · %s\n", st.Scope)
 		return
 	}
 	if st.HTTPSAddr != "" || st.HTTPAddr != "" {
-		fmt.Fprintf(stdout, "running · scope %s · pid %d · uptime %ds · %d routes · https %s · http %s\n", st.Scope, st.PID, st.UptimeSec, st.Routes, st.HTTPSAddr, st.HTTPAddr)
+		fmt.Fprintf(stdout, "running · %s · pid %d · uptime %ds · %d routes · https %s · http %s\n", st.Scope, st.PID, st.UptimeSec, st.Routes, st.HTTPSAddr, st.HTTPAddr)
 		return
 	}
-	fmt.Fprintf(stdout, "running · scope %s · pid %d · uptime %ds · %d routes\n", st.Scope, st.PID, st.UptimeSec, st.Routes)
+	fmt.Fprintf(stdout, "running · %s · pid %d · uptime %ds · %d routes\n", st.Scope, st.PID, st.UptimeSec, st.Routes)
 }
 
 func daemonStart(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
 	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
-	scopeFlags := defineDaemonScopeFlags(fs, false)
 	if handled, code := parseFlags(fs, "daemon start", args, stdout, stderr); handled {
 		return code
 	}
-	scope, err := singleDaemonScopeFromFlags(scopeFlags)
-	if err != nil {
-		return fail(stderr, false, ExitUsage, "scope", err.Error())
-	}
 	httpsSet, httpSet := flagSet(fs, "https-addr"), flagSet(fs, "http-addr")
+	pair := listener.FromFlags(*httpsAddr, *httpAddr)
+	ref := listenerRefFor(pair)
 
-	client := daemonClientFor(scope)
+	client := daemonClientForRef(ref)
 	if st, err := client.Status(); err == nil {
 		if !daemonExplicitListenMatches(st, *httpsAddr, *httpAddr, httpsSet, httpSet) {
 			msg := fmt.Sprintf("daemon already running on https %s · http %s; requested https %s · http %s; run `gate daemon stop` first",
 				displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr), *httpsAddr, *httpAddr)
 			return fail(stderr, false, ExitConflict, "start", msg)
 		}
-		fmt.Fprintf(stdout, "already running · scope %s · https %s · http %s\n", scope.String(), displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
+		if err := setListenerRoutesWithActivity(ref, stderr, false, "reloading routes"); err != nil {
+			return fail(stderr, false, ExitError, "reload_failed", err.Error())
+		}
+		fmt.Fprintf(stdout, "already running · %s · https %s · http %s\n", ref.String(), displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
+	if err := replaceScopedDaemonsForListener(pair); err != nil {
+		return fail(stderr, false, ExitError, "migration", err.Error())
+	}
 	activity := startActivity(stderr, false, "starting daemon")
-	result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), *httpsAddr, *httpAddr), client, scope)
+	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), pair.HTTPSAddr, pair.HTTPAddr), client, ref)
 	activity.Stop()
 	if result.Code == ExitOK {
-		if err := setDaemonRoutesForScopeWithActivity(scope, stderr, false); err != nil {
-			cleanupStartedDaemon(client, scope, result.PID)
+		if err := setListenerRoutesWithActivity(ref, stderr, false, "reloading routes"); err != nil {
+			cleanupStartedDaemon(client, ref, result.PID)
 			return fail(stderr, false, ExitError, "reload_failed", err.Error())
 		}
 		st, err := client.Status()
 		if err != nil {
-			fmt.Fprintf(stdout, "started · scope %s · pid %d · https %s · http %s\n", scope.String(), result.PID, *httpsAddr, *httpAddr)
+			fmt.Fprintf(stdout, "started · %s · pid %d · https %s · http %s\n", ref.String(), result.PID, pair.HTTPSAddr, pair.HTTPAddr)
 			return ExitOK
 		}
-		fmt.Fprintf(stdout, "started · scope %s · pid %d · https %s · http %s\n", scope.String(), result.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
+		fmt.Fprintf(stdout, "started · %s · pid %d · https %s · http %s\n", ref.String(), result.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
 	return fail(stderr, false, result.Code, "start", result.Message)
@@ -157,42 +169,81 @@ func daemonRestart(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restart", flag.ContinueOnError)
 	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
 	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
-	scopeFlags := defineDaemonScopeFlags(fs, false)
 	if handled, code := parseFlags(fs, "daemon restart", args, stdout, stderr); handled {
 		return code
 	}
-	scope, err := singleDaemonScopeFromFlags(scopeFlags)
-	if err != nil {
-		return fail(stderr, false, ExitUsage, "scope", err.Error())
-	}
 
 	httpsSet, httpSet := flagSet(fs, "https-addr"), flagSet(fs, "http-addr")
-	client := daemonClientFor(scope)
+	pair := listener.FromFlags(*httpsAddr, *httpAddr)
+	ref := listenerRefFor(pair)
+	client := daemonClientForRef(ref)
 	activity := startActivity(stderr, false, "restarting daemon")
 	st, running := client.Status()
 	if running == nil {
 		*httpsAddr, *httpAddr = restartListenAddrs(st, *httpsAddr, *httpAddr, httpsSet, httpSet)
+		pair = listener.FromFlags(*httpsAddr, *httpAddr)
+		ref = listenerRefFor(pair)
+		client = daemonClientForRef(ref)
 		if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
 			activity.Stop()
 			return fail(stderr, false, ExitError, "restart", err.Error())
 		}
 	}
+	if running != nil {
+		if err := replaceScopedDaemonsForListener(pair); err != nil {
+			activity.Stop()
+			return fail(stderr, false, ExitError, "migration", err.Error())
+		}
+	}
 
-	result := startDaemonCommand(newDaemonServeCommand(executablePath(), scope.socketPath(), *httpsAddr, *httpAddr), client, scope)
+	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), pair.HTTPSAddr, pair.HTTPAddr), client, ref)
 	activity.Stop()
 	if result.Code != ExitOK {
 		return fail(stderr, false, result.Code, "restart", result.Message)
 	}
-	if err := setDaemonRoutesForScopeWithActivity(scope, stderr, false); err != nil {
-		cleanupStartedDaemon(client, scope, result.PID)
+	if err := setListenerRoutesWithActivity(ref, stderr, false, "reloading routes"); err != nil {
+		cleanupStartedDaemon(client, ref, result.PID)
 		return fail(stderr, false, ExitError, "reload_failed", err.Error())
 	}
 	if st, err := client.Status(); err == nil {
-		fmt.Fprintf(stdout, "restarted · scope %s · pid %d · https %s · http %s\n", scope.String(), st.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
+		fmt.Fprintf(stdout, "restarted · %s · pid %d · https %s · http %s\n", ref.String(), st.PID, displayListenAddr(st.HTTPSAddr), displayListenAddr(st.HTTPAddr))
 		return ExitOK
 	}
-	fmt.Fprintf(stdout, "restarted · scope %s · pid %d · https %s · http %s\n", scope.String(), result.PID, *httpsAddr, *httpAddr)
+	fmt.Fprintf(stdout, "restarted · %s · pid %d · https %s · http %s\n", ref.String(), result.PID, pair.HTTPSAddr, pair.HTTPAddr)
 	return ExitOK
+}
+
+func replaceScopedDaemonsForListener(pair listener.Pair) error {
+	pair = listener.Normalize(pair)
+	scopes, err := allDaemonScopes()
+	if err != nil {
+		return err
+	}
+	for _, scope := range scopes {
+		client := daemonClientFor(scope)
+		st, err := client.Status()
+		if err != nil {
+			continue
+		}
+		if !daemonStatusMatchesListener(st, pair) {
+			continue
+		}
+		if st.PID != os.Getpid() {
+			if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
+				return fmt.Errorf("stop old scoped daemon %s: %w", scope.String(), err)
+			}
+		}
+		_ = os.Remove(scope.pidPath())
+		_ = os.Remove(scope.socketPath())
+	}
+	return nil
+}
+
+func daemonStatusMatchesListener(st daemon.Status, pair listener.Pair) bool {
+	if st.HTTPSAddr == "" && st.HTTPAddr == "" {
+		return true
+	}
+	return listener.Equivalent(listener.Pair{HTTPSAddr: st.HTTPSAddr, HTTPAddr: st.HTTPAddr}, pair)
 }
 
 func flagSet(fs *flag.FlagSet, name string) bool {
@@ -258,9 +309,9 @@ type daemonStartResult struct {
 	Message string
 }
 
-func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, scope daemonScope) daemonStartResult {
+func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, ref daemonStateRef) daemonStartResult {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	logFile, logOffset, err := openDaemonLog(scope)
+	logFile, logOffset, err := openDaemonLog(ref)
 	if err != nil {
 		return daemonStartResult{Code: ExitError, Message: err.Error()}
 	}
@@ -284,16 +335,16 @@ func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, scope daemonScope)
 			if err == nil {
 				err = errors.New("daemon exited before becoming ready")
 			}
-			msg := daemonStartErrorMessage(err, daemonLogSince(scope, logOffset))
+			msg := daemonStartErrorMessage(err, daemonLogSince(ref, logOffset))
 			return daemonStartResult{Code: daemonStartExitCode(msg), Message: msg}
 		case <-deadline:
 			return daemonStartResult{Code: ExitError, Message: "daemon did not become ready"}
 		case <-tick.C:
 			if st, err := client.Status(); err == nil && (expectedPID < 0 || st.PID == expectedPID) {
-				if err := os.MkdirAll(filepath.Dir(scope.pidPath()), 0o700); err != nil {
+				if err := os.MkdirAll(filepath.Dir(ref.pidPath()), 0o700); err != nil {
 					return daemonStartResult{Code: ExitError, Message: err.Error()}
 				}
-				if err := os.WriteFile(scope.pidPath(), []byte(strconv.Itoa(st.PID)), 0o600); err != nil {
+				if err := os.WriteFile(ref.pidPath(), []byte(strconv.Itoa(st.PID)), 0o600); err != nil {
 					return daemonStartResult{Code: ExitError, Message: err.Error()}
 				}
 				return daemonStartResult{Code: ExitOK, PID: st.PID}
@@ -302,8 +353,8 @@ func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, scope daemonScope)
 	}
 }
 
-func openDaemonLog(scope daemonScope) (*os.File, int64, error) {
-	logPath := scope.logPath()
+func openDaemonLog(ref daemonStateRef) (*os.File, int64, error) {
+	logPath := ref.logPath()
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return nil, 0, err
 	}
@@ -319,8 +370,8 @@ func openDaemonLog(scope daemonScope) (*os.File, int64, error) {
 	return f, offset, nil
 }
 
-func daemonLogSince(scope daemonScope, offset int64) string {
-	f, err := os.Open(scope.logPath())
+func daemonLogSince(ref daemonStateRef, offset int64) string {
+	f, err := os.Open(ref.logPath())
 	if err != nil {
 		return ""
 	}
@@ -337,16 +388,23 @@ func daemonLogSince(scope daemonScope, offset int64) string {
 
 func daemonStop(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
-	scopeFlags := defineDaemonScopeFlags(fs, true)
+	all := fs.Bool("all", false, "target all known listener daemons")
+	fs.BoolVar(all, "a", false, "target all known listener daemons")
+	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
+	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
 	if handled, code := parseFlags(fs, "daemon stop", args, stdout, stderr); handled {
 		return code
 	}
-	scopes, err := daemonScopesFromCurrentDirAndFlags(scopeFlags, true)
-	if err != nil {
-		return fail(stderr, false, ExitUsage, "scope", err.Error())
+	refs := []listenerDaemonRef{listenerRefFor(listener.FromFlags(*httpsAddr, *httpAddr))}
+	if *all {
+		var err error
+		refs, err = allListenerRefs()
+		if err != nil {
+			return fail(stderr, false, ExitError, "listener", err.Error())
+		}
 	}
-	for _, scope := range scopes {
-		if code := daemonStopScope(scope, stdout, stderr, len(scopes) > 1); code != ExitOK {
+	for _, ref := range refs {
+		if code := daemonStopRef(ref, stdout, stderr, len(refs) > 1); code != ExitOK {
 			return code
 		}
 	}
@@ -354,18 +412,22 @@ func daemonStop(args []string, stdout, stderr io.Writer) int {
 }
 
 func daemonStopScope(scope daemonScope, stdout, stderr io.Writer, printScope bool) int {
-	client := daemonClientFor(scope)
+	return daemonStopRef(scope, stdout, stderr, printScope)
+}
+
+func daemonStopRef(ref daemonStateRef, stdout, stderr io.Writer, printScope bool) int {
+	client := daemonClientForRef(ref)
 	if st, err := client.Status(); err == nil {
 		if err := stopDaemonProcess(client, st.PID, 2*time.Second); err != nil {
 			return fail(stderr, false, ExitError, "stop", err.Error())
 		}
-		_ = os.Remove(scope.pidPath())
-		printDaemonStop(stdout, scope, "stopped", printScope)
+		_ = os.Remove(ref.pidPath())
+		printDaemonStop(stdout, ref, "stopped", printScope)
 		return ExitOK
 	}
-	b, err := os.ReadFile(scope.pidPath())
+	b, err := os.ReadFile(ref.pidPath())
 	if err != nil {
-		printDaemonStop(stdout, scope, "not running", printScope)
+		printDaemonStop(stdout, ref, "not running", printScope)
 		return ExitOK
 	}
 	pid, err := strconv.Atoi(string(b))
@@ -373,27 +435,27 @@ func daemonStopScope(scope daemonScope, stdout, stderr io.Writer, printScope boo
 		return fail(stderr, false, ExitError, "pidfile", "corrupt pid file")
 	}
 	if !isGateDaemonPID(pid) {
-		_ = os.Remove(scope.pidPath())
-		printDaemonStop(stdout, scope, "not running", printScope)
+		_ = os.Remove(ref.pidPath())
+		printDaemonStop(stdout, ref, "not running", printScope)
 		return ExitOK
 	}
 	proc, err := os.FindProcess(pid)
 	if err == nil {
 		_ = proc.Signal(syscall.SIGTERM)
 	}
-	_ = os.Remove(scope.pidPath())
-	printDaemonStop(stdout, scope, "stopped", printScope)
+	_ = os.Remove(ref.pidPath())
+	printDaemonStop(stdout, ref, "stopped", printScope)
 	return ExitOK
 }
 
-func cleanupStartedDaemon(client *daemon.Client, scope daemonScope, pid int) {
+func cleanupStartedDaemon(client *daemon.Client, ref daemonStateRef, pid int) {
 	_ = stopDaemonProcess(client, pid, 2*time.Second)
-	_ = os.Remove(scope.pidPath())
+	_ = os.Remove(ref.pidPath())
 }
 
-func printDaemonStop(stdout io.Writer, scope daemonScope, msg string, printScope bool) {
+func printDaemonStop(stdout io.Writer, ref daemonStateRef, msg string, printScope bool) {
 	if printScope {
-		fmt.Fprintf(stdout, "%s · scope %s\n", msg, scope.String())
+		fmt.Fprintf(stdout, "%s · %s\n", msg, ref.String())
 		return
 	}
 	fmt.Fprintln(stdout, msg)
@@ -463,28 +525,32 @@ var processArgsForPID = func(pid int) (string, error) {
 }
 
 func isGateDaemonArgs(args string) bool {
-	args = strings.TrimSpace(args)
-	return args == "gate __serve" ||
-		strings.HasPrefix(args, "gate __serve ") ||
-		strings.HasSuffix(args, "/gate __serve") ||
-		strings.Contains(args, "/gate __serve ") ||
-		strings.Contains(args, " gate __serve ")
+	fields := strings.Fields(args)
+	if len(fields) < 2 {
+		return false
+	}
+	return filepath.Base(fields[0]) == "gate" && fields[1] == "__serve"
 }
 
 func daemonLogs(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	scopeFlags := defineDaemonScopeFlags(fs, true)
+	all := fs.Bool("all", false, "target all known listener daemons")
+	fs.BoolVar(all, "a", false, "target all known listener daemons")
 	if handled, code := parseFlags(fs, "daemon logs", args, stdout, stderr); handled {
 		return code
 	}
-	scopes, err := daemonScopesFromCurrentDirAndFlags(scopeFlags, true)
-	if err != nil {
-		return fail(stderr, false, ExitUsage, "scope", err.Error())
+	refs := []listenerDaemonRef{defaultListenerRef()}
+	if *all {
+		var err error
+		refs, err = allListenerRefs()
+		if err != nil {
+			return fail(stderr, false, ExitError, "listener", err.Error())
+		}
 	}
-	allRequested := scopeFlags.all != nil && *scopeFlags.all
+	allRequested := *all
 	printed := 0
-	for _, scope := range scopes {
-		logPath := scope.logPath()
+	for _, ref := range refs {
+		logPath := ref.logPath()
 		b, err := os.ReadFile(logPath)
 		if err != nil {
 			if allRequested && os.IsNotExist(err) {
@@ -492,11 +558,11 @@ func daemonLogs(args []string, stdout, stderr io.Writer) int {
 			}
 			return fail(stderr, false, ExitError, "logs", "no log file at "+logPath)
 		}
-		if len(scopes) > 1 {
+		if len(refs) > 1 {
 			if printed > 0 {
 				fmt.Fprintln(stdout)
 			}
-			fmt.Fprintf(stdout, "== %s ==\n", scope.String())
+			fmt.Fprintf(stdout, "== %s ==\n", ref.String())
 		}
 		_, _ = stdout.Write(b)
 		printed++

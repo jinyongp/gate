@@ -144,7 +144,7 @@ func TestLsPlainNoEscapes(t *testing.T) {
 	if strings.Contains(s, "\x1b") {
 		t.Fatalf("plain Ls leaked an ANSI escape:\n%q", s)
 	}
-	for _, want := range []string{"SCOPE", "SERVICE", "DOMAIN", "PORT", "TLS", "STATUS", "global", "web", "https://web.localhost", "4312"} {
+	for _, want := range []string{"SCOPE", "SERVICE", "DOMAIN", "PORT", "ROUTE", "UPSTREAM", "global", "web", "https://web.localhost", "4312"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("Ls output missing %q in:\n%s", want, s)
 		}

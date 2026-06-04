@@ -318,6 +318,9 @@ func (p *Project) Validate() error {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("service name must not be empty")
 		}
+		if IsReservedServiceName(name) {
+			return fmt.Errorf("service %q: reserved service name", name)
+		}
 		if strings.Contains(name, "/") {
 			return fmt.Errorf("service %q: name must not contain /", name)
 		}

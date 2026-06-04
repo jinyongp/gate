@@ -49,6 +49,21 @@ func DaemonLogPath(scope string) string {
 	return filepath.Join(StateDir(), "daemons", scope+".log")
 }
 
+// ListenerDaemonSocketPath returns the listener daemon admin control socket path.
+func ListenerDaemonSocketPath(key string) string {
+	return DaemonSocketPath("listener-" + key)
+}
+
+// ListenerDaemonPIDPath returns the listener daemon pid file path.
+func ListenerDaemonPIDPath(key string) string {
+	return DaemonPIDPath("listener-" + key)
+}
+
+// ListenerDaemonLogPath returns the listener daemon log file path.
+func ListenerDaemonLogPath(key string) string {
+	return DaemonLogPath("listener-" + key)
+}
+
 // Ensure creates dir (mode 0700) if it does not exist and returns it.
 func Ensure(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {

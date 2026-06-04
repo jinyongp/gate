@@ -155,6 +155,9 @@ func validateRegistryName(name, label string) error {
 	if name == "" {
 		return fmt.Errorf("%s is required", label)
 	}
+	if label == "service" && config.IsReservedServiceName(name) {
+		return fmt.Errorf("reserved service name %q", name)
+	}
 	if err := config.ValidateServiceName(name); err != nil {
 		return fmt.Errorf("invalid %s %q", label, name)
 	}

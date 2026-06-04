@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -19,29 +20,34 @@ type CmdSpec struct {
 	Summary string
 }
 
+// CommandInfo is one row of a command's COMMANDS section.
+type CommandInfo struct {
+	Name, Summary string
+}
+
 // Specs lists every public subcommand in display order. Keep in sync with the
 // dispatch table in cmd/gate/main.go.
 var Specs = []CmdSpec{
 	{"init", "", "scaffold a starter gate.toml in the current directory"},
 	{"up", "", "bring up scoped reservations: reserve ports, render routes, reload"},
-	{"down", "", "tear down scoped routes and keep reservations"},
-	{"ls", "", "list scoped reservations with live/down status"},
+	{"ls", "", "list scoped reservations with route and upstream status"},
 	{"port", "[service]", "print one scoped service port, or list reserved ports"},
+	{"run", "<service> -- <cmd> [args]", "run a child process with PORT injected from the reservation"},
+	{"down", "", "tear down scoped routes and keep reservations"},
+	{"expose", "<service> --via <provider> | ls | stop <service>", "publish, list, or stop external access"},
+	{"daemon", "status|start|stop|restart|logs", "control listener background proxy daemons"},
 	{"add", "<service> <domain> <port>", "reserve a port for a scoped service"},
 	{"rm", "<service>", "remove one scoped service reservation"},
 	{"clear", "", "remove all reservations in the selected scope"},
 	{"prune", "", "remove reservations whose project config no longer exists"},
-	{"run", "<service> -- <cmd> [args]", "run a child process with PORT injected from the reservation"},
-	{"daemon", "start|stop|restart|status|logs", "control scoped background proxy daemons"},
-	{"doctor", "", "check and repair local gate state"},
 	{"trust", "", "install the local CA into the OS and browser trust stores"},
 	{"untrust", "", "remove the local CA from OS and browser trust stores"},
-	{"uninstall", "", "remove gate state, binaries, and Homebrew package when applicable"},
 	{"ca", "export [--out <path>]", "export the local CA certificate"},
-	{"expose", "<service> --via <provider>", "publish a scoped service through a public tunnel provider"},
-	{"completion", "<bash|zsh|fish>", "print shell completion script (bash|zsh|fish)"},
+	{"doctor", "", "check and repair local gate state"},
 	{"upgrade", "", "upgrade gate to the latest GitHub release"},
+	{"completion", "<bash|zsh|fish>", "print shell completion script (bash|zsh|fish)"},
 	{"skill", "path|print", "locate or print the bundled agent skill (path|print)"},
+	{"uninstall", "", "remove gate state, binaries, and Homebrew package when applicable"},
 }
 
 func specFor(name string) CmdSpec {
@@ -50,7 +56,48 @@ func specFor(name string) CmdSpec {
 			return s
 		}
 	}
+	switch name {
+	case "expose ls":
+		return CmdSpec{Name: name, Summary: "list exposure records"}
+	case "expose stop":
+		return CmdSpec{Name: name, Args: "<service>", Summary: "stop one exposure record"}
+	}
 	return CmdSpec{}
+}
+
+func commandsFor(name string) []CommandInfo {
+	switch name {
+	case "daemon":
+		return []CommandInfo{
+			{Name: "status", Summary: "show listener daemon status"},
+			{Name: "start", Summary: "start or reuse the default listener daemon"},
+			{Name: "stop", Summary: "stop listener daemon(s)"},
+			{Name: "restart", Summary: "restart the default listener daemon"},
+			{Name: "logs", Summary: "print listener daemon logs"},
+		}
+	case "expose":
+		return []CommandInfo{
+			{Name: "ls", Summary: "list exposure records"},
+			{Name: "stop", Summary: "stop one exposure record"},
+		}
+	case "ca":
+		return []CommandInfo{
+			{Name: "export", Summary: "export the local CA certificate"},
+		}
+	case "skill":
+		return []CommandInfo{
+			{Name: "path", Summary: "print the bundled agent skill path"},
+			{Name: "print", Summary: "print the bundled agent skill"},
+		}
+	case "completion":
+		return []CommandInfo{
+			{Name: "bash", Summary: "print bash completion script"},
+			{Name: "zsh", Summary: "print zsh completion script"},
+			{Name: "fish", Summary: "print fish completion script"},
+		}
+	default:
+		return nil
+	}
 }
 
 // FlagInfo is one row of a command's FLAGS section.
@@ -61,9 +108,16 @@ type FlagInfo struct {
 func collectFlags(fs *flag.FlagSet) []FlagInfo {
 	var out []FlagInfo
 	fs.VisitAll(func(f *flag.Flag) {
+		if hiddenHelpFlag(f.Name) {
+			return
+		}
 		out = append(out, FlagInfo{Name: f.Name, Usage: f.Usage, Default: f.DefValue})
 	})
 	return out
+}
+
+func hiddenHelpFlag(name string) bool {
+	return name == "https-addr" || name == "http-addr"
 }
 
 func groupFlagAliases(flags []FlagInfo) []FlagInfo {
@@ -148,10 +202,19 @@ func WriteHelp(w io.Writer, name, args, summary string, flags []FlagInfo) {
 
 	fmt.Fprintf(w, "\n%s\n  %s\n", section(w, "USAGE"), signature(name, args, len(flags) > 0))
 
+	if commands := commandsFor(name); len(commands) > 0 {
+		fmt.Fprintf(w, "\n%s\n", section(w, "COMMANDS"))
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		for _, cmd := range commands {
+			fmt.Fprintf(tw, "  %s\t%s\n", cmd.Name, cmd.Summary)
+		}
+		_ = tw.Flush()
+	}
+
 	if len(flags) > 0 {
 		fmt.Fprintf(w, "\n%s\n", section(w, "FLAGS"))
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		for _, f := range groupFlagAliases(flags) {
+		for _, f := range sortFlagGroups(groupFlagAliases(flags)) {
 			desc := f.Usage
 			// Show a default only when it is meaningful — skip zero values
 			// (bool false, empty string, 0) the way flag.PrintDefaults does.
@@ -174,6 +237,72 @@ func formatFlagNames(names string) string {
 		parts[i] = dash + name
 	}
 	return strings.Join(parts, ", ")
+}
+
+func sortFlagGroups(flags []FlagInfo) []FlagInfo {
+	out := append([]FlagInfo{}, flags...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return flagDisplayRank(out[i].Name) < flagDisplayRank(out[j].Name)
+	})
+	return out
+}
+
+func flagDisplayRank(names string) int {
+	switch canonicalFlagName(names) {
+	case "daemon":
+		return 10
+	case "dns":
+		return 20
+	case "route":
+		return 30
+	case "upstream":
+		return 40
+	case "via":
+		return 50
+	case "auth":
+		return 60
+	case "force":
+		return 70
+	case "fix":
+		return 80
+	case "name":
+		return 90
+	case "out":
+		return 100
+	case "keep-trust":
+		return 110
+	case "keep-brew":
+		return 120
+	case "global":
+		return 200
+	case "project":
+		return 210
+	case "all":
+		return 220
+	case "json":
+		return 900
+	case "yes":
+		return 910
+	case "help":
+		return 990
+	case "version":
+		return 991
+	default:
+		return 500
+	}
+}
+
+func canonicalFlagName(names string) string {
+	parts := strings.Split(names, ", ")
+	for _, part := range parts {
+		if len(part) > 1 {
+			return part
+		}
+	}
+	if len(parts) == 0 {
+		return names
+	}
+	return parts[0]
 }
 
 // parseFlags is the unified flag-parsing front door for subcommands. It handles

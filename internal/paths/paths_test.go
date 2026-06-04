@@ -96,3 +96,18 @@ func TestScopedDaemonPaths(t *testing.T) {
 		t.Fatalf("DaemonLogPath() = %q, want %q", got, want)
 	}
 }
+
+func TestListenerDaemonPaths(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "/xdg/cfg")
+	t.Setenv("XDG_STATE_HOME", "/xdg/state")
+	key := "https-443-http-80"
+	if got, want := ListenerDaemonSocketPath(key), "/xdg/cfg/gate/daemons/listener-https-443-http-80.sock"; got != want {
+		t.Fatalf("ListenerDaemonSocketPath() = %q, want %q", got, want)
+	}
+	if got, want := ListenerDaemonPIDPath(key), "/xdg/cfg/gate/daemons/listener-https-443-http-80.pid"; got != want {
+		t.Fatalf("ListenerDaemonPIDPath() = %q, want %q", got, want)
+	}
+	if got, want := ListenerDaemonLogPath(key), "/xdg/state/gate/daemons/listener-https-443-http-80.log"; got != want {
+		t.Fatalf("ListenerDaemonLogPath() = %q, want %q", got, want)
+	}
+}

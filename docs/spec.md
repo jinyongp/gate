@@ -82,11 +82,12 @@ flowchart TB
     https --> tls
 ```
 
-The CLI computes desired state from project config and the registry. Daemons are
-scoped: project daemons serve one project, and the global daemon serves global
-reservations. If the relevant daemon is running, the CLI pushes that
-scope's active route table through its admin socket. If the daemon is not
-running, route reservations still persist and can be loaded later.
+The CLI computes desired state from project config and the registry. Daemon
+processes are listener-scoped: one daemon owns one HTTPS/HTTP listen address
+pair and serves the merged route table for every active reservation targeting
+that listener. If the listener daemon is running, the CLI pushes the merged
+route table through its admin socket. If it is not running, route reservations
+still persist and can be loaded later.
 
 ---
 
@@ -194,7 +195,7 @@ flowchart LR
     gatetoml["gate.toml<br/>user-owned"]
     cfgdir["Config dir<br/>~/.config/gate"]
     registry["registry.json<br/>tool-owned"]
-    sockets["daemons/*.sock<br/>scoped admin sockets"]
+    sockets["daemons/*.sock<br/>listener admin sockets"]
     datadir["Data dir<br/>~/.local/share/gate"]
     ca["root CA and cert cache"]
     statedir["State dir<br/>logs and runtime state"]
@@ -211,7 +212,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `gate.toml` | user and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |
 | `registry.json` | gate only | JSON | Machine-wide reservations. Uses schema versioning, advisory file locking, and atomic write by temp file + rename. |
-| Admin sockets | daemon | Unix sockets | CLI talks to scoped daemons over a local HTTP API. |
+| Admin sockets | daemon | Unix sockets | CLI talks to listener-keyed daemons over a local HTTP API. |
 | CA material | gate | PEM files | Root key is private local state and must not be copied. Export only the root certificate. |
 | Logs | gate / OS service manager | text or JSONL | Runtime and access logs are separate from command data output. |
 
@@ -393,20 +394,20 @@ Implementation notes:
 ## 10. Daemon and Admin Socket
 
 Each daemon owns one pair of front proxy listeners. The CLI controls each daemon
-over a scoped Unix-domain socket.
+over a listener Unix-domain socket.
 
 ```mermaid
 flowchart LR
     cli["gate up -d"]
     store["update registry"]
     dns["ensure DNS"]
-    scope["resolve scope<br/>project:name or global"]
-    start{"scoped daemon running?"}
-    launch["start scoped daemon"]
-    push["PUT scoped /routes"]
+    listener["resolve listener<br/>default :443/:80"]
+    start{"listener daemon running?"}
+    launch["start listener daemon"]
+    push["PUT merged /routes"]
     active["new route table active"]
 
-    cli --> store --> dns --> scope --> start
+    cli --> store --> dns --> listener --> start
     start -->|"no and --daemon/-d"| launch --> push
     start -->|"yes"| push
     start -->|"no and no -d"| note["print note: no daemon running"]
@@ -421,10 +422,9 @@ Admin API:
 | `PUT` | `/routes` | Replace the active route table. |
 | `POST` | `/reload` | Reserved reload endpoint; currently reports reload success. |
 
-Only one daemon can own a given HTTPS/HTTP listen address pair. Different
-project daemons can run at the same time when their listen addresses do not
-conflict. `gate up -d` checks only the current project daemon; a different
-daemon conflicts only when the new process cannot bind the requested address.
+Only one daemon can own a given HTTPS/HTTP listen address pair. `gate up -d`
+starts or reuses that listener daemon, and replaces older scoped gate daemons
+that already own the same listener before starting the listener-keyed daemon.
 
 ---
 
@@ -432,30 +432,32 @@ daemon conflicts only when the new process cannot bind the requested address.
 
 | Command | Purpose | Data mode |
 | --- | --- | --- |
-| `gate init [-y] [--name name] [--force]` | Scaffold a starter `gate.toml`. | text / json |
-| `gate up [-g\|--global] [-p name\|--project name] [-d\|--daemon] [--dns localhost\|hosts] [--https-addr addr] [--http-addr addr]` | Reserve current-project ports or activate existing scoped reservations, reflect DNS, reload routes, optionally start daemon. | text / json |
+| `gate init [--name name] [--force] [-y\|--yes]` | Scaffold a starter `gate.toml`. | text / json |
+| `gate up [-d\|--daemon] [--dns localhost\|hosts] [-g\|--global] [-p name\|--project name]` | Reserve current-project ports or activate existing scoped reservations, reflect DNS, reload routes, optionally start the listener daemon. | text / json |
+| `gate ls [--route active\|inactive] [--upstream live\|down] [-g\|--global] [-p name\|--project name] [-a\|--all]` | List scoped reservations with route and upstream status. | text / json |
+| `gate port [-g\|--global] [-p name\|--project name] [-a\|--all] [service]` | Print one scoped port or list reserved ports with route/upstream status. | text / json |
+| `gate run [-g\|--global] [-p name\|--project name] <service> -- <cmd>` | Run a child command with `PORT` injected from a scoped reservation. | child stdio |
 | `gate down [-g\|--global] [-p name\|--project name]` | Deactivate scoped routes and preserve reservations. | text / json |
-| `gate ls [-g\|--global] [-p name\|--project name] [-a\|--all] [--status live\|down]` | List scoped reservations and liveness. | text / json |
-| `gate port [-g\|--global] [-p name\|--project name] [-a\|--all] [service]` | Print one scoped port or list reserved ports. | text / json |
+| `gate expose [--via <provider>] [--auth user:pass] [-g\|--global] [-p name\|--project name] <service>` | Expose a scoped service/name through a provider. | text / json |
+| `gate expose ls [--via provider] [-g\|--global] [-p name\|--project name] [-a\|--all]` | List exposure records with provider status. | text / json |
+| `gate expose stop [--via <provider>] [--force] [-g\|--global] [-p name\|--project name] <service>` | Stop one exposure and remove its record after provider teardown. | text / json |
+| `gate daemon status [-a\|--all]` | Print listener daemon status. | text / json |
+| `gate daemon start` | Start or reuse the default listener daemon. | text |
+| `gate daemon stop [-a\|--all]` | Stop listener daemon(s). | text |
+| `gate daemon restart` | Restart the default listener daemon. | text |
+| `gate daemon logs [-a\|--all]` | Print listener daemon logs. | text |
 | `gate add [-g\|--global] [-p name\|--project name] <service> <domain> <port>` | Add a scoped service/name reservation. | text / json |
 | `gate rm [-g\|--global] [-p name\|--project name] <service>` | Remove one scoped service/name reservation. | text / json |
 | `gate clear [-g\|--global] [-p name\|--project name] [-y\|--yes]` | Remove all reservations in one scope. | text / json |
 | `gate prune` | Remove reservations whose owning config no longer exists. | text / json |
-| `gate run [-g\|--global] [-p name\|--project name] <service> -- <cmd>` | Run a child command with `PORT` injected from a scoped reservation. | child stdio |
-| `gate daemon start [-g\|--global] [-p name\|--project name] [--https-addr addr] [--http-addr addr]` | Start the scoped resident proxy. | text |
-| `gate daemon stop [-g\|--global] [-p name\|--project name] [-a\|--all]` | Stop scoped daemon(s). | text |
-| `gate daemon restart [-g\|--global] [-p name\|--project name] [--https-addr addr] [--http-addr addr]` | Restart one scoped daemon. | text |
-| `gate daemon logs [-g\|--global] [-p name\|--project name] [-a\|--all]` | Print scoped daemon logs. | text |
-| `gate daemon status [-g\|--global] [-p name\|--project name] [-a\|--all]` | Print scoped daemon status. | text / json |
-| `gate doctor [--fix] [--json]` | Check and repair local gate-owned state. | text / json |
 | `gate trust` | Install the local root CA into trust stores. | text |
 | `gate untrust` | Remove the local root CA from trust stores. | text |
-| `gate uninstall [-y\|--yes] [--keep-trust] [--keep-brew]` | Remove gate state, binaries, and Homebrew package when applicable. | text |
 | `gate ca export [--out path]` | Export the local root certificate. | text |
-| `gate expose [-g\|--global] [-p name\|--project name] <service> --via <provider> [--auth user:pass]` | Expose a scoped service/name through a provider. | text / json |
-| `gate completion bash\|zsh\|fish` | Print shell completion. | script |
+| `gate doctor [--fix] [--json]` | Check and repair local gate-owned state. | text / json |
 | `gate upgrade [-y\|--yes]` | Upgrade to the latest release, using Homebrew when the running binary is Homebrew-managed. | text |
+| `gate completion bash\|zsh\|fish` | Print shell completion. | script |
 | `gate skill path\|print` | Locate or print the bundled agent skill. | text |
+| `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | Remove gate state, binaries, and Homebrew package when applicable. | text |
 
 Scope flags are mutually exclusive. Without a scope flag, registry commands use
 the current project when a `gate.toml` is discoverable; otherwise they use the
@@ -469,14 +471,15 @@ route, and DNS state only; it does not edit project config files.
 read-only: it may read the registry, current project config, and known project
 config paths, but it must not start daemons, modify DNS, trust certificates, or
 write files. Missing or invalid local state yields no candidates rather than
-shell-visible errors. Candidates are stable-sorted.
+shell-visible errors. Candidates use a stable task-oriented order.
 
 Completion mirrors the command surface:
 
 - root commands come from public command specs; hidden/internal commands are not
   advertised
-- `daemon` completes `start`, `stop`, `restart`, `status`, and `logs`
-- `ca` completes `export`; `skill` completes `path` and `print`
+- `daemon` completes `status`, `start`, `stop`, `restart`, and `logs`
+- `ca` completes `export`; `expose` completes `ls` and `stop`;
+  `skill` completes `path` and `print`
 - `completion` completes `bash`, `zsh`, and `fish`
 - `--<tab>` completes long flags for the current command/subcommand; `-<tab>`
   completes short flags; `-h|--help` are common help candidates
@@ -493,7 +496,8 @@ Dynamic candidates:
 
 Static flag-value candidates:
 
-- `ls --status`: `live`, `down`
+- `ls --route`: `active`, `inactive`
+- `ls --upstream`: `live`, `down`
 - `up --dns`: `localhost`, `hosts`
 - `expose --via`: `local`, `lan`, `cloudflared`, `tailscale`
 
