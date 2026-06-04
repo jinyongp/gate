@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -25,7 +26,13 @@ const (
 
 var currentVersion = "dev"
 
-var restartDaemonAfterUpgradeFunc = restartDaemonAfterUpgrade
+var (
+	restartDaemonAfterUpgradeFunc = restartDaemonAfterUpgrade
+	upgradeExecutablePathFunc     = executablePath
+	upgradeHomebrewCommandFunc    = func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "brew", "upgrade", "gate")
+	}
+)
 
 // SetVersion stores the currently running gate version for upgrade decisions.
 func SetVersion(v string) {
@@ -74,22 +81,49 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 
 	daemonsBefore := daemonStatusesBeforeUpgrade()
 
+	if err := runUpgradeInstall(ctx, stdout, stderr); err != nil {
+		return fail(stderr, false, ExitError, "upgrade", err.Error())
+	}
+	return completeUpgrade(stdout, stderr, daemonsBefore)
+}
+
+func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer) error {
+	_ = stdout
+	if isHomebrewGatePath(upgradeExecutablePathFunc()) {
+		return runUpgradeCommand(stderr, "upgrading Homebrew package", "brew upgrade gate", upgradeHomebrewCommandFunc(ctx))
+	}
+
 	scriptPath, err := prepareUpgradeScript(ctx, stderr)
 	if err != nil {
-		return fail(stderr, false, ExitError, "upgrade", err.Error())
+		return err
 	}
 	defer func() {
 		_ = os.Remove(scriptPath)
 	}()
 
 	//nolint:gosec // G204: executing trusted, repo-fixed upgrade script.
-	cmd := exec.Command("sh", scriptPath)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		return fail(stderr, false, ExitError, "upgrade", err.Error())
+	return runUpgradeCommand(stderr, "installing gate", "install script", exec.CommandContext(ctx, "sh", scriptPath))
+}
+
+func runUpgradeCommand(stderr io.Writer, label, action string, cmd *exec.Cmd) error {
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	activity := startActivity(stderr, false, label)
+	err := cmd.Run()
+	activity.Stop()
+	if err != nil {
+		return upgradeCommandError(action, err, output.String())
 	}
-	return completeUpgrade(stdout, stderr, daemonsBefore)
+	return nil
+}
+
+func upgradeCommandError(action string, err error, output string) error {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return fmt.Errorf("%s: %w\n%s", action, err, output)
 }
 
 func prepareUpgradeScript(ctx context.Context, stderr io.Writer) (string, error) {

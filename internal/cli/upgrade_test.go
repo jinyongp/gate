@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -93,6 +94,77 @@ func TestCompleteUpgradeAttemptsAllRestartsAfterFailure(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "upgrade complete") {
 		t.Fatalf("success printed after partial failure: %q", out.String())
+	}
+}
+
+func TestRunUpgradeInstallUsesHomebrewForHomebrewInstall(t *testing.T) {
+	oldExecutable := upgradeExecutablePathFunc
+	oldHomebrewCommand := upgradeHomebrewCommandFunc
+	t.Cleanup(func() {
+		upgradeExecutablePathFunc = oldExecutable
+		upgradeHomebrewCommandFunc = oldHomebrewCommand
+	})
+
+	upgradeExecutablePathFunc = func() string {
+		return "/opt/homebrew/Cellar/gate/1.1.3/bin/gate"
+	}
+	upgradeHomebrewCommandFunc = func(context.Context) *exec.Cmd {
+		return helperUpgradeCommand(t, "brew upgrade gate", 0)
+	}
+
+	var out, errb bytes.Buffer
+	if err := runUpgradeInstall(context.Background(), &out, &errb); err != nil {
+		t.Fatalf("runUpgradeInstall: %v", err)
+	}
+	if strings.Contains(out.String(), "brew upgrade gate") || strings.Contains(errb.String(), "brew upgrade gate") {
+		t.Fatalf("brew output leaked: stdout=%q stderr=%q", out.String(), errb.String())
+	}
+}
+
+func TestRunUpgradeInstallUsesInstallerForNonHomebrewInstall(t *testing.T) {
+	oldExecutable := upgradeExecutablePathFunc
+	oldHomebrewCommand := upgradeHomebrewCommandFunc
+	oldClient := http.DefaultClient
+	t.Cleanup(func() {
+		upgradeExecutablePathFunc = oldExecutable
+		upgradeHomebrewCommandFunc = oldHomebrewCommand
+		http.DefaultClient = oldClient
+	})
+
+	upgradeExecutablePathFunc = func() string {
+		return "/Users/me/.local/bin/gate"
+	}
+	upgradeHomebrewCommandFunc = func(context.Context) *exec.Cmd {
+		t.Fatal("brew upgrade should not run for non-Homebrew install")
+		return nil
+	}
+	http.DefaultClient = &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader("echo installer upgrade\n")),
+			}, nil
+		}),
+	}
+
+	var out, errb bytes.Buffer
+	if err := runUpgradeInstall(context.Background(), &out, &errb); err != nil {
+		t.Fatalf("runUpgradeInstall: %v", err)
+	}
+	if strings.Contains(out.String(), "installer upgrade") || strings.Contains(errb.String(), "installer upgrade") {
+		t.Fatalf("installer output leaked: stdout=%q stderr=%q", out.String(), errb.String())
+	}
+}
+
+func TestRunUpgradeCommandReportsCapturedOutputOnFailure(t *testing.T) {
+	var errb bytes.Buffer
+	err := runUpgradeCommand(&errb, "upgrading test package", "test upgrade", helperUpgradeCommand(t, "hidden failure detail", 7))
+	if err == nil {
+		t.Fatal("runUpgradeCommand should fail")
+	}
+	if !strings.Contains(err.Error(), "test upgrade") || !strings.Contains(err.Error(), "hidden failure detail") {
+		t.Fatalf("error missing action or output: %v", err)
 	}
 }
 
@@ -368,4 +440,33 @@ func helperAdminCommand(t *testing.T, socketPath string) *exec.Cmd {
 		"GATE_TEST_DAEMON_READY_PID="+strconv.Itoa(os.Getpid()),
 	)
 	return cmd
+}
+
+func helperUpgradeCommand(t *testing.T, output string, code int) *exec.Cmd {
+	t.Helper()
+	//nolint:gosec // G204: test launches this same test binary as a helper process.
+	cmd := exec.Command(os.Args[0], "-test.run=TestUpgradeHelperProcess", "--", output, strconv.Itoa(code))
+	cmd.Env = append(os.Environ(), "GATE_HELPER_UPGRADE=1")
+	return cmd
+}
+
+func TestUpgradeHelperProcess(t *testing.T) {
+	if os.Getenv("GATE_HELPER_UPGRADE") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) != 3 {
+		fmt.Fprintln(os.Stderr, "bad helper args")
+		os.Exit(2)
+	}
+	fmt.Fprintln(os.Stdout, args[1])
+	code, err := strconv.Atoi(args[2])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	os.Exit(code)
 }

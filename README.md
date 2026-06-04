@@ -46,6 +46,10 @@ gate upgrade
 ```
 
 This updates gate to the latest GitHub release.
+If the running `gate` binary is Homebrew-managed, `gate upgrade` uses
+`brew upgrade gate`; otherwise it runs the standalone installer.
+During installation gate shows a single status indicator and hides installer
+logs unless the install command fails.
 
 After upgrading from a development build, check for stale local state:
 

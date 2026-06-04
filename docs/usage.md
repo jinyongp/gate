@@ -573,6 +573,10 @@ gate upgrade
 
 When a newer release is available, gate shows the current and latest versions
 and asks whether to upgrade.
+If the running `gate` binary is Homebrew-managed, `gate upgrade` uses
+`brew upgrade gate`; otherwise it runs the standalone installer.
+During installation gate shows a single status indicator and hides installer
+logs unless the install command fails.
 
 Skip confirmation:
 

@@ -454,7 +454,7 @@ daemon conflicts only when the new process cannot bind the requested address.
 | `gate ca export [--out path]` | Export the local root certificate. | text |
 | `gate expose [-g\|--global] [-p name\|--project name] <service> --via <provider> [--auth user:pass]` | Expose a scoped service/name through a provider. | text / json |
 | `gate completion bash\|zsh\|fish` | Print shell completion. | script |
-| `gate upgrade [-y\|--yes]` | Upgrade to the latest release. | text |
+| `gate upgrade [-y\|--yes]` | Upgrade to the latest release, using Homebrew when the running binary is Homebrew-managed. | text |
 | `gate skill path\|print` | Locate or print the bundled agent skill. | text |
 
 Scope flags are mutually exclusive. Without a scope flag, registry commands use
