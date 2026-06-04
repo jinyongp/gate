@@ -87,6 +87,7 @@ class Gate < Formula
 
     chmod 0755, asset
     bin.install asset => "gate"
+    generate_completions_from_executable(bin/"gate", "completion")
   end
 
   def caveats
