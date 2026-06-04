@@ -4,6 +4,8 @@ set -euo pipefail
 DRY_RUN=0
 AUTO_PUSH=0
 TAG_INPUT=""
+NOTES_BASE_OVERRIDE=""
+NOTES_BASE_OVERRIDE_SET=0
 CURSOR_HIDDEN=0
 
 SCRIPT_DIR="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,10 +35,11 @@ abort_interrupted() {
 trap abort_interrupted INT
 trap show_cursor EXIT
 
-for arg in "$@"; do
-  if [ -z "$arg" ]; then
-    continue
-  fi
+while [ "$#" -gt 0 ]; do
+  arg="$1"
+  shift
+
+  [ -n "$arg" ] || continue
 
   case "$arg" in
     --dry-run|-n)
@@ -48,6 +51,19 @@ for arg in "$@"; do
     tag=*)
       TAG_INPUT="${arg#tag=}"
       ;;
+    --since=*)
+      NOTES_BASE_OVERRIDE="${arg#--since=}"
+      NOTES_BASE_OVERRIDE_SET=1
+      ;;
+    --since)
+      if [ "$#" -eq 0 ]; then
+        echo "--since requires a tag"
+        exit 1
+      fi
+      NOTES_BASE_OVERRIDE="$1"
+      NOTES_BASE_OVERRIDE_SET=1
+      shift
+      ;;
     patch|minor|major)
       TAG_INPUT="$arg"
       ;;
@@ -56,7 +72,7 @@ for arg in "$@"; do
       ;;
     *)
       echo "Unknown argument: $arg"
-      echo "Usage: scripts/release/publish.sh [--dry-run|-n] [--yes|-y] [patch|minor|major|vX.Y.Z]"
+      echo "Usage: scripts/release/publish.sh [--dry-run|-n] [--yes|-y] [--since vX.Y.Z] [patch|minor|major|vX.Y.Z]"
       exit 1
       ;;
   esac
@@ -64,6 +80,71 @@ done
 
 get_latest_tag() {
   git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
+}
+
+origin_repo_slug() {
+  local remote
+
+  remote="$(git remote get-url origin 2>/dev/null || true)"
+  case "$remote" in
+    https://github.com/*)
+      remote="${remote#https://github.com/}"
+      ;;
+    git@github.com:*)
+      remote="${remote#git@github.com:}"
+      ;;
+    ssh://git@github.com/*)
+      remote="${remote#ssh://git@github.com/}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  remote="${remote%.git}"
+  if [[ "$remote" =~ ^[^/]+/[^/]+$ ]]; then
+    printf '%s\n' "$remote"
+    return 0
+  fi
+  return 1
+}
+
+get_latest_published_release_tag() {
+  local repo
+  local url
+  local response
+  local error
+  local status
+
+  command -v curl >/dev/null 2>&1 || return 1
+  repo="$(origin_repo_slug)" || return 1
+  url="https://api.github.com/repos/${repo}/releases/latest"
+  response="$(mktemp)"
+  error="$(mktemp)"
+  status=0
+  {
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        "$url"
+    else
+      curl -fsSL \
+        -H "Accept: application/vnd.github+json" \
+        "$url"
+    fi
+  } >"$response" 2>"$error" || status=$?
+  if [ "$status" -ne 0 ]; then
+    if grep -Eq '(^|[^0-9])404([^0-9]|$)' "$error"; then
+      rm -f "$response" "$error"
+      return 0
+    fi
+    cat "$error" >&2
+    rm -f "$response" "$error"
+    return "$status"
+  fi
+  sed -n 's/^[[:space:]]*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$response" |
+    head -n 1
+  rm -f "$response" "$error"
 }
 
 sync_tags() {
@@ -115,6 +196,16 @@ format_commits() {
   else
     git log --oneline --no-decorate "$range"
   fi
+}
+
+commit_range_since() {
+  local base="$1"
+
+  if [ -z "$base" ]; then
+    echo ""
+    return
+  fi
+  echo "${base}..HEAD"
 }
 
 recommended_bump() {
@@ -464,6 +555,29 @@ if ! sync_tags; then
   exit 1
 fi
 
+LATEST_PUBLISHED_TAG=""
+if [ "$NOTES_BASE_OVERRIDE_SET" -eq 1 ]; then
+  if [[ ! "$NOTES_BASE_OVERRIDE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "--since must be a semver tag like v1.2.3"
+    exit 1
+  fi
+  if ! git rev-parse -q --verify "refs/tags/$NOTES_BASE_OVERRIDE" >/dev/null; then
+    echo "--since tag does not exist locally: $NOTES_BASE_OVERRIDE"
+    exit 1
+  fi
+  LATEST_PUBLISHED_TAG="$NOTES_BASE_OVERRIDE"
+else
+  if ! LATEST_PUBLISHED_TAG="$(get_latest_published_release_tag)"; then
+    echo "Failed to read latest published GitHub release; use --since vX.Y.Z to set the release notes base explicitly."
+    exit 1
+  fi
+  if [ -n "$LATEST_PUBLISHED_TAG" ] && ! git rev-parse -q --verify "refs/tags/$LATEST_PUBLISHED_TAG" >/dev/null; then
+    ui_warn "latest published release tag ${LATEST_PUBLISHED_TAG} is not present locally; release notes will include all commits"
+    LATEST_PUBLISHED_TAG=""
+  fi
+fi
+NOTES_RANGE="$(commit_range_since "$LATEST_PUBLISHED_TAG")"
+
 if [ -z "$TAG_INPUT" ]; then
   LATEST_TAG="$(get_latest_tag)"
 
@@ -473,17 +587,15 @@ if [ -z "$TAG_INPUT" ]; then
     RANGE=""
     ui_section "Release base"
     printf '  No previous release tag found. First semver tag starts from v0.0.0.\n'
-    ui_section "Commits since initial commit"
-    COMMITS="$(format_commits "")"
   else
     BASE_TAG="$LATEST_TAG"
     RANGE="${LATEST_TAG}..HEAD"
     ui_section "Release base"
     ui_kv "Last tag" "$LATEST_TAG"
-    ui_section "Commits since $LATEST_TAG"
-    COMMITS="$(format_commits "$RANGE")"
   fi
 
+  ui_section "Version commits since $LATEST_TAG"
+  COMMITS="$(format_commits "$RANGE")"
   echo "$COMMITS" | sed 's/^/  - /'
   CHANGE_COUNT="$(printf '%s\n' "$COMMITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
@@ -522,9 +634,21 @@ else
 
   ui_section "Release base"
   ui_kv "Last tag" "$LATEST_TAG"
-  ui_section "Commits since $LATEST_TAG"
+  ui_section "Version commits since $LATEST_TAG"
   format_commits "$RANGE" | sed 's/^/  - /'
 fi
+
+ui_section "Release notes base"
+if [ -n "$LATEST_PUBLISHED_TAG" ]; then
+  ui_kv "Last published release" "$LATEST_PUBLISHED_TAG"
+  if [ "$LATEST_PUBLISHED_TAG" != "$LATEST_TAG" ]; then
+    ui_warn "latest git tag ${LATEST_TAG} has no published release; notes will include commits since ${LATEST_PUBLISHED_TAG}"
+  fi
+else
+  ui_kv "Last published release" "none"
+fi
+ui_section "Release notes commits"
+format_commits "$NOTES_RANGE" | sed 's/^/  - /'
 
 case "$TAG_INPUT" in
   patch|minor|major)
@@ -578,7 +702,7 @@ if ! confirm_push "$PATCH_TAG" "$AUTO_PUSH"; then
   exit 0
 fi
 
-RELEASE_NOTES="$(printf 'Release %s\n\n%s' "$PATCH_TAG" "$(format_commits "$RANGE" | sed 's/^/- /')")"
+RELEASE_NOTES="$(printf 'Release %s\n\n%s' "$PATCH_TAG" "$(format_commits "$NOTES_RANGE" | sed 's/^/- /')")"
 git tag -a "$PATCH_TAG" -m "$RELEASE_NOTES" "$TARGET_SHA"
 git push --atomic origin HEAD:main "refs/tags/$PATCH_TAG:refs/tags/$PATCH_TAG"
 echo "Created and pushed tag $PATCH_TAG"
