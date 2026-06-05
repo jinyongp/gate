@@ -52,6 +52,10 @@ vuln:
 scripts-check:
   bash scripts/dev/check-scripts.sh
 
+[doc('check documentation boundaries')]
+docs-check:
+  scripts/dev/docs-check.sh
+
 [doc('format with gofmt + goimports')]
 fmt:
   scripts/dev/fmt.sh
