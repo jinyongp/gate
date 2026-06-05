@@ -454,7 +454,7 @@ that already own the same listener before starting the listener-keyed daemon.
 | `gate untrust` | Remove the local root CA from trust stores. | text |
 | `gate ca export [--out path]` | Export the local root certificate. | text |
 | `gate doctor [--fix] [--json]` | Check and repair local gate-owned state. | text / json |
-| `gate upgrade [-y\|--yes]` | Upgrade to the latest release, using Homebrew when the running binary is Homebrew-managed. | text |
+| `gate upgrade [-y\|--yes]` | Upgrade to the latest release, using Homebrew when the running binary is Homebrew-managed, then run `doctor` as a non-blocking post-check. | text |
 | `gate completion bash\|zsh\|fish` | Print shell completion. | script |
 | `gate skill path\|print` | Locate or print the bundled agent skill. | text |
 | `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | Remove gate state, binaries, and Homebrew package when applicable. | text |

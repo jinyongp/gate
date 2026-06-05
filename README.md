@@ -50,13 +50,8 @@ If the running `gate` binary is Homebrew-managed, `gate upgrade` uses
 `brew upgrade gate`; otherwise it runs the standalone installer.
 During installation gate shows a single status indicator and hides installer
 logs unless the install command fails.
-
-After upgrading from a development build, check for stale local state:
-
-```bash
-gate doctor
-gate doctor --fix
-```
+After a successful upgrade, gate automatically runs `doctor` and prints any
+stale local state with the matching `gate doctor --fix` repair hint.
 
 ## Uninstall
 

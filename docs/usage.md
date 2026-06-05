@@ -36,7 +36,7 @@ command's flags and positional arguments.
 | `gate expose [--via local\|lan\|cloudflared\|tailscale] [--auth user:pass] [-g\|--global] [-p name\|--project name] <service> [--json]` | expose a scoped service through a provider |
 | `gate expose ls [--via provider] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
 | `gate expose stop [--via provider] [--force] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop or forget one exposure record |
-| `gate upgrade [-y\|--yes]` | upgrade to the latest release |
+| `gate upgrade [-y\|--yes]` | upgrade to the latest release, then run doctor |
 | `gate completion bash\|zsh\|fish` | print shell completion script |
 | `gate skill path\|print` | locate or print the bundled agent skill |
 | `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | remove gate state, binaries, and Homebrew package when applicable |
@@ -650,6 +650,10 @@ If the running `gate` binary is Homebrew-managed, `gate upgrade` uses
 `brew upgrade gate`; otherwise it runs the standalone installer.
 During installation gate shows a single status indicator and hides installer
 logs unless the install command fails.
+After a successful upgrade or up-to-date check, gate automatically runs
+`doctor`. Any remaining issues are reported in the upgrade output with the
+matching `gate doctor --fix` repair hint, but they do not turn a successful
+upgrade into an upgrade failure.
 
 Skip confirmation:
 

@@ -63,7 +63,7 @@ fi
 | `gate trust` | install the root CA (one time) |
 | `gate untrust` | remove the root CA from OS/browser trust stores |
 | `gate ca export [--out path]` | export the root CA for other devices |
-| `gate upgrade [-y\|--yes]` | upgrade to the latest GitHub release |
+| `gate upgrade [-y\|--yes]` | upgrade to the latest GitHub release, then run doctor |
 | `gate completion bash\|zsh\|fish` | print shell completion script |
 | `gate skill path\|print` | locate or print this skill file |
 | `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | remove gate state, binaries, and Homebrew package when applicable |

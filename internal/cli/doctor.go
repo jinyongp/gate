@@ -17,6 +17,7 @@ import (
 
 	"gate/internal/daemon"
 	"gate/internal/paths"
+	"gate/internal/ui"
 )
 
 type doctorReport struct {
@@ -98,17 +99,20 @@ func printDoctorReport(stdout io.Writer, report doctorReport, fix bool) {
 		printOK(stdout, "no issues found")
 		return
 	}
-	for _, issue := range report.Issues {
+	for i, issue := range report.Issues {
+		if i > 0 {
+			fmt.Fprintln(stdout)
+		}
 		status := "issue"
 		if issue.Fixed && issue.Error == "" {
 			status = "fixed"
 		}
 		printDoctorIssue(stdout, status, issue.Code, issue.Message)
 		for _, p := range issue.Paths {
-			printKV(stdout, "path", p)
+			printDoctorPath(stdout, p)
 		}
 		if issue.Error != "" {
-			printKV(stdout, "error", issue.Error)
+			printDoctorError(stdout, issue.Error)
 		}
 	}
 	if !fix && !report.OK {
@@ -118,10 +122,33 @@ func printDoctorReport(stdout io.Writer, report doctorReport, fix bool) {
 
 func printDoctorIssue(stdout io.Writer, status, code, message string) {
 	if richOut(stdout, false) {
-		printKV(stdout, status, code+" · "+message)
+		marker := ui.Tint(ui.Warn, "!")
+		renderedStatus := ui.Tint(ui.Warn, status)
+		if status == "fixed" {
+			marker = ui.Tint(ui.Success, "✓")
+			renderedStatus = ui.Tint(ui.Success, status)
+		}
+		fmt.Fprintf(stdout, "%s %s  %s\n", marker, renderedStatus, ui.Header.Render(code))
+		fmt.Fprintf(stdout, "  %s\n", ui.Dim.Render(message))
 		return
 	}
-	fmt.Fprintf(stdout, "%s · %s · %s\n", status, code, message)
+	fmt.Fprintf(stdout, "%s %s: %s\n", status, code, message)
+}
+
+func printDoctorPath(stdout io.Writer, path string) {
+	if richOut(stdout, false) {
+		fmt.Fprintf(stdout, "    %s  %s\n", ui.Dim.Render("path"), ui.Dim.Render(path))
+		return
+	}
+	fmt.Fprintf(stdout, "    path  %s\n", path)
+}
+
+func printDoctorError(stdout io.Writer, message string) {
+	if richOut(stdout, false) {
+		fmt.Fprintf(stdout, "    %s  %s\n", ui.Tint(ui.Danger, "error"), message)
+		return
+	}
+	fmt.Fprintf(stdout, "    error %s\n", message)
 }
 
 func checkLegacyDaemonState(fix bool) (doctorIssue, bool) {

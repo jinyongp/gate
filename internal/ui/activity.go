@@ -157,6 +157,11 @@ func activityDoneMarker(renderer ActivityRenderer) string {
 	switch renderer {
 	case ActivityASCII:
 		return "ok"
+	case "", ActivityDotStack, ActivityNone:
+		if activityBrailleSupported() {
+			return Tint(Success, "✓")
+		}
+		return "ok"
 	default:
 		if activityBrailleSupported() {
 			return Tint(Success, "✓")

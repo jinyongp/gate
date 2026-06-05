@@ -26,7 +26,17 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func stubDoctorAfterUpgrade(t *testing.T, report doctorReport) {
+	t.Helper()
+	oldDoctor := doctorAfterUpgradeFunc
+	t.Cleanup(func() { doctorAfterUpgradeFunc = oldDoctor })
+	doctorAfterUpgradeFunc = func() doctorReport {
+		return report
+	}
+}
+
 func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
+	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 
@@ -51,9 +61,13 @@ func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
 	if !strings.Contains(out.String(), "upgrade complete") {
 		t.Fatalf("stdout missing completion: %q", out.String())
 	}
+	if !strings.Contains(out.String(), "doctor") || !strings.Contains(out.String(), "no issues found") {
+		t.Fatalf("stdout missing doctor report: %q", out.String())
+	}
 }
 
 func TestCompleteUpgradeSkipsRestartWhenDaemonWasStopped(t *testing.T) {
+	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 
@@ -72,7 +86,38 @@ func TestCompleteUpgradeSkipsRestartWhenDaemonWasStopped(t *testing.T) {
 	}
 }
 
+func TestCompleteUpgradePrintsDoctorIssuesWithoutFailingUpgrade(t *testing.T) {
+	stubDoctorAfterUpgrade(t, doctorReport{Issues: []doctorIssue{{
+		Code:    "old_scoped_daemon_files",
+		Message: "1 old scoped daemon file(s) found",
+		Paths:   []string{"/tmp/gate/project-demo.pid"},
+	}}})
+	oldRestart := restartDaemonAfterUpgradeFunc
+	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
+	restartDaemonAfterUpgradeFunc = func(daemon.Status, io.Writer, io.Writer) int {
+		t.Fatal("restart should not be called")
+		return ExitError
+	}
+
+	var out, errb bytes.Buffer
+	code := completeUpgrade(&out, &errb, nil)
+	if code != ExitOK {
+		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "upgrade complete") || !strings.Contains(got, "doctor") {
+		t.Fatalf("stdout missing upgrade or doctor status: %q", got)
+	}
+	if !strings.Contains(got, "issue old_scoped_daemon_files") {
+		t.Fatalf("stdout missing doctor issue: %q", got)
+	}
+	if !strings.Contains(got, "fix: gate doctor --fix") {
+		t.Fatalf("stdout missing doctor fix hint: %q", got)
+	}
+}
+
 func TestCompleteUpgradeAttemptsAllRestartsAfterFailure(t *testing.T) {
+	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 
@@ -95,6 +140,9 @@ func TestCompleteUpgradeAttemptsAllRestartsAfterFailure(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "upgrade complete") {
 		t.Fatalf("success printed after partial failure: %q", out.String())
+	}
+	if strings.Contains(out.String(), "doctor") {
+		t.Fatalf("doctor should not run after failed restart: %q", out.String())
 	}
 }
 
@@ -284,6 +332,7 @@ func TestRunUpgradeCommandReportsCapturedOutputOnFailure(t *testing.T) {
 }
 
 func TestCompleteUpToDateRefreshesRunningDaemon(t *testing.T) {
+	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 

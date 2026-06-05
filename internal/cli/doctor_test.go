@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gate/internal/ui/uitest"
 )
 
 func isolateDoctor(t *testing.T) (string, string) {
@@ -91,6 +93,60 @@ func TestDoctorMigratesLegacyAdhocRegistry(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"standalone": true`) {
 		t.Fatalf("standalone field was not added:\n%s", string(b))
+	}
+}
+
+func TestPrintDoctorReportGroupsIssuesAndIndentsPaths(t *testing.T) {
+	uitest.ClearColorEnv(t)
+	report := doctorReport{Issues: []doctorIssue{
+		{
+			Code:    "old_scoped_daemon_files",
+			Message: "4 old scoped daemon file(s) found",
+			Paths:   []string{"/tmp/gate/project-demo.pid", "/tmp/gate/project-demo.sock"},
+		},
+		{
+			Code:    "stale_scoped_pid_files",
+			Message: "1 stale scoped daemon pid file(s) found",
+			Paths:   []string{"/tmp/gate/project-demo.pid"},
+		},
+	}}
+
+	var out bytes.Buffer
+	printDoctorReport(&out, report, false)
+	got := out.String()
+	if !strings.Contains(got, "issue old_scoped_daemon_files: 4 old scoped daemon file(s) found") {
+		t.Fatalf("missing first issue heading:\n%s", got)
+	}
+	if !strings.Contains(got, "\n\nissue stale_scoped_pid_files: 1 stale scoped daemon pid file(s) found") {
+		t.Fatalf("issues should be separated by a blank line:\n%s", got)
+	}
+	if !strings.Contains(got, "    path  /tmp/gate/project-demo.pid") {
+		t.Fatalf("paths should be visibly nested:\n%s", got)
+	}
+	if strings.Contains(got, " · ") {
+		t.Fatalf("doctor output should not use the old dense separator:\n%s", got)
+	}
+}
+
+func TestPrintDoctorReportRichStylesIssueAndPaths(t *testing.T) {
+	uitest.ForceColor(t)
+	report := doctorReport{Issues: []doctorIssue{{
+		Code:    "old_scoped_daemon_files",
+		Message: "1 old scoped daemon file(s) found",
+		Paths:   []string{"/tmp/gate/project-demo.pid"},
+	}}}
+
+	var out bytes.Buffer
+	printDoctorReport(&out, report, false)
+	got := out.String()
+	if !strings.Contains(got, "! issue  old_scoped_daemon_files") {
+		t.Fatalf("rich doctor output missing emphasized issue heading:\n%q", got)
+	}
+	if !strings.Contains(got, "    path  /tmp/gate/project-demo.pid") {
+		t.Fatalf("rich doctor output should nest path details:\n%q", got)
+	}
+	if strings.Contains(got, " · ") {
+		t.Fatalf("rich doctor output should not use the old dense separator:\n%q", got)
 	}
 }
 

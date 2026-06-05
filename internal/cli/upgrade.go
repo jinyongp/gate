@@ -30,6 +30,7 @@ var currentVersion = "dev"
 
 var (
 	restartDaemonAfterUpgradeFunc = restartDaemonAfterUpgrade
+	doctorAfterUpgradeFunc        = doctorReportAfterUpgrade
 	upgradeExecutablePathFunc     = executablePath
 	upgradeHomebrewUpdateFunc     = func(ctx context.Context) *exec.Cmd {
 		return exec.CommandContext(ctx, "brew", "update", "--force", "--quiet")
@@ -265,6 +266,7 @@ func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status) in
 		return code
 	}
 	printUpgradeStatus(stdout, "upgrade complete")
+	printDoctorAfterUpgrade(stdout)
 	return ExitOK
 }
 
@@ -279,7 +281,26 @@ func completeUpToDate(stdout, stderr io.Writer, version string, daemonsBefore []
 		return code
 	}
 	printUpgradeStatus(stdout, fmt.Sprintf("up to date (%s)", version))
+	printDoctorAfterUpgrade(stdout)
 	return ExitOK
+}
+
+func doctorReportAfterUpgrade() doctorReport {
+	report := doctorReport{Issues: runDoctorChecks(false)}
+	report.OK = doctorReportOK(report)
+	return report
+}
+
+func printDoctorAfterUpgrade(stdout io.Writer) {
+	report := doctorAfterUpgradeFunc()
+	if richOut(stdout, false) {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, ui.Section("doctor"))
+	} else {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "doctor")
+	}
+	printDoctorReport(stdout, report, false)
 }
 
 func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
