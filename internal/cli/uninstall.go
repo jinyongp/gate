@@ -236,12 +236,7 @@ func confirmUninstall(stdout io.Writer) bool {
 
 func confirmUninstallPrompt(reader *bufio.Reader, stdout io.Writer) (bool, error) {
 	fmt.Fprintln(stdout)
-	value, err := promptInput(reader, stdout, promptInputSpec{
-		Label:       "Proceed with uninstall?",
-		Default:     "no",
-		Placeholder: "no",
-		Normalize:   normalizeConfirmAnswer,
-	})
+	value, err := promptChoice(reader, stdout, "Proceed with uninstall?", "no", []string{"no", "yes"})
 	if err != nil {
 		return false, err
 	}

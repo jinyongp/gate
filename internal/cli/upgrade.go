@@ -379,35 +379,11 @@ func confirmUpgradePrompt(reader *bufio.Reader, stdout io.Writer, current, lates
 	if _, err := fmt.Fprint(stdout, renderUpgradePromptIntro(stdout, current, latest)); err != nil {
 		return false, err
 	}
-	value, err := promptInput(reader, stdout, promptInputSpec{
-		Label:       "Upgrade now?",
-		Default:     "yes",
-		Placeholder: "yes",
-		Normalize:   normalizeConfirmAnswer,
-		Validate:    validateConfirmAnswer,
-	})
+	value, err := promptChoice(reader, stdout, "Upgrade now?", "yes", []string{"yes", "no"})
 	if err != nil {
 		return false, err
 	}
 	return value == "yes", nil
-}
-
-func normalizeConfirmAnswer(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "y":
-		return "yes"
-	case "n":
-		return "no"
-	default:
-		return strings.ToLower(strings.TrimSpace(value))
-	}
-}
-
-func validateConfirmAnswer(value string) error {
-	if value == "yes" || value == "no" {
-		return nil
-	}
-	return fmt.Errorf("type yes to upgrade, or no to cancel")
 }
 
 func renderUpgradePromptIntro(stdout io.Writer, current, latest string) string {

@@ -32,16 +32,20 @@ func promptLabel(label string) string {
 	return label + ": "
 }
 
-func renderPromptLabel(label string) string {
-	return promptLabel(label)
+func renderPromptMarker(stdout io.Writer) string {
+	marker := "›"
+	if ui.Enabled(stdout) {
+		marker = ui.Tint(ui.Brand, marker)
+	}
+	return marker + " "
+}
+
+func renderPromptLabel(stdout io.Writer, label string) string {
+	return renderPromptMarker(stdout) + promptLabel(label)
 }
 
 func renderPromptHeading(stdout io.Writer, label string) string {
-	heading := strings.TrimSpace(promptLabel(label))
-	if ui.Enabled(stdout) {
-		return ui.Dim.Render(heading)
-	}
-	return heading
+	return strings.TrimSpace(renderPromptLabel(stdout, label))
 }
 
 func renderPromptValue(stdout io.Writer, value string) string {
@@ -98,7 +102,7 @@ func promptInput(reader *bufio.Reader, stdout io.Writer, spec promptInputSpec) (
 }
 
 func promptInputFallback(reader *bufio.Reader, stdout io.Writer, spec promptInputSpec) (string, error) {
-	prompt := renderPromptLabel(spec.Label)
+	prompt := renderPromptLabel(stdout, spec.Label)
 	if spec.Default == "" {
 		fmt.Fprintf(stdout, "%s", prompt)
 	} else {
@@ -120,7 +124,7 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 		_ = term.Restore(int(os.Stdin.Fd()), oldState)
 	}()
 
-	prompt := renderPromptLabel(spec.Label)
+	prompt := renderPromptLabel(stdout, spec.Label)
 	frame := promptInputFrame{Prompt: prompt}
 	value := ""
 	skipEscape := 0
@@ -150,7 +154,7 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 				if err := renderPromptInputValue(stdout, value, result, spec, promptInputState{Confirmed: true}); err != nil {
 					return "", err
 				}
-				_, err = fmt.Fprint(stdout, "\r\n\r\n")
+				_, err = fmt.Fprint(stdout, promptInputDoneSequence())
 				return result, err
 			}
 		case r == 0x03:
@@ -177,6 +181,10 @@ func promptInputPlaceholder(stdout io.Writer, spec promptInputSpec) (string, err
 			return "", err
 		}
 	}
+}
+
+func promptInputDoneSequence() string {
+	return "\r\n"
 }
 
 func promptInputValue(spec promptInputSpec, raw string) string {
@@ -208,7 +216,7 @@ func renderPromptInput(stdout io.Writer, frame *promptInputFrame, raw string, sp
 	if err := renderPromptInputValue(stdout, raw, value, spec, promptInputState{}); err != nil {
 		return err
 	}
-	return renderPromptStatus(stdout, frame, validatePromptInput(spec, value))
+	return renderPromptStatus(stdout, frame, raw, value, spec, validatePromptInput(spec, value))
 }
 
 func renderPromptInputValue(stdout io.Writer, raw, value string, spec promptInputSpec, state promptInputState) error {
@@ -222,15 +230,14 @@ func renderPromptInputValue(stdout io.Writer, raw, value string, spec promptInpu
 	}
 
 	if raw == "" && spec.Placeholder != "" {
-		if _, err := fmt.Fprint(stdout, "\x1b7"); err != nil {
-			return err
-		}
 		placeholder := spec.Placeholder
 		if ui.Enabled(stdout) {
 			placeholder = ui.Dim.Render(placeholder)
 		}
-		_, err := fmt.Fprint(stdout, placeholder)
-		return err
+		if _, err := fmt.Fprint(stdout, placeholder); err != nil {
+			return err
+		}
+		return moveCursorLeft(stdout, promptVisibleWidth(placeholder))
 	}
 
 	display := raw
@@ -240,9 +247,6 @@ func renderPromptInputValue(stdout io.Writer, raw, value string, spec promptInpu
 	if _, err := fmt.Fprint(stdout, display); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprint(stdout, "\x1b7"); err != nil {
-		return err
-	}
 	if spec.Suffix == "" || raw == "" {
 		return nil
 	}
@@ -250,8 +254,42 @@ func renderPromptInputValue(stdout io.Writer, raw, value string, spec promptInpu
 	if ui.Enabled(stdout) {
 		suffix = ui.Dim.Render(suffix)
 	}
-	_, err := fmt.Fprint(stdout, suffix)
+	if _, err := fmt.Fprint(stdout, suffix); err != nil {
+		return err
+	}
+	return moveCursorLeft(stdout, promptVisibleWidth(suffix))
+}
+
+func moveCursorLeft(stdout io.Writer, width int) error {
+	if width <= 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(stdout, "\x1b[%dD", width)
 	return err
+}
+
+func promptVisibleWidth(s string) int {
+	width := 0
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) {
+				b := s[i]
+				i++
+				if b >= 0x40 && b <= 0x7e {
+					break
+				}
+			}
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		width++
+		i += size
+	}
+	return width
 }
 
 func trimLastRune(s string) string {
@@ -409,26 +447,50 @@ func clearPromptStatus(stdout io.Writer, frame *promptInputFrame) error {
 	if !frame.Status {
 		return nil
 	}
-	if _, err := fmt.Fprint(stdout, "\r\n\x1b[2K\x1b8"); err != nil {
+	if _, err := fmt.Fprint(stdout, "\x1b[1B\r\x1b[2K\x1b[1A\r"); err != nil {
 		return err
 	}
 	frame.Status = false
 	return nil
 }
 
-func renderPromptStatus(stdout io.Writer, frame *promptInputFrame, err error) error {
+func renderPromptStatus(stdout io.Writer, frame *promptInputFrame, raw, value string, spec promptInputSpec, err error) error {
+	if err == nil {
+		frame.Status = false
+		return nil
+	}
 	frame.Status = true
 	if _, writeErr := fmt.Fprint(stdout, "\r\n\x1b[2K"); writeErr != nil {
 		return writeErr
 	}
-	if err != nil {
-		message := renderErrorMessage(stdout, err.Error())
-		if _, writeErr := fmt.Fprint(stdout, message); writeErr != nil {
-			return writeErr
-		}
+	message := renderErrorMessage(stdout, err.Error())
+	if _, writeErr := fmt.Fprint(stdout, message); writeErr != nil {
+		return writeErr
 	}
-	_, writeErr := fmt.Fprint(stdout, "\x1b8")
-	return writeErr
+	if _, writeErr := fmt.Fprint(stdout, "\x1b[1A\r"); writeErr != nil {
+		return writeErr
+	}
+	return moveCursorRight(stdout, promptCursorColumn(frame.Prompt, raw, value, spec))
+}
+
+func moveCursorRight(stdout io.Writer, width int) error {
+	if width <= 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(stdout, "\x1b[%dC", width)
+	return err
+}
+
+func promptCursorColumn(prompt, raw, value string, spec promptInputSpec) int {
+	column := promptVisibleWidth(prompt)
+	if raw == "" {
+		return column
+	}
+	display := raw
+	if spec.LiveDisplay != nil {
+		display = spec.LiveDisplay(raw, value)
+	}
+	return column + promptVisibleWidth(display)
 }
 
 func renderErrorMessage(stdout io.Writer, message string) string {

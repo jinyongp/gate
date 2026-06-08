@@ -478,15 +478,13 @@ func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {
 	}
 }
 
-func TestConfirmUpgradeFallbackNormalizesAnswers(t *testing.T) {
+func TestConfirmUpgradeFallbackAcceptsChoices(t *testing.T) {
 	cases := []struct {
 		input string
 		want  bool
 	}{
 		{input: "\n", want: true},
-		{input: "y\n", want: true},
 		{input: "yes\n", want: true},
-		{input: "n\n", want: false},
 		{input: "no\n", want: false},
 	}
 	for _, tc := range cases {
@@ -525,7 +523,7 @@ func TestConfirmUpgradeFallbackExplainsInvalidAnswer(t *testing.T) {
 	if !strings.Contains(out.String(), "Latest version: v1.2.2") {
 		t.Fatalf("missing latest version explanation: %q", out.String())
 	}
-	if !strings.Contains(out.String(), "type yes to upgrade, or no to cancel") {
+	if !strings.Contains(out.String(), "Choose one of: yes, no") {
 		t.Fatalf("missing invalid answer guidance: %q", out.String())
 	}
 }

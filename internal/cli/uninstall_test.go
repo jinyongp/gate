@@ -196,17 +196,16 @@ func TestUninstallKeepBrewSkipsHomebrewManagedGateBinDir(t *testing.T) {
 	}
 }
 
-func TestConfirmUninstallPromptNormalizesAnswers(t *testing.T) {
+func TestConfirmUninstallPromptAcceptsChoices(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  bool
 	}{
 		{name: "yes", input: "yes\n", want: true},
-		{name: "y", input: "y\n", want: true},
 		{name: "no", input: "no\n", want: false},
 		{name: "empty", input: "\n", want: false},
-		{name: "other", input: "later\n", want: false},
+		{name: "invalid then no", input: "later\nno\n", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
