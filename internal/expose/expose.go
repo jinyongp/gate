@@ -23,6 +23,10 @@ const (
 type Opts struct {
 	// Auth, if non-empty as "user:pass", requires basic auth at the proxy.
 	Auth string
+	// TargetURL, when set, is the provider-facing upstream URL.
+	TargetURL string
+	// ServePort, when set, is the provider-facing HTTPS listener port.
+	ServePort int
 }
 
 const (

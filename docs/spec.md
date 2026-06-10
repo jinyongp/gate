@@ -486,7 +486,7 @@ flowchart LR
 | `local` | Same machine | active route | No external exposure. |
 | `lan` | Same network | derived or overridden `.local` domain, reachable machine, trusted CA on clients | gate validates and marks the route exposed; it does not configure other devices' DNS. |
 | `cloudflared` | Public temporary URL | `cloudflared` in `PATH` | Requires authenticated exposure or an explicit unauthenticated opt-out; quick tunnel URL is temporary. |
-| `tailscale` | Tailnet | logged-in `tailscale` in `PATH` | Uses Tailscale Serve; stop resets Serve when the record is gate-owned or force removal is requested. |
+| `tailscale` | Tailnet | logged-in `tailscale` in `PATH` | Uses one Tailscale Serve exposure on a non-443 HTTPS port pointed at the gate route; stop resets Serve when the record is gate-owned or force removal is requested. |
 
 Exposure activation targets one scoped active route. Without an explicit scope,
 it resolves the current project when inside a `gate.toml` tree and global

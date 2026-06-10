@@ -24,6 +24,7 @@ type Record struct {
 	PublicURL   string `json:"public_url"`
 	Target      string `json:"target"`
 	AuthEnabled bool   `json:"auth_enabled,omitempty"`
+	ServePort   int    `json:"serve_port,omitempty"`
 	PID         int    `json:"pid,omitempty"`
 	Command     string `json:"command,omitempty"`
 	CreatedAt   string `json:"created_at"`

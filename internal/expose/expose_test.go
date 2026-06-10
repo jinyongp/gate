@@ -182,20 +182,28 @@ func TestTailscaleExposeUsesNodeURLAndOriginTarget(t *testing.T) {
 		return exec.CommandContext(ctx, "sh", "-c", `printf '{"Self":{"DNSName":"anubis.tail6c50d7.ts.net."}}'`)
 	}
 	var gotTarget string
-	tailscaleServeCommand = func(ctx context.Context, target string) *exec.Cmd {
+	var gotPort int
+	tailscaleServeCommand = func(ctx context.Context, target string, httpsPort int) *exec.Cmd {
 		gotTarget = target
+		gotPort = httpsPort
 		return exec.CommandContext(ctx, "sh", "-c", "true")
 	}
 
-	result, err := Tailscale{}.Expose(context.Background(), "local.stamp.is", Opts{})
+	result, err := Tailscale{}.Expose(context.Background(), "local.stamp.is", Opts{
+		TargetURL: "https+insecure://local.stamp.is",
+		ServePort: 10443,
+	})
 	if err != nil {
 		t.Fatalf("Expose: %v", err)
 	}
-	if result.URL != "https://anubis.tail6c50d7.ts.net" {
+	if result.URL != "https://anubis.tail6c50d7.ts.net:10443" {
 		t.Fatalf("URL = %q", result.URL)
 	}
-	if gotTarget != "https://local.stamp.is" {
+	if gotTarget != "https+insecure://local.stamp.is" {
 		t.Fatalf("target = %q", gotTarget)
+	}
+	if gotPort != 10443 {
+		t.Fatalf("port = %d", gotPort)
 	}
 }
 
@@ -210,7 +218,7 @@ func TestTailscaleExposeFailsBeforeServeWhenNodeURLMissing(t *testing.T) {
 		return exec.CommandContext(ctx, "sh", "-c", `printf '{"Self":{}}'`)
 	}
 	serveCalled := false
-	tailscaleServeCommand = func(ctx context.Context, target string) *exec.Cmd {
+	tailscaleServeCommand = func(ctx context.Context, target string, httpsPort int) *exec.Cmd {
 		serveCalled = true
 		return exec.CommandContext(ctx, "sh", "-c", "true")
 	}
@@ -233,9 +241,10 @@ func TestTailscaleStopResetsOwnedServe(t *testing.T) {
 		return exec.CommandContext(ctx, "sh", "-c", "true")
 	}
 	record := Record{
-		Provider: ProviderTailscale,
-		Target:   "local.stamp.is",
-		Command:  "tailscale serve --bg https://local.stamp.is",
+		Provider:  ProviderTailscale,
+		Target:    "local.stamp.is",
+		ServePort: 10443,
+		Command:   "tailscale serve --bg --https=10443 https+insecure://local.stamp.is",
 	}
 
 	if err := (Tailscale{}).Stop(context.Background(), record, StopOpts{}); err != nil {

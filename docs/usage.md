@@ -617,23 +617,28 @@ Limitations:
 - Access is limited to devices allowed by the tailnet and ACLs.
 - The current implementation uses `tailscale serve --bg` and `tailscale serve
   reset`. Resetting Tailscale Serve affects the machine's Serve configuration.
+- gate allows one Tailscale exposure at a time because Tailscale Serve reset is
+  machine-wide.
 
 ```bash
 gate expose web --via tailscale
 ```
 
-This runs `tailscale serve --bg https://<service-domain>` and prints the
-Tailscale Serve URL for the current machine:
+This runs
+`tailscale serve --bg --https=<serve-port> https+insecure://<service-domain>`
+and prints the Tailscale Serve URL for the current machine. The Tailscale
+listener uses a non-443 HTTPS port so the local gate URL remains usable on this
+machine.
 
 ```text
 web exposed via tailscale
-  https://my-mac.tail6c50d7.ts.net -> local.stamp.is
+  https://my-mac.tail6c50d7.ts.net:10443 -> local.stamp.is
 ```
 
 Open the Tailscale URL from another device in the same tailnet:
 
 ```text
-https://my-mac.tail6c50d7.ts.net
+https://my-mac.tail6c50d7.ts.net:10443
 ```
 
 gate also reloads a route alias for the Tailscale URL host so host-routed
@@ -648,6 +653,8 @@ gate expose stop web --via tailscale
 For safety, gate only resets Tailscale Serve by default when the exposure record
 matches a command gate created. If the record is stale or ownership is unclear,
 pass `--force` to reset Tailscale Serve anyway and forget the record.
+Because Tailscale Serve reset is machine-wide, stopping a Tailscale exposure
+also forgets other Tailscale exposure records if stale records are present.
 
 ### Expose Command Reference
 

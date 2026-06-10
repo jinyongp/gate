@@ -34,7 +34,11 @@ var (
 	tailscaleStatusCommand = func(ctx context.Context) *exec.Cmd {
 		return exec.CommandContext(ctx, "tailscale", "status", "--json")
 	}
-	tailscaleServeCommand = func(ctx context.Context, target string) *exec.Cmd {
+	tailscaleServeCommand = func(ctx context.Context, target string, httpsPort int) *exec.Cmd {
+		if httpsPort > 0 {
+			//nolint:gosec // G204: fixed binary; target comes from the project config.
+			return exec.CommandContext(ctx, "tailscale", "serve", "--bg", fmt.Sprintf("--https=%d", httpsPort), target)
+		}
 		//nolint:gosec // G204: fixed binary; target comes from the project config.
 		return exec.CommandContext(ctx, "tailscale", "serve", "--bg", target)
 	}
@@ -186,21 +190,24 @@ func (c *Cloudflared) Close() error {
 // Tailscale exposes a route over a tailnet via `tailscale serve`.
 type Tailscale struct{}
 
-// Expose publishes the local HTTPS address through tailscale serve.
-func (Tailscale) Expose(ctx context.Context, domain string, _ Opts) (Result, error) {
-	publicURL, err := tailscaleNodeURL(ctx)
+// Expose publishes the selected target through tailscale serve.
+func (Tailscale) Expose(ctx context.Context, domain string, opts Opts) (Result, error) {
+	publicURL, err := tailscaleNodeURL(ctx, opts.ServePort)
 	if err != nil {
 		return Result{}, err
 	}
-	target := "https://" + domain
-	cmd := tailscaleServeCommand(ctx, target)
+	target := strings.TrimSpace(opts.TargetURL)
+	if target == "" {
+		target = "https://" + domain
+	}
+	cmd := tailscaleServeCommand(ctx, target, opts.ServePort)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return Result{}, fmt.Errorf("expose: tailscale serve failed: %w: %s", err, out)
 	}
 	return Result{URL: publicURL, Command: strings.Join(cmd.Args, " ")}, nil
 }
 
-func tailscaleNodeURL(ctx context.Context) (string, error) {
+func tailscaleNodeURL(ctx context.Context, httpsPort int) (string, error) {
 	cmd := tailscaleStatusCommand(ctx)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -220,6 +227,9 @@ func tailscaleNodeURL(ctx context.Context) (string, error) {
 	dnsName := strings.TrimSuffix(strings.TrimSpace(status.Self.DNSName), ".")
 	if dnsName == "" {
 		return "", fmt.Errorf("expose: tailscale status did not report this machine's DNS name")
+	}
+	if httpsPort > 0 && httpsPort != 443 {
+		return fmt.Sprintf("https://%s:%d", dnsName, httpsPort), nil
 	}
 	return "https://" + dnsName, nil
 }
@@ -246,7 +256,15 @@ func tailscaleRecordOwned(record Record) bool {
 	if record.Provider != ProviderTailscale {
 		return false
 	}
-	return strings.TrimSpace(record.Command) == "tailscale serve --bg https://"+record.Target
+	command := strings.TrimSpace(record.Command)
+	if command == "tailscale serve --bg https://"+record.Target {
+		return true
+	}
+	if record.ServePort > 0 {
+		want := fmt.Sprintf("tailscale serve --bg --https=%d https+insecure://%s", record.ServePort, record.Target)
+		return command == want
+	}
+	return false
 }
 
 // Close is a no-op; Stop tears down Tailscale Serve.

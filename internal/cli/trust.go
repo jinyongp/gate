@@ -17,6 +17,7 @@ import (
 	"gate/internal/config"
 	"gate/internal/expose"
 	"gate/internal/paths"
+	portx "gate/internal/port"
 	"gate/internal/proxy"
 	"gate/internal/registry"
 	"gate/internal/ui"
@@ -29,6 +30,8 @@ var (
 	exposeSessionMu      sync.Mutex
 	exposeSessionRoutes  = map[string]map[string]exposeSessionRoute{}
 )
+
+var tailscaleServePortPool = portx.Pool{Min: 10443, Max: 10999}
 
 type exposeSessionRoute struct {
 	Auth string
@@ -175,6 +178,10 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, *jsonOut, ExitConflict, "domain_conflict", err.Error())
 		}
 	}
+	servePort, err := exposeServePort(providerName, res)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitConflict, "port_conflict", err.Error())
+	}
 	provider, err := exposeProviderFor(providerName)
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_provider", err.Error())
@@ -186,7 +193,11 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	if exposeActivityAllowed(providerName) {
 		activity = startActivity(stderr, *jsonOut, "starting tunnel")
 	}
-	result, err := provider.Expose(context.Background(), exposeDomain, expose.Opts{Auth: routeAuth})
+	result, err := provider.Expose(context.Background(), exposeDomain, expose.Opts{
+		Auth:      routeAuth,
+		TargetURL: exposeTargetURL(providerName, exposeDomain),
+		ServePort: servePort,
+	})
 	if activity != nil {
 		if err != nil {
 			activity.Stop()
@@ -209,6 +220,7 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 		PublicURL:   result.URL,
 		Target:      res.Domain,
 		AuthEnabled: routeAuth != "",
+		ServePort:   servePort,
 		PID:         result.PID,
 		Command:     result.Command,
 	}
@@ -429,7 +441,7 @@ func exposeStop(args []string, stdout, stderr io.Writer) int {
 	}
 	status, _ := provider.Status(context.Background(), record)
 	skipProviderStop := status == expose.StatusDown && *force
-	nextRecords := removeExposureRecord(records, record)
+	nextRecords := removeExposureRecordsAffectedByStop(records, record)
 	if err := reloadExposureRecordsWith(nextRecords, stderr, *jsonOut); err != nil {
 		return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
 	}
@@ -500,6 +512,59 @@ func exposeDomainForProvider(via, primary, override string) (string, error) {
 		return derived, nil
 	}
 	return primary, nil
+}
+
+func exposeTargetURL(via, domain string) string {
+	if via != expose.ProviderTailscale {
+		return ""
+	}
+	return "https+insecure://" + domain
+}
+
+func exposeServePort(via string, res registry.Reservation) (int, error) {
+	if via != expose.ProviderTailscale {
+		return 0, nil
+	}
+	records, err := exposureStore().Read()
+	if err != nil {
+		return 0, err
+	}
+	match := expose.Record{
+		Scope:    exposureScope(res),
+		Project:  res.Project,
+		Service:  res.Service,
+		Provider: expose.ProviderTailscale,
+	}
+	reserved := map[int]bool{80: true, 443: true}
+	for _, record := range records {
+		if record.Provider != expose.ProviderTailscale {
+			continue
+		}
+		if !expose.SameKey(record, match) {
+			return 0, fmt.Errorf("tailscale exposure already exists for %s; stop it before exposing another service", record.Service)
+		}
+		if record.ServePort > 0 {
+			return record.ServePort, nil
+		}
+	}
+	for _, record := range records {
+		if record.ServePort <= 0 {
+			continue
+		}
+		reserved[record.ServePort] = true
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		return 0, err
+	}
+	for p := range reg.UsedPorts() {
+		reserved[p] = true
+	}
+	p, err := portx.Allocate(tailscaleServePortPool, reserved)
+	if err != nil {
+		return 0, fmt.Errorf("no free tailscale serve port: %w", err)
+	}
+	return p, nil
 }
 
 func deriveLANDomain(primary string) string {
@@ -689,6 +754,20 @@ func removeExposureRecord(records []expose.Record, match expose.Record) []expose
 	next := make([]expose.Record, 0, len(records))
 	for _, record := range records {
 		if expose.SameKey(record, match) {
+			continue
+		}
+		next = append(next, record)
+	}
+	return next
+}
+
+func removeExposureRecordsAffectedByStop(records []expose.Record, match expose.Record) []expose.Record {
+	if match.Provider != expose.ProviderTailscale {
+		return removeExposureRecord(records, match)
+	}
+	next := make([]expose.Record, 0, len(records))
+	for _, record := range records {
+		if record.Provider == expose.ProviderTailscale {
 			continue
 		}
 		next = append(next, record)

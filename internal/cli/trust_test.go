@@ -22,6 +22,8 @@ type fakeExposeProvider struct {
 	stopped *int
 	closed  *int
 	auth    *string
+	target  *string
+	port    *int
 	result  expose.Result
 }
 
@@ -31,6 +33,12 @@ func (p fakeExposeProvider) Expose(_ context.Context, domain string, opts expose
 	}
 	if p.auth != nil {
 		*p.auth = opts.Auth
+	}
+	if p.target != nil {
+		*p.target = opts.TargetURL
+	}
+	if p.port != nil {
+		*p.port = opts.ServePort
 	}
 	if p.result.URL != "" {
 		return p.result, nil
@@ -445,13 +453,25 @@ func TestExposeAddsPublicURLHostAlias(t *testing.T) {
 
 	oldProvider := exposeProviderFor
 	t.Cleanup(func() { exposeProviderFor = oldProvider })
+	var target string
+	var servePort int
 	exposeProviderFor = func(string) (expose.Provider, error) {
-		return fakeExposeProvider{result: expose.Result{URL: "https://anubis.tail6c50d7.ts.net"}}, nil
+		return fakeExposeProvider{
+			target: &target,
+			port:   &servePort,
+			result: expose.Result{URL: "https://anubis.tail6c50d7.ts.net:10443"},
+		}, nil
 	}
 
 	var out, errb bytes.Buffer
 	if code := Expose([]string{"-g", "web", "--via", "tailscale", "--auth", "user:pass"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Expose exit = %d, stderr=%s", code, errb.String())
+	}
+	if target != "https+insecure://local.stamp.is" {
+		t.Fatalf("target = %q", target)
+	}
+	if servePort != 10443 {
+		t.Fatalf("serve port = %d", servePort)
 	}
 	if !routeExposed(final, "local.stamp.is", "user:pass") {
 		t.Fatalf("base route not exposed: %+v", final)
@@ -464,6 +484,55 @@ func TestExposeAddsPublicURLHostAlias(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "https://anubis.tail6c50d7.ts.net") || !strings.Contains(out.String(), "local.stamp.is") {
 		t.Fatalf("stdout = %s", out.String())
+	}
+	records, err := exposureStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ServePort != 10443 || !records[0].AuthEnabled {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestExposeTailscaleRejectsSecondService(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		if err := r.Reserve(registry.Reservation{Service: "web", Domain: "web.localhost", Port: 4400, Standalone: true, Active: true}); err != nil {
+			return err
+		}
+		return r.Reserve(registry.Reservation{Service: "api", Domain: "api.localhost", Port: 4401, Standalone: true, Active: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "api", Provider: expose.ProviderTailscale,
+		PublicURL: "https://anubis.tail6c50d7.ts.net:10443", Target: "api.localhost", ServePort: 10443,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldProvider := exposeProviderFor
+	t.Cleanup(func() { exposeProviderFor = oldProvider })
+	called := 0
+	exposeProviderFor = func(string) (expose.Provider, error) {
+		return fakeExposeProvider{called: &called}, nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Expose([]string{"-g", "web", "--via", "tailscale"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("Expose exit = %d, stderr=%s", code, errb.String())
+	}
+	if called != 0 {
+		t.Fatalf("provider called %d times", called)
+	}
+	if !strings.Contains(errb.String(), "tailscale exposure already exists") {
+		t.Fatalf("stderr = %s", errb.String())
 	}
 }
 
@@ -992,6 +1061,13 @@ func TestExposeStopTailscaleRequiresForce(t *testing.T) {
 	if code := Expose([]string{"stop", "-g", "web", "--via", "tailscale"}, &out, &errb); code != ExitError {
 		t.Fatalf("Expose stop exit = %d, want error", code)
 	}
+	records, err := exposureStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Provider != expose.ProviderTailscale {
+		t.Fatalf("records after failed stop = %+v", records)
+	}
 	oldProvider := exposeProviderFor
 	t.Cleanup(func() { exposeProviderFor = oldProvider })
 	exposeProviderFor = func(string) (expose.Provider, error) {
@@ -999,6 +1075,49 @@ func TestExposeStopTailscaleRequiresForce(t *testing.T) {
 	}
 	if code := Expose([]string{"stop", "-g", "web", "--via", "tailscale", "--force"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Expose stop --force exit = %d, stderr=%s", code, errb.String())
+	}
+}
+
+func TestExposeStopTailscaleRemovesAllTailscaleRecords(t *testing.T) {
+	isolate(t)
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "web", Provider: expose.ProviderTailscale,
+		PublicURL: "https://web.tail.ts.net:10443", Target: "web.localhost", ServePort: 10443,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "api", Provider: expose.ProviderTailscale,
+		PublicURL: "https://api.tail.ts.net:10444", Target: "api.localhost", ServePort: 10444,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "local", Provider: expose.ProviderLocal,
+		PublicURL: "https://local.localhost", Target: "local.localhost",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldProvider := exposeProviderFor
+	t.Cleanup(func() { exposeProviderFor = oldProvider })
+	stopped := 0
+	exposeProviderFor = func(string) (expose.Provider, error) {
+		return fakeExposeProvider{stopped: &stopped}, nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Expose([]string{"stop", "-g", "web", "--via", "tailscale"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose stop exit = %d, stderr=%s", code, errb.String())
+	}
+	if stopped != 1 {
+		t.Fatalf("stopped = %d", stopped)
+	}
+	records, err := exposureStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Provider != expose.ProviderLocal {
+		t.Fatalf("records = %+v", records)
 	}
 }
 
