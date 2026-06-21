@@ -65,6 +65,38 @@ func TestUpAllocatesAndReserves(t *testing.T) {
 	}
 }
 
+func TestUpUsesExplicitConfigPath(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "dev.gate.toml")
+	toml := `[project]
+name = "demo"
+
+[services.web]
+domain = "web.demo.localhost"
+port = 4400
+`
+	if err := os.WriteFile(configPath, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--config", configPath, "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, ok := reg.Get(registry.Key("demo", "web"))
+	if !ok || !res.Active || res.Port != 4400 {
+		t.Fatalf("reservation = %+v, ok=%v", res, ok)
+	}
+	if res.ConfigPath != configPath {
+		t.Fatalf("ConfigPath = %q, want %q", res.ConfigPath, configPath)
+	}
+}
+
 func TestUpRejectsInvalidDNSMode(t *testing.T) {
 	setupUpProject(t)
 	var out, errb bytes.Buffer

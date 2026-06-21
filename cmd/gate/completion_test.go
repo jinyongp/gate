@@ -29,6 +29,11 @@ func isolateCompletion(t *testing.T) string {
 
 func writeCompletionProject(t *testing.T, dir, name string, services ...string) string {
 	t.Helper()
+	return writeCompletionProjectFile(t, filepath.Join(dir, config.Filename), name, services...)
+}
+
+func writeCompletionProjectFile(t *testing.T, path, name string, services ...string) string {
+	t.Helper()
 	var b strings.Builder
 	b.WriteString("[project]\n")
 	b.WriteString("name = \"" + name + "\"\n\n")
@@ -36,7 +41,6 @@ func writeCompletionProject(t *testing.T, dir, name string, services ...string) 
 		b.WriteString("[services." + service + "]\n")
 		b.WriteString("domain = \"" + service + "." + name + ".localhost\"\n\n")
 	}
-	path := filepath.Join(dir, config.Filename)
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -145,13 +149,33 @@ func TestCompletionProvidersAreQuietOnRegistryErrors(t *testing.T) {
 	}
 }
 
+func TestCompletionScopedNamesUseExplicitConfig(t *testing.T) {
+	cwd := isolateCompletion(t)
+	path := writeCompletionProjectFile(t, filepath.Join(cwd, "dev.gate.toml"), "demo", "web", "api")
+
+	got := completeScopedNames(&completionContext{args: []string{"--config", path}})
+	if strings.Join(got, ",") != "api,web" {
+		t.Fatalf("scoped names = %v", got)
+	}
+}
+
+func TestCompletionProjectsUseExplicitConfig(t *testing.T) {
+	cwd := isolateCompletion(t)
+	path := writeCompletionProjectFile(t, filepath.Join(cwd, "dev.gate.toml"), "demo", "web")
+
+	got := completeProjects(&completionContext{args: []string{"--config", path}})
+	if strings.Join(got, ",") != "demo" {
+		t.Fatalf("projects = %v", got)
+	}
+}
+
 func TestCompletionFlagGroupExpansion(t *testing.T) {
 	scope := expandedCompletionFlags(completionSpec{FlagGroups: []completionFlagGroup{flagsScope}})
-	if len(scope) != 2 || scope[0].Name != "global" || scope[0].Short != "g" || scope[1].Name != "project" || scope[1].Short != "p" {
+	if len(scope) != 3 || scope[0].Name != "config" || scope[1].Name != "global" || scope[1].Short != "g" || scope[2].Name != "project" || scope[2].Short != "p" {
 		t.Fatalf("scope flags = %+v", scope)
 	}
 	all := expandedCompletionFlags(completionSpec{FlagGroups: []completionFlagGroup{flagsScopeAll}})
-	if len(all) != 3 || all[2].Name != "all" || all[2].Short != "a" {
+	if len(all) != 4 || all[3].Name != "all" || all[3].Short != "a" {
 		t.Fatalf("scope-all flags = %+v", all)
 	}
 	json := expandedCompletionFlags(completionSpec{FlagGroups: []completionFlagGroup{flagsJSON}})

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"gate/internal/config"
@@ -23,6 +24,7 @@ func registryScopeFromFlags(flags daemonScopeFlags, allowAll bool) (registryScop
 	globalSet := flags.global != nil && *flags.global
 	projectSet := flags.project != nil && flags.project.set
 	allSet := flags.all != nil && *flags.all
+	configSet := flags.config != nil && flags.config.set
 	setCount := 0
 	for _, set := range []bool{globalSet, projectSet, allSet} {
 		if set {
@@ -37,6 +39,25 @@ func registryScopeFromFlags(flags daemonScopeFlags, allowAll bool) (registryScop
 	}
 	if projectSet && strings.TrimSpace(flags.project.value) == "" {
 		return registryScopeSelection{}, fmt.Errorf("project name is required")
+	}
+	if configSet {
+		if globalSet || allSet {
+			return registryScopeSelection{}, fmt.Errorf("--config cannot be used with --global or --all")
+		}
+		project, path, err := projectFromConfigFlag(flags.config.value)
+		if err != nil {
+			return registryScopeSelection{}, err
+		}
+		if projectSet && project.Name != strings.TrimSpace(flags.project.value) {
+			return registryScopeSelection{}, fmt.Errorf("config %s belongs to project %q, not %q", path, project.Name, strings.TrimSpace(flags.project.value))
+		}
+		return registryScopeSelection{
+			Scope:                  projectDaemonScope(project.Name),
+			CurrentProject:         project,
+			CurrentProjectPath:     path,
+			CurrentProjectSelected: true,
+			ExplicitProject:        projectSet,
+		}, nil
 	}
 	if allSet {
 		return registryScopeSelection{All: true}, nil
@@ -60,6 +81,22 @@ func registryScopeFromFlags(flags daemonScopeFlags, allowAll bool) (registryScop
 		return registryScopeSelection{Scope: globalDaemonScope()}, nil
 	}
 	return registryScopeSelection{}, err
+}
+
+func projectFromConfigFlag(path string) (*config.Project, string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, "", fmt.Errorf("config path is required")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, "", err
+	}
+	project, err := config.Load(abs)
+	if err != nil {
+		return nil, "", err
+	}
+	return project, abs, nil
 }
 
 func reservationMatchesScope(res registry.Reservation, sel registryScopeSelection) bool {

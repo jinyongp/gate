@@ -42,19 +42,19 @@ fi
 | command | purpose |
 | --- | --- |
 | `gate init [--name name] [--force] [-y\|--yes] [--json]` | scaffold a starter `gate.toml` |
-| `gate up [-d\|--daemon] [--dns localhost\|hosts] [-g\|--global] [-p name\|--project name] [--json]` | reserve current-project ports or activate scoped reservations |
-| `gate ls [--route active\|inactive] [--upstream live\|down] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list scoped reservations with route/upstream status |
-| `gate port [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one scoped service port, or list reserved ports |
-| `gate run [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a command with `PORT` and peer service env injected |
-| `gate down [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes (reservations kept) |
-| `gate expose [--via <provider>] [--domain name.local] [--auth user:pass] [--no-auth] [-g\|--global] [-p name\|--project name] <service> [--json]` | reach a scoped service externally |
-| `gate expose ls [--via provider] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
-| `gate expose stop [--via <provider>] [--force] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop one exposure |
+| `gate up [-d\|--daemon] [--dns localhost\|hosts] [--config path] [-g\|--global] [-p name\|--project name] [--json]` | reserve current-project ports or activate scoped reservations |
+| `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list scoped reservations with route/upstream status |
+| `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one scoped service port, or list reserved ports |
+| `gate run [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a command with `PORT` and peer service env injected |
+| `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes (reservations kept) |
+| `gate expose [--via <provider>] [--domain name.local] [--auth user:pass] [--no-auth] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | reach a scoped service externally |
+| `gate expose ls [--via provider] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
+| `gate expose stop [--via <provider>] [--force] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop one exposure |
 | `gate daemon status [-a\|--all] [--json]` | inspect listener proxy status |
-| `gate add [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | reserve a scoped service/name mapping |
-| `gate rm [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one scoped reservation |
-| `gate clear [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
-| `gate prune [--json]` | GC reservations whose gate.toml is gone |
+| `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | reserve a scoped service/name mapping |
+| `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one scoped reservation |
+| `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
+| `gate prune [--json]` | GC reservations whose owning config file is gone |
 | `gate daemon start` | start the default listener proxy |
 | `gate daemon stop [-a\|--all]` | stop listener proxy daemon(s) |
 | `gate daemon restart` | restart the default listener proxy |
@@ -89,6 +89,10 @@ Start a dev server on its assigned port:
 "$GATE_BIN" up
 "$GATE_BIN" run web -- pnpm dev   # PORT and peer service env are injected
 ```
+
+Use `--config path/to/file.toml` when the project config is not named
+`gate.toml` or is not discoverable from the current directory. Do not combine it
+with `--global` or `--all`.
 
 Get a port for a script:
 
@@ -145,10 +149,10 @@ port = "${API_PORT}"
 env = "API_URL"
 ```
 
-`env_files` are resolved relative to `gate.toml`. Missing env files are ignored.
-Process env overrides dotenv values; earlier env files override later env files.
-`${NAME}` is required and errors when unset. `${NAME:-default}` is optional and
-uses `default` when unset or empty.
+`env_files` are resolved relative to the selected project config file. Missing
+env files are ignored. Process env overrides dotenv values; earlier env files
+override later env files. `${NAME}` is required and errors when unset.
+`${NAME:-default}` is optional and uses `default` when unset or empty.
 
 Inside a project, `gate add <service> <port>` derives the service domain from
 `[project] base`; use `--host` for a base label override or `--domain` for a

@@ -46,9 +46,15 @@ type daemonScopeFlags struct {
 	global  *bool
 	project *daemonProjectFlag
 	all     *bool
+	config  *configPathFlag
 }
 
 type daemonProjectFlag struct {
+	value string
+	set   bool
+}
+
+type configPathFlag struct {
 	value string
 	set   bool
 }
@@ -58,6 +64,16 @@ func (f *daemonProjectFlag) String() string {
 }
 
 func (f *daemonProjectFlag) Set(value string) error {
+	f.value = value
+	f.set = true
+	return nil
+}
+
+func (f *configPathFlag) String() string {
+	return f.value
+}
+
+func (f *configPathFlag) Set(value string) error {
 	f.value = value
 	f.set = true
 	return nil
@@ -131,13 +147,16 @@ func (r listenerDaemonRef) logPath() string {
 
 func defineDaemonScopeFlags(fs *flag.FlagSet, allowAll bool) daemonScopeFlags {
 	project := &daemonProjectFlag{}
+	configPath := &configPathFlag{}
 	flags := daemonScopeFlags{
 		global:  fs.Bool("global", false, "target global reservations"),
 		project: project,
+		config:  configPath,
 	}
 	fs.BoolVar(flags.global, "g", false, "target global reservations")
 	fs.Var(project, "project", "target project reservations")
 	fs.Var(project, "p", "target project reservations")
+	fs.Var(configPath, "config", "project config path")
 	if allowAll {
 		flags.all = fs.Bool("all", false, "target all reservation scopes")
 		fs.BoolVar(flags.all, "a", false, "target all reservation scopes")

@@ -103,7 +103,9 @@ still persist and can be loaded later.
 
 A project is a repository with a `gate.toml` file. `gate` discovers the file by
 walking upward from the current directory until it finds `gate.toml`, a `.git`
-root, the user's home directory, or the filesystem root.
+root, the user's home directory, or the filesystem root. Project-mode commands
+may also receive an explicit config path; that path is loaded directly and does
+not need to be named `gate.toml`.
 
 ```toml
 [project]
@@ -168,9 +170,9 @@ local routing.
 | `base` | string | empty | Base domain used to derive service domains as `<service>.<base>`. |
 | `env_files` | string array | empty | Dotenv files used only for environment interpolation in project/service fields. |
 
-`env_files` entries are resolved relative to `gate.toml`. Missing files are
-ignored. Process environment values win over dotenv values, and earlier dotenv
-files win over later ones.
+`env_files` entries are resolved relative to the selected project config file.
+Missing files are ignored. Process environment values win over dotenv values,
+and earlier dotenv files win over later ones.
 
 ### Service Fields
 
@@ -434,11 +436,12 @@ Exact command syntax, examples, exit codes, and output-field meanings are
 documented in [`docs/usage.md`](usage.md). This spec only constrains behavior
 that affects the product model or implementation invariants.
 
-Scope selectors are mutually exclusive. Without an explicit scope, commands use
-the current project when a `gate.toml` is discoverable; otherwise they use the
-global scope. Commands that remove one reservation operate on a selected
-service/name; commands that clear an entire scope require an explicit
-non-interactive confirmation path.
+Scope selectors are mutually exclusive. Without an explicit global, project, or
+all-scopes selector, project-aware commands use an explicit config path when
+provided, then the current project when a `gate.toml` is discoverable, and
+finally the global scope when neither project source is available. Commands that
+remove one reservation operate on a selected service/name; commands that clear
+an entire scope require an explicit non-interactive confirmation path.
 
 Shell completion is read-only. It may inspect local registry and project config
 state, but it must not start daemons, modify DNS, trust certificates, or write
@@ -488,9 +491,10 @@ flowchart LR
 | `cloudflared` | Public temporary URL | `cloudflared` in `PATH` | Requires authenticated exposure or an explicit unauthenticated opt-out; quick tunnel URL is temporary. |
 | `tailscale` | Tailnet | logged-in `tailscale` in `PATH` | Uses one Tailscale Serve exposure on a non-443 HTTPS port pointed at the gate route; stop resets Serve when the record is gate-owned or force removal is requested. |
 
-Exposure activation targets one scoped active route. Without an explicit scope,
-it resolves the current project when inside a `gate.toml` tree and global
-reservations otherwise.
+Exposure activation targets one scoped active route. Without an explicit global
+or project selector, it uses an explicit config path when provided, then the
+current project when inside a `gate.toml` tree, and global reservations
+otherwise.
 
 LAN exposure keeps the service's primary configured domain as the target and
 uses a `.local` public alias. By default, a primary domain ending in `.local`

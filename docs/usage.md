@@ -15,14 +15,14 @@ command's flags and positional arguments.
 | command | purpose |
 | --- | --- |
 | `gate init [--name name] [--force] [-y\|--yes] [--json]` | scaffold a starter `gate.toml` |
-| `gate up [-d\|--daemon] [--dns localhost\|hosts] [-g\|--global] [-p name\|--project name] [--json]` | reserve ports, activate routes, reflect DNS, and optionally start the daemon |
-| `gate down [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes while keeping reservations |
-| `gate ls [--route active\|inactive] [--upstream live\|down] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list reservations with route and upstream status |
-| `gate port [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one service port or list reserved ports |
-| `gate run [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a child command with `PORT` injected |
-| `gate add [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | add or update one reservation |
-| `gate rm [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one reservation |
-| `gate clear [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
+| `gate up [-d\|--daemon] [--dns localhost\|hosts] [--config path] [-g\|--global] [-p name\|--project name] [--json]` | reserve ports, activate routes, reflect DNS, and optionally start the daemon |
+| `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes while keeping reservations |
+| `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list reservations with route and upstream status |
+| `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one service port or list reserved ports |
+| `gate run [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a child command with `PORT` injected |
+| `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | add or update one reservation |
+| `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one reservation |
+| `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
 | `gate prune [--json]` | remove stale project reservations whose config file is gone |
 | `gate daemon status [-a\|--all] [--json]` | inspect listener daemon status |
 | `gate daemon start` | start or reuse the default listener daemon |
@@ -33,9 +33,9 @@ command's flags and positional arguments.
 | `gate untrust` | remove the local root CA from trust stores |
 | `gate ca export [--out path]` | export the local root certificate |
 | `gate doctor [--fix] [--json]` | check and repair gate-owned local state |
-| `gate expose [--via local\|lan\|cloudflared\|tailscale] [--domain name.local] [--auth user:pass] [--no-auth] [-g\|--global] [-p name\|--project name] <service> [--json]` | expose a scoped service through a provider |
-| `gate expose ls [--via provider] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
-| `gate expose stop [--via provider] [--force] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop or forget one exposure record |
+| `gate expose [--via local\|lan\|cloudflared\|tailscale] [--domain name.local] [--auth user:pass] [--no-auth] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | expose a scoped service through a provider |
+| `gate expose ls [--via provider] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
+| `gate expose stop [--via provider] [--force] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop or forget one exposure record |
 | `gate upgrade [-y\|--yes]` | upgrade to the latest release, then run doctor |
 | `gate completion bash\|zsh\|fish` | print shell completion script |
 | `gate skill path\|print` | locate or print the bundled agent skill |
@@ -101,6 +101,13 @@ even when the command exits `1`; usage and internal errors still use stderr.
 
 Project mode uses a `gate.toml` file in the repository. This is the shareable,
 repeatable path for a team.
+
+By default, project commands discover `gate.toml` by walking upward from the
+current directory. Pass `--config path/to/file.toml` to use a specific project
+config file instead. Relative paths resolve from the current directory, and
+`env_files` inside that config resolve relative to the selected config file.
+`--config` can be paired with `--project name` to assert the project name, but it
+cannot be used with `--global` or `--all`.
 
 Create a starter config:
 
@@ -339,7 +346,7 @@ service block. Without `-y`, `gate clear` prompts in an interactive terminal and
 refuses to run in JSON or non-interactive contexts. Single-service `gate rm`
 does not prompt.
 
-Prune stale reservations whose owning `gate.toml` no longer exists:
+Prune stale reservations whose owning project config file no longer exists:
 
 ```bash
 gate prune
@@ -738,11 +745,11 @@ gate completion zsh
 gate completion fish
 ```
 
-Completion is read-only. It reads local registry state and nearby `gate.toml`
-files when available, but it does not start daemons, edit DNS, trust
-certificates, or write project/config files. Broken or missing local state
-returns no candidates instead of noisy shell errors. Candidates use a stable
-task-oriented order.
+Completion is read-only. It reads local registry state, nearby `gate.toml`
+files, and explicit `--config` paths when available, but it does not start
+daemons, edit DNS, trust certificates, or write project/config files. Broken or
+missing local state returns no candidates instead of noisy shell errors.
+Candidates use a stable task-oriented order.
 
 Installed completion offers:
 
@@ -751,8 +758,11 @@ Installed completion offers:
   `completion bash|zsh|fish`
 - flag candidates: `--<tab>` shows long flags and `-<tab>` shows short flags for
   the current command or subcommand, including common `-h|--help`
-- scope candidates: `-g|--global`, `-p|--project`, and `-a|--all` where that
-  command supports them; `--project <tab>` lists registry project names
+- scope candidates: `--config`, `-g|--global`, `-p|--project`, and `-a|--all`
+  where that command supports them; `--project <tab>` lists registry project
+  names, or the selected config's project name when `--config` is present
+- file candidates: file paths for `--config` and other path-valued flags such
+  as `ca export --out`
 - service/name candidates: scoped service names for `add`, `rm`, `run`, `port`,
   and `expose`; inside a project the default scope is the current project,
   outside a project it is global

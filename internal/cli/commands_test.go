@@ -757,6 +757,65 @@ func TestAddRmSyncProjectConfig(t *testing.T) {
 	}
 }
 
+func TestAddRmUsesExplicitConfigPath(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	body := "# keep\n[project]\nname = \"demo\"\n"
+	path := filepath.Join(dir, "dev.gate.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Add([]string{"--config", path, "api", "4312", "--domain", "api.demo.localhost"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Add exit = %d, stderr=%s", code, errb.String())
+	}
+	edited, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(edited); !strings.Contains(s, "# keep") || !strings.Contains(s, "[services.api]") {
+		t.Fatalf("config not updated preserving comments:\n%s", s)
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, ok := reg.Get(registry.Key("demo", "api"))
+	if !ok || res.ConfigPath != path {
+		t.Fatalf("reservation = %+v, ok=%v", res, ok)
+	}
+
+	if code := Rm([]string{"--config", path, "api"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Rm exit = %d, stderr=%s", code, errb.String())
+	}
+	edited, _ = os.ReadFile(path)
+	if strings.Contains(string(edited), "[services.api]") {
+		t.Fatalf("config service not removed:\n%s", edited)
+	}
+	reg, _ = registryStore().Read()
+	if _, ok := reg.Get(registry.Key("demo", "api")); ok {
+		t.Fatal("registry service not removed")
+	}
+}
+
+func TestConfigFlagRejectsGlobalScope(t *testing.T) {
+	isolate(t)
+	path := filepath.Join(t.TempDir(), "dev.gate.toml")
+	if err := os.WriteFile(path, []byte("[project]\nname = \"demo\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := Ls([]string{"--config", path, "--global"}, &out, &errb)
+	if code != ExitUsage {
+		t.Fatalf("Ls exit = %d, want %d", code, ExitUsage)
+	}
+	if !strings.Contains(errb.String(), "--config cannot be used with --global or --all") {
+		t.Fatalf("missing config/global error:\n%s", errb.String())
+	}
+}
+
 func TestAddUsesProjectBaseByDefault(t *testing.T) {
 	isolate(t)
 	dir := t.TempDir()
@@ -1575,6 +1634,41 @@ env = "API_URL"
 		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
 	}
 	want := "4400|http://127.0.0.1:4501|http://127.0.0.1:4501|https://api.demo.localhost"
+	if out.String() != want {
+		t.Fatalf("env output = %q, want %q", out.String(), want)
+	}
+}
+
+func TestRunUsesExplicitConfigForServiceEnv(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dev.gate.toml")
+	toml := `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+port = 4400
+
+[services.api]
+port = 4501
+env = "API_URL"
+`
+	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--config", path, "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	code := Run([]string{"--config", path, "web", "--", "sh", "-c", `printf '%s|%s|%s' "$PORT" "$API_URL" "$GATE_API_URL"`}, &out, &errb)
+	if code != ExitOK {
+		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
+	}
+	want := "4400|http://127.0.0.1:4501|http://127.0.0.1:4501"
 	if out.String() != want {
 		t.Fatalf("env output = %q, want %q", out.String(), want)
 	}

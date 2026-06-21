@@ -96,7 +96,19 @@ func completionFlagParts(arg string) (name, value string, hasValue, ok bool) {
 	return name, value, hasValue, name != ""
 }
 
-func completeProjects(*completionContext) []string {
+func completeProjects(ctx *completionContext) []string {
+	if ctx != nil {
+		if configPath, ok := ctx.flagValue("config"); ok {
+			if ctx.hasAnyFlag("g", "global", "a", "all") {
+				return nil
+			}
+			project, err := loadCompletionConfig(configPath)
+			if err != nil {
+				return nil
+			}
+			return []string{project.Name}
+		}
+	}
 	reg, err := readCompletionRegistry()
 	if err != nil {
 		return nil
@@ -112,6 +124,12 @@ func completeProjects(*completionContext) []string {
 }
 
 func completeScopedNames(ctx *completionContext) []string {
+	if configPath, ok := ctx.flagValue("config"); ok {
+		if ctx.hasAnyFlag("g", "global", "a", "all") {
+			return nil
+		}
+		return completeConfigServices(configPath, ctx)
+	}
 	if project, ok := ctx.flagValue("p", "project"); ok {
 		if strings.TrimSpace(project) == "" {
 			return nil
@@ -129,6 +147,21 @@ func completeScopedNames(ctx *completionContext) []string {
 		return completeGlobalNames()
 	}
 	return nil
+}
+
+func completeConfigServices(configPath string, ctx *completionContext) []string {
+	configPath = strings.TrimSpace(configPath)
+	if configPath == "" {
+		return nil
+	}
+	project, err := loadCompletionConfig(configPath)
+	if err != nil {
+		return nil
+	}
+	if projectName, ok := ctx.flagValue("p", "project"); ok && strings.TrimSpace(projectName) != project.Name {
+		return nil
+	}
+	return sortedProjectServices(project)
 }
 
 func completeGlobalNames() []string {
@@ -192,6 +225,14 @@ func currentCompletionProject() (*config.Project, error) {
 		return nil, err
 	}
 	return config.Load(path)
+}
+
+func loadCompletionConfig(path string) (*config.Project, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return config.Load(abs)
 }
 
 func readCompletionRegistry() (*registry.Registry, error) {

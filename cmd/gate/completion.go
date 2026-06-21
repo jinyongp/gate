@@ -128,6 +128,8 @@ func completionFlagRank(name string) int {
 		return 110
 	case "keep-brew":
 		return 120
+	case "config":
+		return 190
 	case "global":
 		return 200
 	case "project":
@@ -263,11 +265,13 @@ func completionFlagGroupSpecs(group completionFlagGroup) []completionFlagSpec {
 		return []completionFlagSpec{boolFlag("json", "", "emit JSON")}
 	case flagsScope:
 		return []completionFlagSpec{
+			fileFlag("config", "", "project config path"),
 			boolFlag("global", "g", "target global reservations"),
 			stringFlag("project", "p", "target project reservations", completeProjects),
 		}
 	case flagsScopeAll:
 		return []completionFlagSpec{
+			fileFlag("config", "", "project config path"),
 			boolFlag("global", "g", "target global reservations"),
 			stringFlag("project", "p", "target project reservations", completeProjects),
 			boolFlag("all", "a", "target all reservation scopes"),

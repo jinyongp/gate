@@ -128,6 +128,9 @@ Run this inside your app repository.
    env = "API_URL"
    ```
 
+   Project commands discover `gate.toml` by default. Use
+   `--config path/to/file.toml` when you need a different name or location.
+
 3. Start gate and run your dev server through the reserved port:
 
    ```bash
@@ -169,11 +172,12 @@ gate run -g web -- pnpm dev
 gate rm -g web
 ```
 
-Registry commands use the current project by default when `gate.toml` is
-discoverable, and the global scope otherwise. Use `-g`/`--global` for global
-reservations or `-p`/`--project <name>` for a named project. `gate rm` removes by
-service/name. Use `gate clear -y`, `gate clear -g -y`, or
-`gate clear -p <project> -y` to remove every reservation in one scope.
+Registry commands use an explicit `--config path` when provided, otherwise the
+current project when `gate.toml` is discoverable, and the global scope
+otherwise. Use `-g`/`--global` for global reservations or `-p`/`--project <name>`
+for a named project. `gate rm` removes by service/name. Use
+`gate clear -y`, `gate clear -g -y`, or `gate clear -p <project> -y` to remove
+every reservation in one scope.
 
 ### Environment-backed config
 
@@ -194,11 +198,11 @@ port = "${API_PORT}"
 env = "API_URL"
 ```
 
-`env_files` are resolved relative to `gate.toml`. Missing files are ignored, so
-session environment variables still work without a local dotenv file. Process
-environment values win over dotenv values, and earlier dotenv files win over
-later ones. `${NAME}` is required and fails if unset; `${NAME:-default}` uses
-the default when unset or empty.
+`env_files` are resolved relative to the selected project config file. Missing
+files are ignored, so session environment variables still work without a local
+dotenv file. Process environment values win over dotenv values, and earlier
+dotenv files win over later ones. `${NAME}` is required and fails if unset;
+`${NAME:-default}` uses the default when unset or empty.
 
 ## Contributing
 
