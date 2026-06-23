@@ -1604,6 +1604,70 @@ func TestRunInjectsPort(t *testing.T) {
 	}
 }
 
+func TestRunUpReservesBeforeExec(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	toml := `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+port = 4400
+`
+	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	var out, errb bytes.Buffer
+	code := Run([]string{"--up", "web", "--", "sh", "-c", `printf %s "$PORT"`}, &out, &errb)
+	if code != ExitOK {
+		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
+	}
+	if out.String() != "4400" {
+		t.Fatalf("PORT = %q", out.String())
+	}
+	if errb.String() != "" {
+		t.Fatalf("stderr should not include hidden up output: %q", errb.String())
+	}
+}
+
+func TestRunUpFailureUsesPlainRunError(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	toml := `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+port = 4400
+`
+	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{Service: "other", Domain: "other.localhost", Port: 4400, Standalone: true})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := Run([]string{"--up", "web", "--", "sh", "-c", `printf should-not-run`}, &out, &errb)
+	if code != ExitConflict {
+		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
+	}
+	if out.String() != "" {
+		t.Fatalf("child should not run, stdout=%q", out.String())
+	}
+	if strings.Contains(errb.String(), `{"error"`) {
+		t.Fatalf("stderr should be plain text, got %q", errb.String())
+	}
+	if !strings.Contains(errb.String(), "gate:") || !strings.Contains(errb.String(), "4400") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+}
+
 func TestRunInjectsGateAndServiceEnv(t *testing.T) {
 	isolate(t)
 	dir := t.TempDir()

@@ -1,0 +1,11 @@
+{
+  "name": "@gate/binary-linux-arm64",
+  "version": "0.0.0",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/gate"],
+  "scripts": {
+    "prepack": "node ../../../scripts/node/verify-package-binary.mjs"
+  },
+  "license": "MIT"
+}

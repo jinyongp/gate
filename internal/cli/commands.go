@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -990,6 +992,7 @@ func Prune(args []string, stdout, stderr io.Writer) int {
 // Run executes `gate run <service> -- <cmd...>` with PORT injected.
 func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	up := fs.Bool("up", false, "bring up the selected scope before running the child command")
 	scopeFlags := defineDaemonScopeFlags(fs, false)
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		sp := specFor("run")
@@ -1017,6 +1020,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	svc := rest[0]
 	cmd := args[sep+1:]
 
+	if *up {
+		if code := runUpBeforeExec(scopeFlags, stderr); code != ExitOK {
+			return code
+		}
+	}
+
 	res, lerr := lookupScopedReservation(svc, sel)
 	if lerr != nil {
 		return fail(stderr, false, lerr.Exit, lerr.Code, lerr.Message)
@@ -1026,6 +1035,40 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, false, ExitError, "run_env", err.Error())
 	}
 	return port.Exec(res.Port, env, cmd[0], cmd[1:], os.Stdin, stdout, stderr)
+}
+
+func runUpBeforeExec(scopeFlags daemonScopeFlags, stderr io.Writer) int {
+	args := []string{"--json"}
+	if scopeFlags.global != nil && *scopeFlags.global {
+		args = append(args, "--global")
+	}
+	if scopeFlags.project != nil && scopeFlags.project.set {
+		args = append(args, "--project", scopeFlags.project.value)
+	}
+	if scopeFlags.config != nil && scopeFlags.config.set {
+		args = append(args, "--config", scopeFlags.config.value)
+	}
+
+	var out, errb bytes.Buffer
+	code := Up(args, &out, &errb)
+	if code != ExitOK {
+		if envelope, ok := parseErrorEnvelope(errb.Bytes()); ok {
+			return fail(stderr, false, code, envelope.Error.Code, envelope.Error.Message)
+		}
+		if errb.Len() > 0 {
+			return fail(stderr, false, code, "up_failed", strings.TrimSpace(errb.String()))
+		}
+		return fail(stderr, false, code, "up_failed", strings.TrimSpace(out.String()))
+	}
+	return code
+}
+
+func parseErrorEnvelope(data []byte) (errEnvelope, bool) {
+	var envelope errEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return errEnvelope{}, false
+	}
+	return envelope, envelope.Error.Message != ""
 }
 
 func runEnvForScope(sel registryScopeSelection) ([]string, error) {

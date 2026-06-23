@@ -29,6 +29,7 @@ belong in [`docs/usage.md`](usage.md); the bundled agent cheat sheet belongs in
 | Global reservations | A developer can reserve a named domain and port without a project file. |
 | Daemon hot reload | A resident proxy can receive new routes without restarting. |
 | Script/agent compatibility | Commands keep stdout data separate from stderr diagnostics; JSON output is stable and parseable. |
+| Agent-oriented Node integration | Optional Node packages can execute the gate binary from JavaScript build tooling without reimplementing gate core behavior. |
 | Temporary external test access | LAN, Cloudflared, and Tailscale providers can expose selected local services. |
 
 ### Non-goals
@@ -38,6 +39,7 @@ belong in [`docs/usage.md`](usage.md); the bundled agent cheat sheet belongs in
 | Production traffic | gate terminates local dev traffic and assumes a developer-controlled machine. |
 | Hosted environments | gate is not a server deployment platform. |
 | Owning dev server processes | gate can run a child command with `PORT` injected, but it does not manage arbitrary service lifecycles as a process supervisor. |
+| Reimplementing gate in Node | Node packages are wrappers around the gate binary, not an alternate proxy, registry, DNS, or trust implementation. |
 | Replacing DNS infrastructure | gate only handles local `.localhost`, local hosts-file reflection, and provider-specific exposure workflows. |
 | Default public exposure | Any route reachable outside loopback must be explicitly exposed. |
 

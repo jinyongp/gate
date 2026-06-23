@@ -1,0 +1,11 @@
+{
+  "name": "@gate/binary-darwin-x64",
+  "version": "0.0.0",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["bin/gate"],
+  "scripts": {
+    "prepack": "node ../../../scripts/node/verify-package-binary.mjs"
+  },
+  "license": "MIT"
+}

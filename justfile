@@ -71,3 +71,31 @@ release tag="":
 [doc('cross-compile all release targets into bin/')]
 build-all version="dev":
   scripts/release/build-gate.sh "{{version}}" bin
+
+[doc('build Node API packages')]
+node-api-build:
+  pnpm node-api:build
+
+[doc('typecheck Node API packages')]
+node-api-typecheck:
+  pnpm node-api:typecheck
+
+[doc('dry-run pack Node API JS packages')]
+node-api-pack-dry-run:
+  pnpm node-api:pack:dry-run
+
+[doc('run Node API example smoke tests from packed tarballs')]
+node-api-smoke-examples:
+  pnpm node-api:smoke:examples
+
+[doc('copy release binaries into Node binary package folders')]
+node-api-stage-binaries:
+  pnpm node-api:stage:binaries
+
+[doc('run Node API package tests')]
+node-api-test:
+  pnpm node-api:test
+
+[doc('run Node API package validation')]
+node-api-check:
+  pnpm node-api:check

@@ -1,0 +1,11 @@
+{
+  "name": "gate-node-api-custom-domain-error",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node ./smoke.mjs"
+  },
+  "dependencies": {
+    "@gate/node": "file:../../../packages/node"
+  }
+}

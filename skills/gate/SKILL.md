@@ -45,7 +45,7 @@ fi
 | `gate up [-d\|--daemon] [--dns localhost\|hosts] [--config path] [-g\|--global] [-p name\|--project name] [--json]` | reserve current-project ports or activate scoped reservations |
 | `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list scoped reservations with route/upstream status |
 | `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one scoped service port, or list reserved ports |
-| `gate run [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a command with `PORT` and peer service env injected |
+| `gate run [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a command with `PORT` and peer service env injected |
 | `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes (reservations kept) |
 | `gate expose [--via <provider>] [--domain name.local] [--auth user:pass] [--no-auth] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | reach a scoped service externally |
 | `gate expose ls [--via provider] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |

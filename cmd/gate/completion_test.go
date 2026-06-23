@@ -268,6 +268,7 @@ func TestCompletionFlagPrefixes(t *testing.T) {
 	assertCompletionExcludes(t, longFlags, "--http-addr", "--https-addr")
 	shortFlags := completeGate(t, "up", "-")
 	assertCompletionContains(t, shortFlags, "-h", "-g", "-p", "-d")
+	assertCompletionContains(t, completeGate(t, "run", "--"), "--help", "--global", "--project", "--up")
 	assertCompletionContains(t, completeGate(t, "trust", "--"), "--help")
 }
 

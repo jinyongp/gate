@@ -72,7 +72,9 @@ func completionSpecs() []completionSpec {
 		{Command: "rm", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Args: scopedService, DisableFileCompletion: true},
 		{Command: "clear", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope, flagsYes}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "prune", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Args: noArgs, DisableFileCompletion: true},
-		{Command: "run", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope}, Args: scopedService, DisableFileCompletion: true, StopAfterDashDash: true},
+		{Command: "run", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope}, Flags: []completionFlagSpec{
+			boolFlag("up", "", "bring up the selected scope before running the child command"),
+		}, Args: scopedService, DisableFileCompletion: true, StopAfterDashDash: true},
 		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
 			{Command: "status", Summary: "show listener daemon status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
 			{Command: "start", Summary: "start or reuse the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},

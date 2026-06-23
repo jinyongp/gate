@@ -1,0 +1,5 @@
+[project]
+name = "node-api-service-basic"
+base = "node-api-service-basic.localhost"
+
+[services.web]

@@ -3,5 +3,11 @@
 .claude
 .DS_Store
 .taskwarrior
+node_modules
+.pnpm-store
 
 bin
+!packages/node/bin/
+!packages/node/bin/gate.mjs
+packages/*/dist
+packages/*/tsconfig.tsbuildinfo

@@ -19,7 +19,7 @@ command's flags and positional arguments.
 | `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes while keeping reservations |
 | `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list reservations with route and upstream status |
 | `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one service port or list reserved ports |
-| `gate run [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a child command with `PORT` injected |
+| `gate run [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a child command with `PORT` injected |
 | `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | add or update one reservation |
 | `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one reservation |
 | `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
@@ -166,6 +166,12 @@ Run a dev server with its reserved port injected as `PORT`:
 gate run web -- pnpm dev
 ```
 
+Reserve first, then run the child command:
+
+```bash
+gate run --up web -- pnpm dev
+```
+
 `gate run` also injects peer service values into the child process:
 `GATE_<SERVICE>_PORT`, `GATE_<SERVICE>_URL`,
 `GATE_<SERVICE>_ROUTE_URL`, and any service-declared env names such as
@@ -182,6 +188,42 @@ Stop routing for the current project while keeping reservations:
 ```bash
 gate down
 ```
+
+## Node API
+
+`@gate/node` is intended for agents and JavaScript tooling that need to inspect
+or control gate from code. It executes the gate binary and consumes the same
+JSON command contracts as scripts.
+
+Core API:
+
+```ts
+import { createGateClient } from "@gate/node";
+
+const gate = createGateClient();
+const web = await gate.service("web", { up: true });
+```
+
+Typed error handling:
+
+```ts
+import { createGateClient, isGateError } from "@gate/node";
+
+const gate = createGateClient();
+
+try {
+  await gate.service("web");
+} catch (error) {
+  if (isGateError(error, "GATE_DNS_REQUIRED")) {
+    // Switch to a .localhost base, or pass dns: "hosts"/"preconfigured".
+  }
+  throw error;
+}
+```
+
+By default, `service()` uses the permission-free `.localhost` path and does not
+start the daemon or edit `/etc/hosts`. Custom domains must opt into hosts-file
+DNS or declare preconfigured DNS through options.
 
 ## Global Reservations
 
