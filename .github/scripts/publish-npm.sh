@@ -11,8 +11,8 @@ if [[ ! "$version_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-node scripts/node/prepare-publish-packages.mjs "$version_tag"
 pnpm node:build
+node scripts/node/prepare-publish-packages.mjs "$version_tag"
 pnpm node:stage:binaries "$artifact_dir"
 
 : > "$summary_file"
