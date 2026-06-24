@@ -70,8 +70,8 @@ jobs:
         run: corepack enable
       - name: install node dependencies
         run: pnpm install --frozen-lockfile
-      - name: node api
-        id: node_api
+      - name: node check
+        id: node_check
         run: pnpm node:check
       - name: test
         id: test
@@ -86,7 +86,7 @@ jobs:
           GOLANGCI_LINT_OUTCOME: ${{ steps.golangci_lint.outcome }}
           GOVULNCHECK_OUTCOME: ${{ steps.govulncheck.outcome }}
           SCRIPTS_OUTCOME: ${{ steps.scripts.outcome }}
-          NODE_API_OUTCOME: ${{ steps.node_api.outcome }}
+          NODE_CHECK_OUTCOME: ${{ steps.node_check.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}
 
   build:

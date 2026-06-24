@@ -1,139 +1,149 @@
-import { spawn } from "node:child_process";
-import { GateError } from "./errors.js";
-import type { GateClientOptions, GateCommandOptions, GateDNSMode, GateScope } from "./types.js";
-import { resolveGateBinary } from "./binary.js";
+import { spawn } from 'node:child_process'
+import { GateError } from './errors.js'
+import type { GateCommandOptions, GateDNSMode, GateScope } from './types.js'
+import { resolveGateBinary } from './binary.js'
 
 export interface CommandResult {
-  stdout: string;
-  stderr: string;
+  stdout: string
+  stderr: string
 }
 
 export function scopeArgs(scope?: GateScope): string[] {
   if (!scope) {
-    return [];
+    return []
   }
-  if (scope.kind === "global") {
-    return ["--global"];
+  if (scope.kind === 'global') {
+    return ['--global']
   }
-  const args: string[] = [];
+  const args: string[] = []
   if (scope.project) {
-    args.push("--project", scope.project);
+    args.push('--project', scope.project)
   }
   if (scope.config) {
-    args.push("--config", scope.config);
+    args.push('--config', scope.config)
   }
-  return args;
+  return args
 }
 
 export function dnsArgs(dns?: GateDNSMode): string[] {
   if (!dns) {
-    return [];
+    return []
   }
-  return ["--dns", dns === "preconfigured" ? "localhost" : dns];
+  return ['--dns', dns === 'preconfigured' ? 'localhost' : dns]
 }
 
-export async function runGate(args: string[], options: GateCommandOptions = {}): Promise<CommandResult> {
-  const bin = resolveGateBinary(options);
-  const command = [bin, ...args];
-  const env = { ...process.env, ...options.env };
+export async function runGate(
+  args: string[],
+  options: GateCommandOptions = {},
+): Promise<CommandResult> {
+  const bin = resolveGateBinary(options)
+  const command = [bin, ...args]
+  const env = { ...process.env, ...options.env }
 
   return await new Promise<CommandResult>((resolve, reject) => {
-    const timeoutController = options.timeoutMs ? new AbortController() : undefined;
-    const signal = composeSignals(options.signal, timeoutController?.signal);
+    const timeoutController = options.timeoutMs ? new AbortController() : undefined
+    const signal = composeSignals(options.signal, timeoutController?.signal)
     const timeout = options.timeoutMs
       ? setTimeout(() => timeoutController?.abort(), options.timeoutMs)
-      : undefined;
-    let settled = false;
+      : undefined
+    let settled = false
 
     const finish = (callback: () => void) => {
       if (settled) {
-        return;
+        return
       }
-      settled = true;
+      settled = true
       if (timeout) {
-        clearTimeout(timeout);
+        clearTimeout(timeout)
       }
-      callback();
-    };
+      callback()
+    }
 
     const child = spawn(bin, args, {
       cwd: options.cwd,
       env,
       signal,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
 
-    let stdout = "";
-    let stderr = "";
+    let stdout = ''
+    let stderr = ''
 
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on("error", (error: NodeJS.ErrnoException) => {
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk
+    })
+    child.on('error', (error: NodeJS.ErrnoException) => {
       finish(() => {
-        const code = error.code === "ENOENT" ? "GATE_BINARY_NOT_FOUND" : "GATE_COMMAND_FAILED";
-        reject(new GateError({ code, message: error.message, command, stdout, stderr, cause: error }));
-      });
-    });
-    child.on("close", (exitCode) => {
+        const code = error.code === 'ENOENT' ? 'GATE_BINARY_NOT_FOUND' : 'GATE_COMMAND_FAILED'
+        reject(
+          new GateError({ code, message: error.message, command, stdout, stderr, cause: error }),
+        )
+      })
+    })
+    child.on('close', (exitCode) => {
       finish(() => {
         if (exitCode === 0) {
-          resolve({ stdout, stderr });
-          return;
+          resolve({ stdout, stderr })
+          return
         }
-        reject(errorFromGateFailure(command, exitCode ?? 1, stdout, stderr));
-      });
-    });
-  });
+        reject(errorFromGateFailure(command, exitCode ?? 1, stdout, stderr))
+      })
+    })
+  })
 }
 
 export function parseJSON<T>(command: string[], stdout: string): T {
   try {
-    return JSON.parse(stdout) as T;
+    return JSON.parse(stdout) as T
   } catch (cause) {
     throw new GateError({
-      code: "GATE_JSON_PARSE_FAILED",
-      message: "gate returned invalid JSON",
+      code: 'GATE_JSON_PARSE_FAILED',
+      message: 'gate returned invalid JSON',
       command,
       stdout,
-      cause
-    });
+      cause,
+    })
   }
 }
 
-function errorFromGateFailure(command: string[], exitCode: number, stdout: string, stderr: string): GateError {
-  const gateEnvelope = parseGateError(stderr);
+function errorFromGateFailure(
+  command: string[],
+  exitCode: number,
+  stdout: string,
+  stderr: string,
+): GateError {
+  const gateEnvelope = parseGateError(stderr)
   return new GateError({
-    code: exitCode === 3 ? "GATE_PERMISSION_REQUIRED" : "GATE_COMMAND_FAILED",
+    code: exitCode === 3 ? 'GATE_PERMISSION_REQUIRED' : 'GATE_COMMAND_FAILED',
     message: gateEnvelope?.message ?? (stderr.trim() || `gate exited with code ${exitCode}`),
     command,
     gateCode: gateEnvelope?.code,
     exitCode,
     stdout,
-    stderr
-  });
+    stderr,
+  })
 }
 
 function parseGateError(stderr: string): { code?: string; message?: string } | undefined {
   try {
-    const parsed = JSON.parse(stderr) as { error?: { code?: string; message?: string } };
-    return parsed.error;
+    const parsed = JSON.parse(stderr) as { error?: { code?: string; message?: string } }
+    return parsed.error
   } catch {
-    return undefined;
+    return undefined
   }
 }
 
 function composeSignals(primary?: AbortSignal, secondary?: AbortSignal): AbortSignal | undefined {
   if (!primary) {
-    return secondary;
+    return secondary
   }
   if (!secondary) {
-    return primary;
+    return primary
   }
-  return AbortSignal.any([primary, secondary]);
+  return AbortSignal.any([primary, secondary])
 }

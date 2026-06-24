@@ -1,55 +1,55 @@
-import { createRequire } from "node:module";
-import type { GateClientOptions } from "./types.js";
-import { GateError } from "./errors.js";
+import { createRequire } from 'node:module'
+import type { GateClientOptions } from './types.js'
+import { GateError } from './errors.js'
 
-const require = createRequire(import.meta.url);
+const require = createRequire(import.meta.url)
 
 const binaryPackages: Record<string, string> = {
-  "darwin:arm64": "@jinyongp/gate-darwin-arm64/bin/gate",
-  "darwin:x64": "@jinyongp/gate-darwin-x64/bin/gate",
-  "linux:arm64": "@jinyongp/gate-linux-arm64/bin/gate",
-  "linux:x64": "@jinyongp/gate-linux-x64/bin/gate"
-};
+  'darwin:arm64': '@jinyongp/gate-darwin-arm64/bin/gate',
+  'darwin:x64': '@jinyongp/gate-darwin-x64/bin/gate',
+  'linux:arm64': '@jinyongp/gate-linux-arm64/bin/gate',
+  'linux:x64': '@jinyongp/gate-linux-x64/bin/gate',
+}
 
 export interface BinaryResolutionOptions extends GateClientOptions {
-  platform?: NodeJS.Platform;
-  arch?: string;
-  resolvePackage?: (specifier: string) => string;
+  platform?: NodeJS.Platform
+  arch?: string
+  resolvePackage?: (specifier: string) => string
 }
 
 export function resolveGateBinary(options: BinaryResolutionOptions = {}): string {
   if (options.bin) {
-    return options.bin;
+    return options.bin
   }
-  const envBin = options.env?.GATE_BIN ?? process.env.GATE_BIN;
+  const envBin = options.env?.GATE_BIN ?? process.env.GATE_BIN
   if (envBin) {
-    return envBin;
+    return envBin
   }
 
-  const platform = options.platform ?? process.platform;
-  const arch = options.arch ?? process.arch;
-  const packagePath = binaryPackages[`${platform}:${arch}`];
+  const platform = options.platform ?? process.platform
+  const arch = options.arch ?? process.arch
+  const packagePath = binaryPackages[`${platform}:${arch}`]
   if (packagePath) {
     try {
-      return (options.resolvePackage ?? require.resolve)(packagePath);
+      return (options.resolvePackage ?? require.resolve)(packagePath)
     } catch (cause) {
       throw new GateError({
-        code: "GATE_BINARY_NOT_FOUND",
+        code: 'GATE_BINARY_NOT_FOUND',
         message: `gate binary package is not installed for ${platform}/${arch}`,
-        cause
-      });
+        cause,
+      })
     }
   }
 
-  if (platform === "darwin" || platform === "linux") {
+  if (platform === 'darwin' || platform === 'linux') {
     throw new GateError({
-      code: "GATE_UNSUPPORTED_PLATFORM",
-      message: `unsupported gate binary architecture: ${platform}/${arch}`
-    });
+      code: 'GATE_UNSUPPORTED_PLATFORM',
+      message: `unsupported gate binary architecture: ${platform}/${arch}`,
+    })
   }
 
   throw new GateError({
-    code: "GATE_UNSUPPORTED_PLATFORM",
-    message: `unsupported gate binary platform: ${platform}/${arch}`
-  });
+    code: 'GATE_UNSUPPORTED_PLATFORM',
+    message: `unsupported gate binary platform: ${platform}/${arch}`,
+  })
 }
