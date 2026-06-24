@@ -39,7 +39,7 @@ jobs:
       needs.release_tag.outputs.on_main == 'true'
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -148,7 +148,7 @@ jobs:
       needs.release_tag.outputs.tag != '' &&
       needs.release_tag.outputs.on_main == 'true' &&
       needs.build.result == 'success'
-    runs-on: macos-latest
+    runs-on: macos-15
     permissions:
       contents: read
     steps:
