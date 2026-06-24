@@ -5,6 +5,12 @@ version_tag="${1:?Usage: publish-npm.sh vX.Y.Z [artifact-dir]}"
 artifact_dir="${2:-.}"
 summary_file="${NPM_PUBLISH_SUMMARY:-npm-publish-summary.tsv}"
 npmjs_registry_config="--@jinyongp:registry=https://registry.npmjs.org"
+publish_root="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$publish_root"
+}
+trap cleanup EXIT
 
 if [[ ! "$version_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "npm version tag must be vX.Y.Z: ${version_tag}" >&2
@@ -12,8 +18,17 @@ if [[ ! "$version_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 pnpm node:build
-node scripts/node/prepare-publish-packages.mjs "$version_tag"
-pnpm node:stage:binaries "$artifact_dir"
+
+mkdir -p "$publish_root/packages/binaries" "$publish_root/scripts/node"
+cp -R packages/node "$publish_root/packages/node"
+cp -R packages/binaries/darwin-arm64 "$publish_root/packages/binaries/darwin-arm64"
+cp -R packages/binaries/darwin-x64 "$publish_root/packages/binaries/darwin-x64"
+cp -R packages/binaries/linux-arm64 "$publish_root/packages/binaries/linux-arm64"
+cp -R packages/binaries/linux-x64 "$publish_root/packages/binaries/linux-x64"
+cp scripts/node/verify-package-binary.mjs "$publish_root/scripts/node/verify-package-binary.mjs"
+
+node scripts/node/prepare-publish-packages.mjs "$version_tag" "$publish_root"
+node scripts/node/stage-binary-packages.mjs "$artifact_dir" "$publish_root"
 
 : > "$summary_file"
 
@@ -36,8 +51,8 @@ publish_package() {
   fi
 }
 
-publish_package packages/binaries/darwin-arm64
-publish_package packages/binaries/darwin-x64
-publish_package packages/binaries/linux-arm64
-publish_package packages/binaries/linux-x64
-publish_package packages/node
+publish_package "$publish_root/packages/binaries/darwin-arm64"
+publish_package "$publish_root/packages/binaries/darwin-x64"
+publish_package "$publish_root/packages/binaries/linux-arm64"
+publish_package "$publish_root/packages/binaries/linux-x64"
+publish_package "$publish_root/packages/node"

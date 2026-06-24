@@ -18,7 +18,7 @@
     "node:check": "pnpm node:typecheck && pnpm node:test"
   },
   "devDependencies": {
-    "@types/node": "^24.10.1",
+    "@types/node": "^22.20.0",
     "tsdown": "^0.22.3",
     "typescript": "^6.0.3"
   }

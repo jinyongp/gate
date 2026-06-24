@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const sourceDir = resolve(process.argv[2] ?? join(repoRoot, "bin"));
+const packageRoot = resolve(process.argv[3] ?? repoRoot);
 
 const targets = [
   { packageDir: "darwin-arm64", artifact: "gate-darwin-arm64" },
@@ -14,7 +15,7 @@ const targets = [
 
 for (const target of targets) {
   const source = join(sourceDir, target.artifact);
-  const destinationDir = join(repoRoot, "packages", "binaries", target.packageDir, "bin");
+  const destinationDir = join(packageRoot, "packages", "binaries", target.packageDir, "bin");
   const destination = join(destinationDir, "gate");
   await mkdir(destinationDir, { recursive: true });
   await cp(source, destination);

@@ -10,6 +10,7 @@ if (!version || !/^v?\d+\.\d+\.\d+$/.test(version)) {
 
 const packageVersion = version.startsWith("v") ? version.slice(1) : version;
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const packageRoot = resolve(process.argv[3] ?? repoRoot);
 
 const binaryPackages = [
   "@jinyongp/gate-darwin-arm64",
@@ -27,7 +28,7 @@ const packagePaths = [
 ];
 
 for (const relativePath of packagePaths) {
-  const path = join(repoRoot, relativePath);
+  const path = join(packageRoot, relativePath);
   const manifest = JSON.parse(await readFile(path, "utf8"));
   manifest.version = packageVersion;
   manifest.publishConfig = { access: "public" };
