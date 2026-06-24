@@ -1,11 +1,29 @@
 {
   "name": "@gate/node",
   "version": "0.0.0",
-  "type": "module",
-  "description": "Agent-friendly Node API for gate",
+  "description": "Agent-friendly Node API and CLI launcher for gate",
+  "keywords": [
+    "agent",
+    "cli",
+    "dev-server",
+    "https",
+    "local-dev",
+    "port-registry",
+    "reverse-proxy"
+  ],
+  "homepage": "https://github.com/jinyongp/gate#readme",
+  "bugs": {
+    "url": "https://github.com/jinyongp/gate/issues"
+  },
   "license": "MIT",
-  "publishConfig": {
-    "access": "public"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jinyongp/gate.git",
+    "directory": "packages/node"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
   },
   "exports": {
     ".": {
@@ -15,13 +33,16 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "gate": "./bin/gate.mjs"
+    "gate": "bin/gate.mjs"
   },
   "files": [
     "bin/gate.mjs",
     "dist/index.d.mts",
     "dist/index.mjs"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts --clean",
     "test:build": "tsdown 'src/**/*.test.ts' --format esm --no-clean",

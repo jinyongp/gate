@@ -10,11 +10,6 @@ if [[ ! "$version_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-  echo "NODE_AUTH_TOKEN is required for npm publish." >&2
-  exit 1
-fi
-
 node scripts/node/prepare-publish-packages.mjs "$version_tag"
 pnpm node:build
 pnpm node:stage:binaries "$artifact_dir"
@@ -32,7 +27,7 @@ publish_package() {
     return
   fi
 
-  if npm publish "$package_dir" --access public --provenance; then
+  if npm publish "$package_dir" --access public; then
     printf "%s\t%s\n" "$spec" "published" >> "$summary_file"
   else
     printf "%s\t%s\n" "$spec" "failed" >> "$summary_file"

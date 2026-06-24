@@ -245,8 +245,12 @@ just check
 ```
 
 Version-tag releases publish the Go binaries to GitHub/Homebrew and publish
-`@gate/node` plus platform binary packages to npm. The npm release job requires
-a repository secret named `NPM_TOKEN` with publish access to the `@gate` scope.
+`@gate/node` plus platform binary packages to npm. npm publishing uses trusted
+publishing with GitHub Actions OIDC, so no npm publish token is required in CI.
+Before the first OIDC release, create the `@gate` scope, publish or reserve each
+`@gate/*` package once in binary-first order, then configure each package with a
+trusted publisher for `jinyongp/gate`, workflow filename `release.yml`, and the
+`npm publish` action.
 
 Useful development commands:
 

@@ -1,14 +1,30 @@
 {
   "name": "@gate/binary-darwin-x64",
   "version": "0.0.0",
-  "os": ["darwin"],
-  "cpu": ["x64"],
+  "description": "gate binary for macOS x64",
+  "homepage": "https://github.com/jinyongp/gate#readme",
+  "bugs": {
+    "url": "https://github.com/jinyongp/gate/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jinyongp/gate.git",
+    "directory": "packages/binaries/darwin-x64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/gate"
+  ],
   "publishConfig": {
     "access": "public"
   },
-  "files": ["bin/gate"],
   "scripts": {
     "prepack": "node ../../../scripts/node/verify-package-binary.mjs"
-  },
-  "license": "MIT"
+  }
 }
