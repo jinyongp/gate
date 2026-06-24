@@ -45,18 +45,18 @@ loads platform optional binary packages for supported Darwin/Linux arm64/x64
 hosts.
 
 ```ts
-import { createGateClient, isGateError } from "@jinyongp/gate";
+import { createGateClient, isGateError } from '@jinyongp/gate'
 
-const gate = createGateClient({ cwd: process.cwd() });
-const web = await gate.service("web", { up: true });
+const gate = createGateClient({ cwd: process.cwd() })
+const web = await gate.service('web', { up: true })
 
 try {
-  await gate.service("web");
+  await gate.service('web')
 } catch (error) {
-  if (isGateError(error, "GATE_DNS_REQUIRED")) {
-    // Use .localhost, or opt into dns: "hosts"/"preconfigured".
+  if (isGateError(error, 'GATE_DNS_REQUIRED')) {
+    // Use .localhost, or opt into dns: 'hosts'/'preconfigured'.
   }
-  throw error;
+  throw error
 }
 ```
 
@@ -69,16 +69,16 @@ processes:
 pnpm exec gate run --up web -- pnpm dev
 ```
 
-`service(name)` defaults to `{ up: true, dns: "localhost", daemon: false }`. It
+`service(name)` defaults to `{ up: true, dns: 'localhost', daemon: false }`. It
 can reserve/activate routes, but it does not start the daemon unless
 `daemon: true` is passed. Use `service(name, { up: false })`, `ls()`, or
 `port()` for read-only inspection. Custom domains must explicitly choose
-`dns: "hosts"` or `dns: "preconfigured"`.
+`dns: 'hosts'` or `dns: 'preconfigured'`.
 
 Common Node error actions:
 
-- `GATE_DNS_REQUIRED`: use `.localhost`, or intentionally pass `dns: "hosts"` /
-  `dns: "preconfigured"`.
+- `GATE_DNS_REQUIRED`: use `.localhost`, or intentionally pass `dns: 'hosts'` /
+  `dns: 'preconfigured'`.
 - `GATE_BINARY_NOT_FOUND` / `GATE_UNSUPPORTED_PLATFORM`: reinstall `@jinyongp/gate`
   or pass an explicit `bin` / `GATE_BIN`.
 - `GATE_PERMISSION_REQUIRED`: stop unless the user approved the privileged

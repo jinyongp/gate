@@ -45,20 +45,20 @@ Prefer `gate run` when launching dev servers. It injects `PORT`, peer
 ## Node API
 
 ```ts
-import { createGateClient } from "@jinyongp/gate";
+import { createGateClient } from '@jinyongp/gate'
 
-const gate = createGateClient({ cwd: process.cwd() });
-const web = await gate.service("web", { up: true });
+const gate = createGateClient({ cwd: process.cwd() })
+const web = await gate.service('web', { up: true })
 
-console.log(web.port);
-console.log(web.url);
-console.log(web.loopbackUrl);
+console.log(web.port)
+console.log(web.url)
+console.log(web.loopbackUrl)
 ```
 
 `service(name)` defaults to:
 
 ```ts
-{ up: true, dns: "localhost", daemon: false }
+{ up: true, dns: 'localhost', daemon: false }
 ```
 
 That means it can reserve and activate routes before reading service metadata.
@@ -70,10 +70,10 @@ It does not start the daemon unless `daemon: true` is passed. Use
 Use `resolveGateBinary()` when another process needs the concrete binary path:
 
 ```ts
-import { createGateClient, resolveGateBinary } from "@jinyongp/gate";
+import { createGateClient, resolveGateBinary } from '@jinyongp/gate'
 
-const bin = resolveGateBinary();
-const gate = createGateClient({ bin });
+const bin = resolveGateBinary()
+const gate = createGateClient({ bin })
 ```
 
 You can also pass `bin` directly or set `GATE_BIN`.
@@ -81,31 +81,31 @@ You can also pass `bin` directly or set `GATE_BIN`.
 ## Errors
 
 ```ts
-import { createGateClient, isGateError } from "@jinyongp/gate";
+import { createGateClient, isGateError } from '@jinyongp/gate'
 
-const gate = createGateClient();
+const gate = createGateClient()
 
 try {
-  await gate.service("web");
+  await gate.service('web')
 } catch (error) {
-  if (isGateError(error, "GATE_DNS_REQUIRED")) {
-    // Use a .localhost base, or intentionally pass dns: "hosts"/"preconfigured".
+  if (isGateError(error, 'GATE_DNS_REQUIRED')) {
+    // Use a .localhost base, or intentionally pass dns: 'hosts'/'preconfigured'.
   }
-  throw error;
+  throw error
 }
 ```
 
 Common error codes:
 
-| code | action |
-| --- | --- |
-| `GATE_DNS_REQUIRED` | Use `.localhost`, or pass `dns: "hosts"` / `dns: "preconfigured"`. |
-| `GATE_BINARY_NOT_FOUND` | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`. |
-| `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`. |
-| `GATE_PERMISSION_REQUIRED` | Retry only after explicit approval for privileged DNS/trust changes. |
-| `GATE_SERVICE_NOT_FOUND` | Check scope, config path, service name, and reservations. |
-| `GATE_COMMAND_FAILED` | Inspect `exitCode`, `gateCode`, stdout, and stderr. |
-| `GATE_JSON_PARSE_FAILED` | Treat as a gate/version mismatch or broken binary output. |
+| code                        | action                                                               |
+| --------------------------- | -------------------------------------------------------------------- |
+| `GATE_DNS_REQUIRED`         | Use `.localhost`, or pass `dns: 'hosts'` / `dns: 'preconfigured'`.   |
+| `GATE_BINARY_NOT_FOUND`     | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`.  |
+| `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`.        |
+| `GATE_PERMISSION_REQUIRED`  | Retry only after explicit approval for privileged DNS/trust changes. |
+| `GATE_SERVICE_NOT_FOUND`    | Check scope, config path, service name, and reservations.            |
+| `GATE_COMMAND_FAILED`       | Inspect `exitCode`, `gateCode`, stdout, and stderr.                  |
+| `GATE_JSON_PARSE_FAILED`    | Treat as a gate/version mismatch or broken binary output.            |
 
 ## Project Config
 

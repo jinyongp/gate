@@ -12,34 +12,34 @@ project file.
 Use `gate --help` for the root command list, or `gate <command> --help` for one
 command's flags and positional arguments.
 
-| command | purpose |
-| --- | --- |
-| `gate init [--name name] [--force] [-y\|--yes] [--json]` | scaffold a starter `gate.toml` |
-| `gate up [-d\|--daemon] [--dns localhost\|hosts] [--config path] [-g\|--global] [-p name\|--project name] [--json]` | reserve ports, activate routes, reflect DNS, and optionally start the daemon |
-| `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes while keeping reservations |
-| `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list reservations with route and upstream status |
-| `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one service port or list reserved ports |
-| `gate run [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a child command with `PORT` injected |
-| `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | add or update one reservation |
-| `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one reservation |
-| `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
-| `gate prune [--json]` | remove stale project reservations whose config file is gone |
-| `gate daemon status [-a\|--all] [--json]` | inspect listener daemon status |
-| `gate daemon start` | start or reuse the default listener daemon |
-| `gate daemon stop [-a\|--all]` | stop listener daemon(s) |
-| `gate daemon restart` | restart the default listener daemon |
-| `gate daemon logs [-a\|--all]` | print listener daemon logs |
-| `gate trust` | install the local root CA into OS/browser trust stores |
-| `gate untrust` | remove the local root CA from trust stores |
-| `gate ca export [--out path]` | export the local root certificate |
-| `gate doctor [--fix] [--json]` | check and repair gate-owned local state |
-| `gate expose [--via local\|lan\|cloudflared\|tailscale] [--domain name.local] [--auth user:pass] [--no-auth] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | expose a scoped service through a provider |
-| `gate expose ls [--via provider] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
-| `gate expose stop [--via provider] [--force] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop or forget one exposure record |
-| `gate upgrade [-y\|--yes]` | upgrade to the latest release, then run doctor |
-| `gate completion bash\|zsh\|fish` | print shell completion script |
-| `gate skill path\|print` | locate or print the bundled agent skill |
-| `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | remove gate state, binaries, and Homebrew package when applicable |
+| command                                                                                                                                                                                   | purpose                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `gate init [--name name] [--force] [-y\|--yes] [--json]`                                                                                                                                  | scaffold a starter `gate.toml`                                               |
+| `gate up [-d\|--daemon] [--dns localhost\|hosts] [--config path] [-g\|--global] [-p name\|--project name] [--json]`                                                                       | reserve ports, activate routes, reflect DNS, and optionally start the daemon |
+| `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]`                                                                                                             | deactivate scoped routes while keeping reservations                          |
+| `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]`                                                | list reservations with route and upstream status                             |
+| `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]`                                                                                       | print one service port or list reserved ports                                |
+| `gate run [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>`                                                                                          | run a child command with `PORT` injected                                     |
+| `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]`                                                             | add or update one reservation                                                |
+| `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]`                                                                                                     | remove one reservation                                                       |
+| `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]`                                                                                                | remove all reservations in one scope                                         |
+| `gate prune [--json]`                                                                                                                                                                     | remove stale project reservations whose config file is gone                  |
+| `gate daemon status [-a\|--all] [--json]`                                                                                                                                                 | inspect listener daemon status                                               |
+| `gate daemon start`                                                                                                                                                                       | start or reuse the default listener daemon                                   |
+| `gate daemon stop [-a\|--all]`                                                                                                                                                            | stop listener daemon(s)                                                      |
+| `gate daemon restart`                                                                                                                                                                     | restart the default listener daemon                                          |
+| `gate daemon logs [-a\|--all]`                                                                                                                                                            | print listener daemon logs                                                   |
+| `gate trust`                                                                                                                                                                              | install the local root CA into OS/browser trust stores                       |
+| `gate untrust`                                                                                                                                                                            | remove the local root CA from trust stores                                   |
+| `gate ca export [--out path]`                                                                                                                                                             | export the local root certificate                                            |
+| `gate doctor [--fix] [--json]`                                                                                                                                                            | check and repair gate-owned local state                                      |
+| `gate expose [--via local\|lan\|cloudflared\|tailscale] [--domain name.local] [--auth user:pass] [--no-auth] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | expose a scoped service through a provider                                   |
+| `gate expose ls [--via provider] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]`                                                                           | list exposure records                                                        |
+| `gate expose stop [--via provider] [--force] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]`                                                                 | stop or forget one exposure record                                           |
+| `gate upgrade [-y\|--yes]`                                                                                                                                                                | upgrade to the latest release, then run doctor                               |
+| `gate completion bash\|zsh\|fish`                                                                                                                                                         | print shell completion script                                                |
+| `gate skill path\|print`                                                                                                                                                                  | locate or print the bundled agent skill                                      |
+| `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]`                                                                                                                                 | remove gate state, binaries, and Homebrew package when applicable            |
 
 ## Install
 
@@ -208,40 +208,40 @@ Use the package binary for child-process workflows, or resolve the binary from
 code and pass it as `bin` or `GATE_BIN`:
 
 ```ts
-import { createGateClient, resolveGateBinary } from "@jinyongp/gate";
+import { createGateClient, resolveGateBinary } from '@jinyongp/gate'
 
-const bin = resolveGateBinary();
-const gate = createGateClient({ bin });
+const bin = resolveGateBinary()
+const gate = createGateClient({ bin })
 ```
 
 Core API:
 
 ```ts
-import { createGateClient } from "@jinyongp/gate";
+import { createGateClient } from '@jinyongp/gate'
 
-const gate = createGateClient();
-const web = await gate.service("web", { up: true });
+const gate = createGateClient()
+const web = await gate.service('web', { up: true })
 ```
 
 Typed error handling:
 
 ```ts
-import { createGateClient, isGateError } from "@jinyongp/gate";
+import { createGateClient, isGateError } from '@jinyongp/gate'
 
-const gate = createGateClient();
+const gate = createGateClient()
 
 try {
-  await gate.service("web");
+  await gate.service('web')
 } catch (error) {
-  if (isGateError(error, "GATE_DNS_REQUIRED")) {
-    // Switch to a .localhost base, or pass dns: "hosts"/"preconfigured".
+  if (isGateError(error, 'GATE_DNS_REQUIRED')) {
+    // Switch to a .localhost base, or pass dns: 'hosts'/'preconfigured'.
   }
-  throw error;
+  throw error
 }
 ```
 
 By default, `service(name)` is not read-only: it behaves like
-`service(name, { up: true, dns: "localhost", daemon: false })`. It reserves and
+`service(name, { up: true, dns: 'localhost', daemon: false })`. It reserves and
 activates the selected scope before reading service metadata, but it does not
 start the daemon or edit `/etc/hosts`. Use `service(name, { up: false })`,
 `ls()`, or `port()` when you only want to inspect existing state. Custom domains
@@ -249,15 +249,15 @@ must opt into hosts-file DNS or declare preconfigured DNS through options.
 
 Common `GateError` codes:
 
-| code | agent action |
-| --- | --- |
-| `GATE_DNS_REQUIRED` | Use a `.localhost` base, or pass `dns: "hosts"` / `dns: "preconfigured"` intentionally. |
-| `GATE_BINARY_NOT_FOUND` | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`. |
-| `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`. |
-| `GATE_PERMISSION_REQUIRED` | Retry only after explicit user approval for the privileged DNS/trust action. |
-| `GATE_SERVICE_NOT_FOUND` | Check scope, config path, service name, and whether reservations exist. |
-| `GATE_COMMAND_FAILED` | Inspect `exitCode`, `gateCode`, stdout, and stderr before retrying. |
-| `GATE_JSON_PARSE_FAILED` | Treat as a gate/version mismatch or broken binary output. |
+| code                        | agent action                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------------- |
+| `GATE_DNS_REQUIRED`         | Use a `.localhost` base, or pass `dns: 'hosts'` / `dns: 'preconfigured'` intentionally. |
+| `GATE_BINARY_NOT_FOUND`     | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`.                     |
+| `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`.                           |
+| `GATE_PERMISSION_REQUIRED`  | Retry only after explicit user approval for the privileged DNS/trust action.            |
+| `GATE_SERVICE_NOT_FOUND`    | Check scope, config path, service name, and whether reservations exist.                 |
+| `GATE_COMMAND_FAILED`       | Inspect `exitCode`, `gateCode`, stdout, and stderr before retrying.                     |
+| `GATE_JSON_PARSE_FAILED`    | Treat as a gate/version mismatch or broken binary output.                               |
 
 ## Global Reservations
 
@@ -698,8 +698,8 @@ Prerequisites:
 Limitations:
 
 - Access is limited to devices allowed by the tailnet and ACLs.
-- The current implementation uses `tailscale serve --bg` and `tailscale serve
-  reset`. Resetting Tailscale Serve affects the machine's Serve configuration.
+- The current implementation uses `tailscale serve --bg`.
+- `tailscale serve reset` affects the machine's Serve configuration.
 - gate allows one Tailscale exposure at a time because Tailscale Serve reset is
   machine-wide.
 
@@ -743,12 +743,12 @@ also forgets other Tailscale exposure records if stale records are present.
 
 Supported providers:
 
-| provider | purpose | notes |
-| --- | --- | --- |
-| `local` | no external exposure | returns the local HTTPS URL |
-| `lan` | same-network access | uses a derived or overridden `.local` LAN name |
-| `cloudflared` | temporary public URL | requires `cloudflared` |
-| `tailscale` | tailnet access | requires `tailscale` |
+| provider      | purpose              | notes                                          |
+| ------------- | -------------------- | ---------------------------------------------- |
+| `local`       | no external exposure | returns the local HTTPS URL                    |
+| `lan`         | same-network access  | uses a derived or overridden `.local` LAN name |
+| `cloudflared` | temporary public URL | requires `cloudflared`                         |
+| `tailscale`   | tailnet access       | requires `tailscale`                           |
 
 `gate expose ls` reports provider runtime state as `live`, `down`, or
 `unverified`. `unverified` means gate has a local exposure record but cannot
@@ -757,10 +757,10 @@ prove the external provider is currently serving it.
 The `AUTH` column reports whether a persisted exposure expects session-scoped
 basic auth to still be present in the running route table:
 
-| value | meaning |
-| --- | --- |
-| `off` | the exposure does not require basic auth |
-| `active` | auth is enabled and the daemon/session route still has the secret |
+| value     | meaning                                                               |
+| --------- | --------------------------------------------------------------------- |
+| `off`     | the exposure does not require basic auth                              |
+| `active`  | auth is enabled and the daemon/session route still has the secret     |
 | `missing` | the exposure was recorded with auth, but the in-memory secret is gone |
 
 If auth is `missing`, rerun `gate expose ... --auth user:pass` for that service.
@@ -912,10 +912,10 @@ gate doctor --fix
 
 ## Exit Codes
 
-| code | meaning |
-| --- | --- |
-| 0 | success |
-| 1 | error |
-| 2 | usage error |
-| 3 | permission required |
-| 4 | port, domain, or daemon-listen conflict |
+| code | meaning                                 |
+| ---- | --------------------------------------- |
+| 0    | success                                 |
+| 1    | error                                   |
+| 2    | usage error                             |
+| 3    | permission required                     |
+| 4    | port, domain, or daemon-listen conflict |
