@@ -10,6 +10,7 @@ set -euo pipefail
 : "${GOLANGCI_LINT_OUTCOME:?}"
 : "${GOVULNCHECK_OUTCOME:?}"
 : "${SCRIPTS_OUTCOME:?}"
+: "${NODE_API_OUTCOME:?}"
 : "${TEST_OUTCOME:?}"
 
 {
@@ -26,5 +27,6 @@ set -euo pipefail
   echo "| golangci-lint | ${GOLANGCI_LINT_OUTCOME} |"
   echo "| govulncheck | ${GOVULNCHECK_OUTCOME} |"
   echo "| scripts | ${SCRIPTS_OUTCOME} |"
+  echo "| node api | ${NODE_API_OUTCOME} |"
   echo "| test + coverage | ${TEST_OUTCOME} |"
 } >> "$GITHUB_STEP_SUMMARY"

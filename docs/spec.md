@@ -618,17 +618,9 @@ Dependency policy:
 
 ## 16. Development Gates
 
-The project command runner is `just`.
-
-| Recipe | Purpose |
-| --- | --- |
-| `just build` | Build `bin/gate`. |
-| `just test` | Run `go test -race ./...`. |
-| `just lint-json` | Emit structured lint diagnostics on stdout and text diagnostics on stderr. |
-| `just lint` | Run text lint output. |
-| `just vuln` | Run `govulncheck ./...`. |
-| `just check` | Run tests, lint, and vulnerability scan. Must pass before PR. |
-| `just fmt` | Run gofmt and goimports. |
+Development validation is recipe-driven and must prefer repository-owned checks
+over ad hoc tool invocations. Exact command names belong in `AGENTS.md` and the
+README contributor guide.
 
 Validation priorities:
 

@@ -8,14 +8,14 @@
     "pnpm": ">=11.8.0"
   },
   "scripts": {
-    "node-api:build": "pnpm --filter @gate/node build",
-    "node-api:pack:dry-run": "pnpm node-api:pack:dry-run:js",
-    "node-api:pack:dry-run:js": "pnpm node-api:build && pnpm --filter @gate/node pack --dry-run",
-    "node-api:smoke:examples": "node scripts/node/smoke-examples.mjs",
-    "node-api:stage:binaries": "node scripts/node/stage-binary-packages.mjs",
-    "node-api:typecheck": "pnpm node-api:build && pnpm --filter @gate/node typecheck",
-    "node-api:test": "pnpm node-api:build && pnpm --filter @gate/node test:build && node --test packages/node/dist/**/*.test.mjs",
-    "node-api:check": "pnpm node-api:typecheck && pnpm node-api:test"
+    "node:build": "pnpm --filter @gate/node build",
+    "node:pack:dry-run": "pnpm node:pack:dry-run:js",
+    "node:pack:dry-run:js": "pnpm node:build && pnpm --filter @gate/node pack --dry-run",
+    "node:smoke:examples": "node scripts/node/smoke-examples.mjs",
+    "node:stage:binaries": "node scripts/node/stage-binary-packages.mjs",
+    "node:typecheck": "pnpm node:build && pnpm --filter @gate/node typecheck",
+    "node:test": "pnpm node:build && pnpm --filter @gate/node test:build && node --test packages/node/dist/**/*.test.mjs",
+    "node:check": "pnpm node:typecheck && pnpm node:test"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

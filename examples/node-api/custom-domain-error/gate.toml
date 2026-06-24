@@ -1,5 +1,0 @@
-[project]
-name = "node-api-custom-domain-error"
-base = "node-api.example.test"
-
-[services.web]

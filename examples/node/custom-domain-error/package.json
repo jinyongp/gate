@@ -1,5 +1,5 @@
 {
-  "name": "gate-node-api-service-basic",
+  "name": "gate-node-custom-domain-error",
   "private": true,
   "type": "module",
   "scripts": {

@@ -180,7 +180,7 @@ gate run --up web -- pnpm dev
 Open:
 
 ```text
-https://app.localhost
+https://web.myapp.localhost
 ```
 
 Stop routing for the current project while keeping reservations:
@@ -189,11 +189,30 @@ Stop routing for the current project while keeping reservations:
 gate down
 ```
 
-## Node API
+## Node
 
 `@gate/node` is intended for agents and JavaScript tooling that need to inspect
 or control gate from code. It executes the gate binary and consumes the same
 JSON command contracts as scripts.
+
+Install only `@gate/node`; it provides the `gate` package binary and uses
+platform optional binary packages for supported Darwin/Linux arm64/x64 hosts.
+Do not install platform packages directly.
+
+```bash
+pnpm add -D @gate/node
+pnpm exec gate --version
+```
+
+Use the package binary for child-process workflows, or resolve the binary from
+code and pass it as `bin` or `GATE_BIN`:
+
+```ts
+import { createGateClient, resolveGateBinary } from "@gate/node";
+
+const bin = resolveGateBinary();
+const gate = createGateClient({ bin });
+```
 
 Core API:
 
@@ -221,9 +240,24 @@ try {
 }
 ```
 
-By default, `service()` uses the permission-free `.localhost` path and does not
-start the daemon or edit `/etc/hosts`. Custom domains must opt into hosts-file
-DNS or declare preconfigured DNS through options.
+By default, `service(name)` is not read-only: it behaves like
+`service(name, { up: true, dns: "localhost", daemon: false })`. It reserves and
+activates the selected scope before reading service metadata, but it does not
+start the daemon or edit `/etc/hosts`. Use `service(name, { up: false })`,
+`ls()`, or `port()` when you only want to inspect existing state. Custom domains
+must opt into hosts-file DNS or declare preconfigured DNS through options.
+
+Common `GateError` codes:
+
+| code | agent action |
+| --- | --- |
+| `GATE_DNS_REQUIRED` | Use a `.localhost` base, or pass `dns: "hosts"` / `dns: "preconfigured"` intentionally. |
+| `GATE_BINARY_NOT_FOUND` | Reinstall `@gate/node`, or pass an explicit `bin` / `GATE_BIN`. |
+| `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`. |
+| `GATE_PERMISSION_REQUIRED` | Retry only after explicit user approval for the privileged DNS/trust action. |
+| `GATE_SERVICE_NOT_FOUND` | Check scope, config path, service name, and whether reservations exist. |
+| `GATE_COMMAND_FAILED` | Inspect `exitCode`, `gateCode`, stdout, and stderr before retrying. |
+| `GATE_JSON_PARSE_FAILED` | Treat as a gate/version mismatch or broken binary output. |
 
 ## Global Reservations
 
@@ -681,7 +715,7 @@ machine.
 
 ```text
 web exposed via tailscale
-  https://my-mac.tail6c50d7.ts.net:10443 -> local.stamp.is
+  https://my-mac.tail6c50d7.ts.net:10443 -> web.myapp.localhost
 ```
 
 Open the Tailscale URL from another device in the same tailnet:

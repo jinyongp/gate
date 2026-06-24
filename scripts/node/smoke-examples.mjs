@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const tempRoot = await mkdtemp(join(tmpdir(), "gate-node-api-smoke-"));
+const tempRoot = await mkdtemp(join(tmpdir(), "gate-node-smoke-"));
 const packDir = join(tempRoot, "packs");
 const examplesDir = join(tempRoot, "examples");
 const gateHome = join(tempRoot, "gate-home");
@@ -17,33 +17,27 @@ const binaryTargets = [
   ["linux", "x64"]
 ];
 
-const packageTarballs = {
-  "@gate/node": join(packDir, "gate-node-0.0.0.tgz")
-};
-for (const [platform, arch] of binaryTargets) {
-  packageTarballs[`@gate/binary-${platform}-${arch}`] = join(packDir, `gate-binary-${platform}-${arch}-0.0.0.tgz`);
-}
-
 const examples = [
   "service-basic",
   "custom-domain-error"
 ];
 const { GATE_BIN: _gateBin, ...baseEnv } = process.env;
+const packageTarballs = await resolvePackageTarballs();
 
 try {
   await mkdir(packDir, { recursive: true });
   await mkdir(examplesDir, { recursive: true });
   await mkdir(gateHome, { recursive: true });
-  await run("pnpm", ["node-api:build"], { cwd: repoRoot });
+  await run("pnpm", ["node:build"], { cwd: repoRoot });
   await run("pnpm", ["--filter", "@gate/node", "pack", "--pack-destination", packDir], {
     cwd: repoRoot
   });
   for (const [platform, arch] of binaryTargets) {
-    await packBinaryPackage(platform, arch);
+    await packBinaryPackage(platform, arch, await readPackageVersion(binaryPackagePath(platform, arch)));
   }
 
   for (const example of examples) {
-    const source = join(repoRoot, "examples", "node-api", example);
+    const source = join(repoRoot, "examples", "node", example);
     const target = join(examplesDir, example);
     await cp(source, target, {
       recursive: true,
@@ -98,7 +92,7 @@ async function writeOverrides(exampleDir) {
   await writeFile(join(exampleDir, "pnpm-workspace.yaml"), `${lines.join("\n")}\n`);
 }
 
-async function packBinaryPackage(platform, arch) {
+async function packBinaryPackage(platform, arch, version) {
   const packageName = `@gate/binary-${platform}-${arch}`;
   const packageDir = join(tempRoot, "binary-packages", `${platform}-${arch}`);
   const packageBinDir = join(packageDir, "bin");
@@ -111,13 +105,34 @@ async function packBinaryPackage(platform, arch) {
   await chmod(join(packageBinDir, "gate"), 0o755);
   await writeFile(join(packageDir, "package.json"), `${JSON.stringify({
     name: packageName,
-    version: "0.0.0",
+    version,
     os: [platform],
     cpu: [arch],
     files: ["bin/gate"],
     license: "MIT"
   }, null, 2)}\n`);
   await run("pnpm", ["pack", "--pack-destination", packDir], { cwd: packageDir });
+}
+
+async function resolvePackageTarballs() {
+  const tarballs = {
+    "@gate/node": join(packDir, `gate-node-${await readPackageVersion(join(repoRoot, "packages", "node", "package.json"))}.tgz`)
+  };
+  for (const [platform, arch] of binaryTargets) {
+    const packageName = `@gate/binary-${platform}-${arch}`;
+    const version = await readPackageVersion(binaryPackagePath(platform, arch));
+    tarballs[packageName] = join(packDir, `gate-binary-${platform}-${arch}-${version}.tgz`);
+  }
+  return tarballs;
+}
+
+async function readPackageVersion(packagePath) {
+  const pkg = JSON.parse(await readFile(packagePath, "utf8"));
+  return pkg.version;
+}
+
+function binaryPackagePath(platform, arch) {
+  return join(repoRoot, "packages", "binaries", `${platform}-${arch}`, "package.json");
 }
 
 async function run(command, args, options = {}) {

@@ -73,29 +73,29 @@ build-all version="dev":
   scripts/release/build-gate.sh "{{version}}" bin
 
 [doc('build Node API packages')]
-node-api-build:
-  pnpm node-api:build
+node-build:
+  pnpm node:build
 
 [doc('typecheck Node API packages')]
-node-api-typecheck:
-  pnpm node-api:typecheck
+node-typecheck:
+  pnpm node:typecheck
 
 [doc('dry-run pack Node API JS packages')]
-node-api-pack-dry-run:
-  pnpm node-api:pack:dry-run
+node-pack-dry-run:
+  pnpm node:pack:dry-run
 
 [doc('run Node API example smoke tests from packed tarballs')]
-node-api-smoke-examples:
-  pnpm node-api:smoke:examples
+node-smoke-examples:
+  pnpm node:smoke:examples
 
 [doc('copy release binaries into Node binary package folders')]
-node-api-stage-binaries:
-  pnpm node-api:stage:binaries
+node-stage-binaries:
+  pnpm node:stage:binaries
 
 [doc('run Node API package tests')]
-node-api-test:
-  pnpm node-api:test
+node-test:
+  pnpm node:test
 
 [doc('run Node API package validation')]
-node-api-check:
-  pnpm node-api:check
+node-check:
+  pnpm node:check

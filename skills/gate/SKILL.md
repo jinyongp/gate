@@ -37,62 +37,79 @@ else
 fi
 ```
 
-## Core commands
+## Node API
 
-| command | purpose |
-| --- | --- |
-| `gate init [--name name] [--force] [-y\|--yes] [--json]` | scaffold a starter `gate.toml` |
-| `gate up [-d\|--daemon] [--dns localhost\|hosts] [--config path] [-g\|--global] [-p name\|--project name] [--json]` | reserve current-project ports or activate scoped reservations |
-| `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list scoped reservations with route/upstream status |
-| `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]` | print one scoped service port, or list reserved ports |
-| `gate run [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>` | run a command with `PORT` and peer service env injected |
-| `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]` | deactivate scoped routes (reservations kept) |
-| `gate expose [--via <provider>] [--domain name.local] [--auth user:pass] [--no-auth] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | reach a scoped service externally |
-| `gate expose ls [--via provider] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]` | list exposure records |
-| `gate expose stop [--via <provider>] [--force] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | stop one exposure |
-| `gate daemon status [-a\|--all] [--json]` | inspect listener proxy status |
-| `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]` | reserve a scoped service/name mapping |
-| `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]` | remove one scoped reservation |
-| `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]` | remove all reservations in one scope |
-| `gate prune [--json]` | GC reservations whose owning config file is gone |
-| `gate daemon start` | start the default listener proxy |
-| `gate daemon stop [-a\|--all]` | stop listener proxy daemon(s) |
-| `gate daemon restart` | restart the default listener proxy |
-| `gate daemon logs [-a\|--all]` | print listener proxy logs |
-| `gate doctor [--fix] [--json]` | check and repair local gate state |
-| `gate trust` | install the root CA (one time) |
-| `gate untrust` | remove the root CA from OS/browser trust stores |
-| `gate ca export [--out path]` | export the root CA for other devices |
-| `gate upgrade [-y\|--yes]` | upgrade to the latest GitHub release, then run doctor |
-| `gate completion bash\|zsh\|fish` | print shell completion script |
-| `gate skill path\|print` | locate or print this skill file |
-| `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]` | remove gate state, binaries, and Homebrew package when applicable |
+Use `@gate/node` when JavaScript automation needs typed gate data instead of
+shell parsing. Install only `@gate/node`; it exposes the `gate` binary and
+loads platform optional binary packages for supported Darwin/Linux arm64/x64
+hosts.
 
-`gate expose ls` status values are `live`, `down`, or `unverified`.
-`unverified` means gate has a local exposure record but cannot prove the
-external provider is currently serving it.
-The AUTH column values are `off`, `active`, or `missing`; `missing` means an
-auth-enabled exposure record remains but the session-scoped auth secret must be
-supplied again with `gate expose ... --auth user:pass`.
-`gate expose stop <service> --via tailscale` resets Tailscale Serve when the
-record was created by gate; use `--force` for stale or unclear ownership.
+```ts
+import { createGateClient, isGateError } from "@gate/node";
 
-## Exit codes
+const gate = createGateClient({ cwd: process.cwd() });
+const web = await gate.service("web", { up: true });
 
-`0` ok · `1` error · `2` usage · `3` permission (needs sudo) · `4` port/domain/daemon-listen conflict.
+try {
+  await gate.service("web");
+} catch (error) {
+  if (isGateError(error, "GATE_DNS_REQUIRED")) {
+    // Use .localhost, or opt into dns: "hosts"/"preconfigured".
+  }
+  throw error;
+}
+```
 
-## Recipes
-
-Start a dev server on its assigned port:
+For JS/package installs, use the package `gate` bin or call
+`resolveGateBinary()` and pass it as `bin`/`GATE_BIN`; the earlier `$GATE_BIN`
+snippet is for system-installed gate. Prefer the CLI for launching child
+processes:
 
 ```bash
-"$GATE_BIN" up
+pnpm exec gate run --up web -- pnpm dev
+```
+
+`service(name)` defaults to `{ up: true, dns: "localhost", daemon: false }`. It
+can reserve/activate routes, but it does not start the daemon unless
+`daemon: true` is passed. Use `service(name, { up: false })`, `ls()`, or
+`port()` for read-only inspection. Custom domains must explicitly choose
+`dns: "hosts"` or `dns: "preconfigured"`.
+
+Common Node error actions:
+
+- `GATE_DNS_REQUIRED`: use `.localhost`, or intentionally pass `dns: "hosts"` /
+  `dns: "preconfigured"`.
+- `GATE_BINARY_NOT_FOUND` / `GATE_UNSUPPORTED_PLATFORM`: reinstall `@gate/node`
+  or pass an explicit `bin` / `GATE_BIN`.
+- `GATE_PERMISSION_REQUIRED`: stop unless the user approved the privileged
+  DNS/trust action.
+- `GATE_SERVICE_NOT_FOUND`: check scope, config path, service name, and whether
+  reservations exist.
+- `GATE_COMMAND_FAILED` / `GATE_JSON_PARSE_FAILED`: inspect command metadata and
+  stderr before retrying.
+
+## Operational workflows
+
+Use [`docs/usage.md`](../../docs/usage.md) for full command syntax, output
+semantics, JSON behavior, troubleshooting, and exit codes.
+
+Start or refresh routes, then launch a dev server on its assigned port:
+
+```bash
+"$GATE_BIN" up -d
 "$GATE_BIN" run web -- pnpm dev   # PORT and peer service env are injected
+```
+
+Reserve first, then launch without a separate `up` command:
+
+```bash
+"$GATE_BIN" run --up web -- pnpm dev
 ```
 
 Use `--config path/to/file.toml` when the project config is not named
 `gate.toml` or is not discoverable from the current directory. Do not combine it
-with `--global` or `--all`.
+with `--global` or `--all`. Use `-g` for global reservations and `-p <name>` for
+a named project.
 
 Get a port for a script:
 
@@ -113,10 +130,10 @@ Inspect mappings as JSON:
 "$GATE_BIN" ls --json
 ```
 
-JSON-mode errors are written to stderr:
+Check local state when routing or trust looks wrong:
 
-```json
-{"error":{"code":"port_conflict","message":"port 4310 already reserved by myapp/web"}}
+```bash
+"$GATE_BIN" doctor
 ```
 
 ## gate.toml
@@ -133,7 +150,8 @@ port = 3001                      # fixed when needed
 env = "API_URL"                  # injected as http://127.0.0.1:<api-port>
 ```
 
-`base`, `domain`, `host`, and `port` support environment interpolation:
+`base`, `domain`, `host`, and `port` support environment interpolation.
+`env_files` are resolved relative to the selected project config file.
 
 ```toml
 [project]
@@ -149,20 +167,14 @@ port = "${API_PORT}"
 env = "API_URL"
 ```
 
-`env_files` are resolved relative to the selected project config file. Missing
-env files are ignored. Process env overrides dotenv values; earlier env files
-override later env files. `${NAME}` is required and errors when unset.
-`${NAME:-default}` is optional and uses `default` when unset or empty.
-
 Inside a project, `gate add <service> <port>` derives the service domain from
 `[project] base`; use `--host` for a base label override or `--domain` for a
 full-domain escape hatch. `gate add` and `gate rm <service>` edit this file in
-place, preserving comments. Outside a project the default scope is global; use
-`-g` explicitly when operating from inside a project.
-`gate clear` removes scoped registry reservations and route/DNS state only; it
-does not edit `gate.toml`.
-Remove reservations by service/name. Use `gate clear -y` for whole-scope
-removal; single-service `gate rm` does not prompt.
+place, preserving comments. `gate clear` removes scoped registry reservations
+and route/DNS state only; it does not edit `gate.toml`.
+
+## Exposure notes
+
 Domains ending in `.localhost` need no sudo; custom domains use `/etc/hosts`
 (sudo). Active reservations are served by listener daemons, defaulting to
 HTTPS `:443` / HTTP `:80`. If the relevant listener daemon is running,

@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Agent-friendly Node API for gate",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",

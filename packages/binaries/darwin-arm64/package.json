@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "os": ["darwin"],
   "cpu": ["arm64"],
+  "publishConfig": {
+    "access": "public"
+  },
   "files": ["bin/gate"],
   "scripts": {
     "prepack": "node ../../../scripts/node/verify-package-binary.mjs"

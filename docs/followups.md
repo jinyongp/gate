@@ -26,8 +26,6 @@ Suggested work:
 - Add a small documentation checklist to PR review notes or contributor docs:
   product invariant -> spec, user command/output detail -> usage, agent shortcut
   -> skill, future idea -> follow-up document.
-- Consider a lightweight docs lint that flags command examples added to
-  `docs/spec.md`.
 
 ## Tooling
 

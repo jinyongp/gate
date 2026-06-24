@@ -30,6 +30,9 @@ Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
 and internals, see [docs/spec.md](docs/spec.md).
 
+JavaScript automation can install `@gate/node` for typed access to gate data and
+the package-provided `gate` binary. See the [Node guide](docs/usage.md#node).
+
 ## Upgrade
 
 Using Homebrew:
@@ -211,10 +214,14 @@ Development uses the repository checkout and the `just` command runner.
 Prerequisites:
 
 - Go
+- Node.js matching `.node-version`
+- Corepack-managed pnpm
 - [`just`](https://github.com/casey/just)
 
 Development recipes fetch Go tools such as `golangci-lint`, `govulncheck`, and
 `goimports` with `go run`, so they do not need separate manual installation.
+Node package validation uses the repository `packageManager`; enable Corepack
+before running `just check` if pnpm is not already available.
 
 Set up a checkout:
 
@@ -236,6 +243,10 @@ Run validation before opening a pull request:
 ```bash
 just check
 ```
+
+Version-tag releases publish the Go binaries to GitHub/Homebrew and publish
+`@gate/node` plus platform binary packages to npm. The npm release job requires
+a repository secret named `NPM_TOKEN` with publish access to the `@gate` scope.
 
 Useful development commands:
 
