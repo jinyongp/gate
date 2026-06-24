@@ -15,7 +15,7 @@ test("resolveGateBinary prefers explicit bin, env, then package", () => {
       arch: "arm64",
       resolvePackage: (specifier) => `/resolved/${specifier}`
     }),
-    "/resolved/@gate/binary-darwin-arm64/bin/gate"
+    "/resolved/@jinyongp/gate-darwin-arm64/bin/gate"
   );
 });
 

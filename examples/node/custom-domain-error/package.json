@@ -6,6 +6,6 @@
     "smoke": "node ./smoke.mjs"
   },
   "dependencies": {
-    "@gate/node": "file:../../../packages/node"
+    "@jinyongp/gate": "file:../../../packages/node"
   }
 }

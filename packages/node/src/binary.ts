@@ -5,10 +5,10 @@ import { GateError } from "./errors.js";
 const require = createRequire(import.meta.url);
 
 const binaryPackages: Record<string, string> = {
-  "darwin:arm64": "@gate/binary-darwin-arm64/bin/gate",
-  "darwin:x64": "@gate/binary-darwin-x64/bin/gate",
-  "linux:arm64": "@gate/binary-linux-arm64/bin/gate",
-  "linux:x64": "@gate/binary-linux-x64/bin/gate"
+  "darwin:arm64": "@jinyongp/gate-darwin-arm64/bin/gate",
+  "darwin:x64": "@jinyongp/gate-darwin-x64/bin/gate",
+  "linux:arm64": "@jinyongp/gate-linux-arm64/bin/gate",
+  "linux:x64": "@jinyongp/gate-linux-x64/bin/gate"
 };
 
 export interface BinaryResolutionOptions extends GateClientOptions {

@@ -1,4 +1,4 @@
-import { createGateClient, isGateError } from "@gate/node";
+import { createGateClient, isGateError } from "@jinyongp/gate";
 
 const gate = createGateClient({ cwd: import.meta.dirname });
 

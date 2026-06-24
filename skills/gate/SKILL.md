@@ -39,13 +39,13 @@ fi
 
 ## Node API
 
-Use `@gate/node` when JavaScript automation needs typed gate data instead of
-shell parsing. Install only `@gate/node`; it exposes the `gate` binary and
+Use `@jinyongp/gate` when JavaScript automation needs typed gate data instead of
+shell parsing. Install only `@jinyongp/gate`; it exposes the `gate` binary and
 loads platform optional binary packages for supported Darwin/Linux arm64/x64
 hosts.
 
 ```ts
-import { createGateClient, isGateError } from "@gate/node";
+import { createGateClient, isGateError } from "@jinyongp/gate";
 
 const gate = createGateClient({ cwd: process.cwd() });
 const web = await gate.service("web", { up: true });
@@ -79,7 +79,7 @@ Common Node error actions:
 
 - `GATE_DNS_REQUIRED`: use `.localhost`, or intentionally pass `dns: "hosts"` /
   `dns: "preconfigured"`.
-- `GATE_BINARY_NOT_FOUND` / `GATE_UNSUPPORTED_PLATFORM`: reinstall `@gate/node`
+- `GATE_BINARY_NOT_FOUND` / `GATE_UNSUPPORTED_PLATFORM`: reinstall `@jinyongp/gate`
   or pass an explicit `bin` / `GATE_BIN`.
 - `GATE_PERMISSION_REQUIRED`: stop unless the user approved the privileged
   DNS/trust action.

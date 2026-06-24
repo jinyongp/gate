@@ -1,5 +1,5 @@
 {
-  "name": "@gate/binary-darwin-arm64",
+  "name": "@jinyongp/gate-darwin-arm64",
   "version": "0.0.0",
   "description": "gate binary for macOS arm64",
   "homepage": "https://github.com/jinyongp/gate#readme",

@@ -191,16 +191,16 @@ gate down
 
 ## Node
 
-`@gate/node` is intended for agents and JavaScript tooling that need to inspect
+`@jinyongp/gate` is intended for agents and JavaScript tooling that need to inspect
 or control gate from code. It executes the gate binary and consumes the same
 JSON command contracts as scripts.
 
-Install only `@gate/node`; it provides the `gate` package binary and uses
+Install only `@jinyongp/gate`; it provides the `gate` package binary and uses
 platform optional binary packages for supported Darwin/Linux arm64/x64 hosts.
 Do not install platform packages directly.
 
 ```bash
-pnpm add -D @gate/node
+pnpm add -D @jinyongp/gate
 pnpm exec gate --version
 ```
 
@@ -208,7 +208,7 @@ Use the package binary for child-process workflows, or resolve the binary from
 code and pass it as `bin` or `GATE_BIN`:
 
 ```ts
-import { createGateClient, resolveGateBinary } from "@gate/node";
+import { createGateClient, resolveGateBinary } from "@jinyongp/gate";
 
 const bin = resolveGateBinary();
 const gate = createGateClient({ bin });
@@ -217,7 +217,7 @@ const gate = createGateClient({ bin });
 Core API:
 
 ```ts
-import { createGateClient } from "@gate/node";
+import { createGateClient } from "@jinyongp/gate";
 
 const gate = createGateClient();
 const web = await gate.service("web", { up: true });
@@ -226,7 +226,7 @@ const web = await gate.service("web", { up: true });
 Typed error handling:
 
 ```ts
-import { createGateClient, isGateError } from "@gate/node";
+import { createGateClient, isGateError } from "@jinyongp/gate";
 
 const gate = createGateClient();
 
@@ -252,7 +252,7 @@ Common `GateError` codes:
 | code | agent action |
 | --- | --- |
 | `GATE_DNS_REQUIRED` | Use a `.localhost` base, or pass `dns: "hosts"` / `dns: "preconfigured"` intentionally. |
-| `GATE_BINARY_NOT_FOUND` | Reinstall `@gate/node`, or pass an explicit `bin` / `GATE_BIN`. |
+| `GATE_BINARY_NOT_FOUND` | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`. |
 | `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`. |
 | `GATE_PERMISSION_REQUIRED` | Retry only after explicit user approval for the privileged DNS/trust action. |
 | `GATE_SERVICE_NOT_FOUND` | Check scope, config path, service name, and whether reservations exist. |

@@ -30,7 +30,7 @@ Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
 and internals, see [docs/spec.md](docs/spec.md).
 
-JavaScript automation can install `@gate/node` for typed access to gate data and
+JavaScript automation can install `@jinyongp/gate` for typed access to gate data and
 the package-provided `gate` binary. See the [Node guide](docs/usage.md#node).
 
 ## Upgrade
@@ -245,10 +245,10 @@ just check
 ```
 
 Version-tag releases publish the Go binaries to GitHub/Homebrew and publish
-`@gate/node` plus platform binary packages to npm. npm publishing uses trusted
+`@jinyongp/gate` plus platform binary packages to npm. npm publishing uses trusted
 publishing with GitHub Actions OIDC, so no npm publish token is required in CI.
-Before the first OIDC release, create the `@gate` scope, publish or reserve each
-`@gate/*` package once in binary-first order, then configure each package with a
+Before the first OIDC release, publish or reserve each `@jinyongp/*` package once
+in binary-first order, then configure each package with a
 trusted publisher for `jinyongp/gate`, workflow filename `release.yml`, and the
 `npm publish` action.
 

@@ -29,7 +29,7 @@ try {
   await mkdir(examplesDir, { recursive: true });
   await mkdir(gateHome, { recursive: true });
   await run("pnpm", ["node:build"], { cwd: repoRoot });
-  await run("pnpm", ["--filter", "@gate/node", "pack", "--pack-destination", packDir], {
+  await run("pnpm", ["--filter", "@jinyongp/gate", "pack", "--pack-destination", packDir], {
     cwd: repoRoot
   });
   for (const [platform, arch] of binaryTargets) {
@@ -93,7 +93,7 @@ async function writeOverrides(exampleDir) {
 }
 
 async function packBinaryPackage(platform, arch, version) {
-  const packageName = `@gate/binary-${platform}-${arch}`;
+  const packageName = `@jinyongp/gate-${platform}-${arch}`;
   const packageDir = join(tempRoot, "binary-packages", `${platform}-${arch}`);
   const packageBinDir = join(packageDir, "bin");
   await mkdir(packageBinDir, { recursive: true });
@@ -116,12 +116,12 @@ async function packBinaryPackage(platform, arch, version) {
 
 async function resolvePackageTarballs() {
   const tarballs = {
-    "@gate/node": join(packDir, `gate-node-${await readPackageVersion(join(repoRoot, "packages", "node", "package.json"))}.tgz`)
+    "@jinyongp/gate": join(packDir, `jinyongp-gate-${await readPackageVersion(join(repoRoot, "packages", "node", "package.json"))}.tgz`)
   };
   for (const [platform, arch] of binaryTargets) {
-    const packageName = `@gate/binary-${platform}-${arch}`;
+    const packageName = `@jinyongp/gate-${platform}-${arch}`;
     const version = await readPackageVersion(binaryPackagePath(platform, arch));
-    tarballs[packageName] = join(packDir, `gate-binary-${platform}-${arch}-${version}.tgz`);
+    tarballs[packageName] = join(packDir, `jinyongp-gate-${platform}-${arch}-${version}.tgz`);
   }
   return tarballs;
 }

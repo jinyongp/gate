@@ -12,10 +12,10 @@ const packageVersion = version.startsWith("v") ? version.slice(1) : version;
 const repoRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 const binaryPackages = [
-  "@gate/binary-darwin-arm64",
-  "@gate/binary-darwin-x64",
-  "@gate/binary-linux-arm64",
-  "@gate/binary-linux-x64"
+  "@jinyongp/gate-darwin-arm64",
+  "@jinyongp/gate-darwin-x64",
+  "@jinyongp/gate-linux-arm64",
+  "@jinyongp/gate-linux-x64"
 ];
 
 const packagePaths = [
@@ -32,7 +32,7 @@ for (const relativePath of packagePaths) {
   manifest.version = packageVersion;
   manifest.publishConfig = { access: "public" };
 
-  if (manifest.name === "@gate/node") {
+  if (manifest.name === "@jinyongp/gate") {
     manifest.optionalDependencies = Object.fromEntries(
       binaryPackages.map((name) => [name, packageVersion])
     );

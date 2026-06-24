@@ -1,5 +1,5 @@
 {
-  "name": "@gate/node",
+  "name": "@jinyongp/gate",
   "version": "0.0.0",
   "description": "Agent-friendly Node API and CLI launcher for gate",
   "keywords": [
@@ -50,9 +50,9 @@
     "test": "pnpm build && node --test dist/**/*.test.mjs"
   },
   "optionalDependencies": {
-    "@gate/binary-darwin-arm64": "workspace:*",
-    "@gate/binary-darwin-x64": "workspace:*",
-    "@gate/binary-linux-arm64": "workspace:*",
-    "@gate/binary-linux-x64": "workspace:*"
+    "@jinyongp/gate-darwin-arm64": "workspace:*",
+    "@jinyongp/gate-darwin-x64": "workspace:*",
+    "@jinyongp/gate-linux-arm64": "workspace:*",
+    "@jinyongp/gate-linux-x64": "workspace:*"
   }
 }

@@ -28,16 +28,16 @@ importers:
 
   packages/node:
     optionalDependencies:
-      '@gate/binary-darwin-arm64':
+      '@jinyongp/gate-darwin-arm64':
         specifier: workspace:*
         version: link:../binaries/darwin-arm64
-      '@gate/binary-darwin-x64':
+      '@jinyongp/gate-darwin-x64':
         specifier: workspace:*
         version: link:../binaries/darwin-x64
-      '@gate/binary-linux-arm64':
+      '@jinyongp/gate-linux-arm64':
         specifier: workspace:*
         version: link:../binaries/linux-arm64
-      '@gate/binary-linux-x64':
+      '@jinyongp/gate-linux-x64':
         specifier: workspace:*
         version: link:../binaries/linux-x64
 
