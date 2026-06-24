@@ -163,10 +163,12 @@ jobs:
           path: tap
           fetch-depth: 0
       - name: wait for release assets
+        id: wait_release_assets
         run: bash source/.github/scripts/wait-release-assets.sh "${VERSION_TAG}"
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: generate binary formula
+        id: generate_formula
         run: bash source/.github/scripts/generate-homebrew-binary-formula.sh tap "${VERSION_TAG}"
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
@@ -179,17 +181,36 @@ jobs:
           FORMULA: gate
           VERSION: ${{ needs.release_tag.outputs.tag }}
       - name: tap formula
+        id: tap_formula
         run: brew tap jinyongp/tap "$GITHUB_WORKSPACE/tap"
       - name: audit formula
+        id: audit_formula
         run: brew audit --strict jinyongp/tap/gate
       - name: install formula
+        id: install_formula
         run: brew install jinyongp/tap/gate
       - name: test formula
+        id: test_formula
         run: brew test jinyongp/tap/gate
       - name: push formula
+        id: push_formula
         if: steps.commit_formula.outputs.changed == 'true'
         working-directory: tap
         run: bash .github/workflows/scripts/push-formula.sh
+      - name: job summary
+        if: always()
+        run: bash source/.github/scripts/homebrew-summary.sh
+        env:
+          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
+          WAIT_RELEASE_ASSETS_OUTCOME: ${{ steps.wait_release_assets.outcome || 'not run' }}
+          GENERATE_FORMULA_OUTCOME: ${{ steps.generate_formula.outcome || 'not run' }}
+          COMMIT_FORMULA_OUTCOME: ${{ steps.commit_formula.outcome || 'not run' }}
+          FORMULA_CHANGED: ${{ steps.commit_formula.outputs.changed || 'unknown' }}
+          TAP_FORMULA_OUTCOME: ${{ steps.tap_formula.outcome || 'not run' }}
+          AUDIT_FORMULA_OUTCOME: ${{ steps.audit_formula.outcome || 'not run' }}
+          INSTALL_FORMULA_OUTCOME: ${{ steps.install_formula.outcome || 'not run' }}
+          TEST_FORMULA_OUTCOME: ${{ steps.test_formula.outcome || 'not run' }}
+          PUSH_FORMULA_OUTCOME: ${{ steps.push_formula.outcome || 'not run' }}
 
   npm_publish:
     needs: [release_tag, build]
@@ -211,15 +232,52 @@ jobs:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
       - name: enable corepack
+        id: corepack
         run: corepack enable
       - name: install
+        id: install
         run: pnpm install --frozen-lockfile
       - name: build release binaries
+        id: build_binaries
         run: scripts/release/build-gate.sh "${VERSION_TAG}" bin
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: publish npm packages
+        id: publish_npm
         run: bash .github/scripts/publish-npm.sh "${VERSION_TAG}" bin
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_PUBLISH_SUMMARY: npm-publish-summary.tsv
+      - name: job summary
+        if: always()
+        run: bash .github/scripts/npm-summary.sh
+        env:
+          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
+          COREPACK_OUTCOME: ${{ steps.corepack.outcome || 'not run' }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome || 'not run' }}
+          BUILD_BINARIES_OUTCOME: ${{ steps.build_binaries.outcome || 'not run' }}
+          PUBLISH_NPM_OUTCOME: ${{ steps.publish_npm.outcome || 'not run' }}
+          NPM_PUBLISH_SUMMARY: npm-publish-summary.tsv
+
+  release_summary:
+    needs: [release_tag, check, build, homebrew_tap, npm_publish]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: job summary
+        run: bash .github/scripts/release-summary.sh
+        env:
+          RELEASE_TAG: ${{ needs.release_tag.outputs.tag }}
+          TAG_TYPE: ${{ needs.release_tag.outputs.type || 'none' }}
+          TAG_TARGET: ${{ needs.release_tag.outputs.target }}
+          TAG_ON_MAIN: ${{ needs.release_tag.outputs.on_main || 'false' }}
+          RELEASE_STATUS: ${{ needs.release_tag.outputs.release || 'unknown' }}
+          RELEASE_TAG_JOB_RESULT: ${{ needs.release_tag.result }}
+          CHECK_JOB_RESULT: ${{ needs.check.result }}
+          BUILD_JOB_RESULT: ${{ needs.build.result }}
+          HOMEBREW_TAP_JOB_RESULT: ${{ needs.homebrew_tap.result }}
+          NPM_PUBLISH_JOB_RESULT: ${{ needs.npm_publish.result }}

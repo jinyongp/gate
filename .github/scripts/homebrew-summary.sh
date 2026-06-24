@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${GITHUB_STEP_SUMMARY:?}"
+: "${GITHUB_REF_NAME:?}"
+: "${GITHUB_SHA:?}"
+: "${VERSION_TAG:?}"
+: "${WAIT_RELEASE_ASSETS_OUTCOME:?}"
+: "${GENERATE_FORMULA_OUTCOME:?}"
+: "${COMMIT_FORMULA_OUTCOME:?}"
+: "${FORMULA_CHANGED:?}"
+: "${TAP_FORMULA_OUTCOME:?}"
+: "${AUDIT_FORMULA_OUTCOME:?}"
+: "${INSTALL_FORMULA_OUTCOME:?}"
+: "${TEST_FORMULA_OUTCOME:?}"
+: "${PUSH_FORMULA_OUTCOME:?}"
+
+{
+  echo "## Homebrew tap"
+  echo
+  echo "- Ref: \`${GITHUB_REF_NAME}\`"
+  echo "- Commit: \`${GITHUB_SHA}\`"
+  echo "- Version: \`${VERSION_TAG}\`"
+  echo "- Formula changed: \`${FORMULA_CHANGED}\`"
+  echo
+  echo "| Step | Result |"
+  echo "| --- | --- |"
+  echo "| wait for release assets | ${WAIT_RELEASE_ASSETS_OUTCOME} |"
+  echo "| generate formula | ${GENERATE_FORMULA_OUTCOME} |"
+  echo "| commit formula | ${COMMIT_FORMULA_OUTCOME} |"
+  echo "| tap formula | ${TAP_FORMULA_OUTCOME} |"
+  echo "| audit formula | ${AUDIT_FORMULA_OUTCOME} |"
+  echo "| install formula | ${INSTALL_FORMULA_OUTCOME} |"
+  echo "| test formula | ${TEST_FORMULA_OUTCOME} |"
+  echo "| push formula | ${PUSH_FORMULA_OUTCOME} |"
+} >> "$GITHUB_STEP_SUMMARY"
