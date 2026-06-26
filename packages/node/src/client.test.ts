@@ -71,6 +71,94 @@ test('client service method is safe to destructure', async () => {
   expect(web.port).toBe(4312)
 })
 
+test('client service accepts inline project config without gate.toml', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { GATE_NODE_CACHE_DIR: join(dir, 'cache') },
+  })
+
+  const service = await client.service('web', {
+    scope: {
+      config: {
+        name: 'demo',
+        base: 'demo.localhost',
+        services: { web: {} },
+      },
+    },
+  })
+
+  expect(service.url).toBe('https://web.demo.localhost')
+
+  const calls = await readFile(log, 'utf8')
+  const paths = configPaths(calls)
+  expect(paths).toHaveLength(2)
+  expect(new Set(paths).size).toBe(1)
+  expect(calls).toMatch(/up --json --config \S+ --dns localhost/)
+  expect(calls).toMatch(/ls --json --config \S+/)
+  expect(await readFile(paths[0] ?? '', 'utf8')).toBe(
+    `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+`,
+  )
+})
+
+test('client commands pass stable generated config path for inline project config', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { GATE_NODE_CACHE_DIR: join(dir, 'cache') },
+  })
+  const scope = {
+    config: {
+      name: 'demo',
+      base: 'demo.localhost',
+      services: {
+        api: { domain: 'api.demo.localhost', env: ['API_URL'], port: 4313 },
+        web: { host: '.', port: '${WEB_PORT:-3000}' },
+      },
+    },
+  }
+
+  await client.up({ scope })
+  await client.ls({ scope })
+  await client.port('web', { scope })
+  await client.down({ scope })
+
+  const calls = await readFile(log, 'utf8')
+  const paths = configPaths(calls)
+  expect(paths).toHaveLength(4)
+  expect(new Set(paths).size).toBe(1)
+  expect(calls).toMatch(/up --json --config \S+/)
+  expect(calls).toMatch(/ls --json --config \S+/)
+  expect(calls).toMatch(/port --json --config \S+ web/)
+  expect(calls).toMatch(/down --json --config \S+/)
+  expect(await readFile(paths[0] ?? '', 'utf8')).toBe(
+    `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.api]
+domain = "api.demo.localhost"
+port = 4313
+env = ["API_URL"]
+
+[services.web]
+host = "."
+port = "\${WEB_PORT:-3000}"
+`,
+  )
+})
+
 test('client maps permission failures', async () => {
   const dir = await tempDir()
   const gate = await fakeGate(dir, join(dir, 'args.log'), { mode: 'permission' })
@@ -132,6 +220,167 @@ test('default DNS preflight discovers parent gate config', async () => {
   const client = createGateClient({ bin: gate, cwd: nested })
 
   await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('default DNS preflight rejects custom inline config domains before mutating up', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(
+    client.service('web', {
+      scope: {
+        config: {
+          name: 'demo',
+          base: 'demo.test',
+          services: { web: {} },
+        },
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('up rejects custom inline config domains before mutating routes', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(
+    client.up({
+      scope: {
+        config: {
+          name: 'demo',
+          base: 'demo.test',
+          services: { web: {}, api: { domain: 'api.demo.localhost' } },
+        },
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('up allows custom inline config domains with explicit DNS mode', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { GATE_NODE_CACHE_DIR: join(dir, 'cache') },
+  })
+
+  await client.up({
+    dns: 'preconfigured',
+    scope: {
+      config: {
+        name: 'demo',
+        base: 'demo.test',
+        services: { web: {} },
+      },
+    },
+  })
+
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/up --json --config \S+ --dns localhost/)
+})
+
+test('inline DNS preflight expands env references before checking localhost', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { BASE_DOMAIN: 'demo.localhost', GATE_NODE_CACHE_DIR: join(dir, 'cache') },
+  })
+
+  await client.service('web', {
+    scope: {
+      config: {
+        name: 'demo',
+        base: '${BASE_DOMAIN}',
+        services: { web: {}, api: { domain: '${API_DOMAIN:-api.demo.localhost}' } },
+      },
+    },
+  })
+
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/up --json --config \S+ --dns localhost/)
+})
+
+test('inline DNS preflight rejects env references that resolve to custom domains', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { BASE_DOMAIN: 'demo.test' },
+  })
+
+  await expect(
+    client.service('web', {
+      scope: {
+        config: {
+          name: 'demo',
+          base: '${BASE_DOMAIN}',
+          services: { web: {} },
+        },
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('inline project config rejects invalid scope combinations before running gate', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+  const config = { name: 'demo', services: { web: {} } }
+
+  await expect(
+    client.ls({ scope: { kind: 'project', project: 'other', config } }),
+  ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+  await expect(
+    client.up({
+      scope: { kind: 'global', config } as never,
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('inline project config rejects unsupported fields before running gate', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(
+    client.up({
+      scope: {
+        config: {
+          name: 'demo',
+          envFiles: ['.env'],
+          services: { web: {} },
+        } as never,
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+  await expect(
+    client.up({
+      scope: {
+        config: {
+          name: 'demo',
+          services: { web: { envFiles: ['.env'] } },
+        } as never,
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
   await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
 })
 
@@ -238,4 +487,15 @@ process.exit(2);
   await writeFile(path, body)
   await chmod(path, 0o755)
   return path
+}
+
+function configPaths(calls: string): string[] {
+  return calls
+    .trim()
+    .split('\n')
+    .flatMap((line) => {
+      const args = line.split(' ')
+      const index = args.indexOf('--config')
+      return index === -1 ? [] : [args[index + 1] ?? '']
+    })
 }

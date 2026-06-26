@@ -1,28 +1,11 @@
 import { spawn } from 'node:child_process'
 import { GateError } from './errors.js'
-import type { GateCommandOptions, GateDNSMode, GateScope } from './types.js'
+import type { GateCommandOptions, GateDNSMode } from './types.js'
 import { resolveGateBinary } from './binary.js'
 
 export interface CommandResult {
   stdout: string
   stderr: string
-}
-
-export function scopeArgs(scope?: GateScope): string[] {
-  if (!scope) {
-    return []
-  }
-  if (scope.kind === 'global') {
-    return ['--global']
-  }
-  const args: string[] = []
-  if (scope.project) {
-    args.push('--project', scope.project)
-  }
-  if (scope.config) {
-    args.push('--config', scope.config)
-  }
-  return args
 }
 
 export function dnsArgs(dns?: GateDNSMode): string[] {

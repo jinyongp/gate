@@ -1,4 +1,19 @@
-export type GateScope = { kind?: 'project'; project?: string; config?: string } | { kind: 'global' }
+export interface GateInlineServiceConfig {
+  domain?: string
+  host?: string
+  port?: number | string
+  env?: string | string[]
+}
+
+export interface GateInlineProjectConfig {
+  name: string
+  base?: string
+  services: Record<string, GateInlineServiceConfig>
+}
+
+export type GateScope =
+  | { kind?: 'project'; project?: string; config?: string | GateInlineProjectConfig }
+  | { kind: 'global' }
 
 export type GateDNSMode = 'localhost' | 'hosts' | 'preconfigured'
 
@@ -61,6 +76,7 @@ export type GateErrorCode =
   | 'GATE_BINARY_NOT_FOUND'
   | 'GATE_COMMAND_FAILED'
   | 'GATE_DNS_REQUIRED'
+  | 'GATE_INVALID_OPTIONS'
   | 'GATE_JSON_PARSE_FAILED'
   | 'GATE_PERMISSION_REQUIRED'
   | 'GATE_SERVICE_NOT_FOUND'

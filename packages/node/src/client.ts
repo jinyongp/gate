@@ -1,6 +1,7 @@
-import { dnsArgs, parseJSON, runGate, scopeArgs } from './command.js'
+import { dnsArgs, parseJSON, runGate } from './command.js'
+import { prepareScope } from './config.js'
 import { GateError } from './errors.js'
-import { assertDNSAllowed } from './preflight.js'
+import { assertDNSAllowed, assertScopeDNSAllowed } from './preflight.js'
 import type {
   GateClient,
   GateClientOptions,
@@ -50,7 +51,9 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
   const up = async (options?: GateUpOptions): Promise<GateUpResult> => {
     const merged = withDefaults(options)
-    const args = ['up', '--json', ...scopeArgs(merged.scope), ...dnsArgs(merged.dns)]
+    await assertScopeDNSAllowed(merged)
+    const scope = await prepareScope(merged.scope, merged)
+    const args = ['up', '--json', ...scope.args, ...dnsArgs(merged.dns)]
     if (merged.daemon) {
       args.push('--daemon')
     }
@@ -64,7 +67,8 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
   const ls = async (options?: GateCommandOptions): Promise<GateService[]> => {
     const merged = withDefaults(options)
-    const args = ['ls', '--json', ...scopeArgs(merged.scope)]
+    const scope = await prepareScope(merged.scope, merged)
+    const args = ['ls', '--json', ...scope.args]
     const result = await runGate(args, merged)
     const parsed = parseJSON<GateLsJSON>([resultCommand(merged), ...args], result.stdout)
     return parsed.services.map((service) => ({
@@ -97,7 +101,8 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
     async port(service: string, options?: GateCommandOptions): Promise<number> {
       const merged = withDefaults(options)
-      const args = ['port', '--json', ...scopeArgs(merged.scope), service]
+      const scope = await prepareScope(merged.scope, merged)
+      const args = ['port', '--json', ...scope.args, service]
       const result = await runGate(args, merged)
       return parseJSON<GatePortJSON>([resultCommand(merged), ...args], result.stdout).port
     },
@@ -106,7 +111,8 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
     async down(options?: GateCommandOptions): Promise<void> {
       const merged = withDefaults(options)
-      const args = ['down', '--json', ...scopeArgs(merged.scope)]
+      const scope = await prepareScope(merged.scope, merged)
+      const args = ['down', '--json', ...scope.args]
       await runGate(args, merged)
     },
   }

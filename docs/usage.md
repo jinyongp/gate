@@ -223,6 +223,37 @@ const gate = createGateClient()
 const web = await gate.service('web', { up: true })
 ```
 
+Inline project config:
+
+```ts
+import { createGateClient, type GateInlineProjectConfig } from '@jinyongp/gate'
+
+const config = {
+  name: 'myapp',
+  base: 'myapp.localhost',
+  services: {
+    web: {},
+    api: {
+      port: 3001,
+      env: 'API_URL',
+    },
+  },
+} satisfies GateInlineProjectConfig
+
+const gate = createGateClient({ cwd: process.cwd() })
+const web = await gate.service('web', {
+  scope: { config },
+})
+```
+
+Inline config gives Node API callers project-scoped behavior without a
+checked-in `gate.toml`. The package writes a generated TOML file to the user
+cache and passes that file to the gate binary with `--config`. `scope.project`
+may be supplied, but it must match `config.name`. The inline shape supports
+`name`, `base`, and service `domain`, `host`, `port`, and `env` fields.
+`envFiles` are intentionally excluded; load environment variables before
+calling gate if inline values use `${NAME}` or `${NAME:-fallback}` references.
+
 Typed error handling:
 
 ```ts
@@ -252,6 +283,7 @@ Common `GateError` codes:
 | code                        | agent action                                                                            |
 | --------------------------- | --------------------------------------------------------------------------------------- |
 | `GATE_DNS_REQUIRED`         | Use a `.localhost` base, or pass `dns: 'hosts'` / `dns: 'preconfigured'` intentionally. |
+| `GATE_INVALID_OPTIONS`      | Fix incompatible scope/config options before retrying.                                  |
 | `GATE_BINARY_NOT_FOUND`     | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`.                     |
 | `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`.                           |
 | `GATE_PERMISSION_REQUIRED`  | Retry only after explicit user approval for the privileged DNS/trust action.            |

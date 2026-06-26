@@ -75,10 +75,32 @@ can reserve/activate routes, but it does not start the daemon unless
 `port()` for read-only inspection. Custom domains must explicitly choose
 `dns: 'hosts'` or `dns: 'preconfigured'`.
 
+Use inline project config when an agent needs project-scoped Node API behavior
+without creating `gate.toml`:
+
+```ts
+import { createGateClient, type GateInlineProjectConfig } from '@jinyongp/gate'
+
+const config = {
+  name: 'myapp',
+  base: 'myapp.localhost',
+  services: { web: {} },
+} satisfies GateInlineProjectConfig
+
+const gate = createGateClient({ cwd: process.cwd() })
+const web = await gate.service('web', { scope: { config } })
+```
+
+Inline config is written to the user cache as generated TOML and passed through
+`--config`. `scope.project`, if present, must match `config.name`. Do not put
+`envFiles` in Node API options; load environment variables before calling gate
+when inline values use `${NAME}` or `${NAME:-fallback}` references.
+
 Common Node error actions:
 
 - `GATE_DNS_REQUIRED`: use `.localhost`, or intentionally pass `dns: 'hosts'` /
   `dns: 'preconfigured'`.
+- `GATE_INVALID_OPTIONS`: fix incompatible scope/config options before retrying.
 - `GATE_BINARY_NOT_FOUND` / `GATE_UNSUPPORTED_PLATFORM`: reinstall `@jinyongp/gate`
   or pass an explicit `bin` / `GATE_BIN`.
 - `GATE_PERMISSION_REQUIRED`: stop unless the user approved the privileged

@@ -1,7 +1,7 @@
 # Follow-ups
 
 This file tracks useful follow-up work that is not required for the current
-documentation boundary cleanup.
+implementation scope.
 
 ## Documentation
 

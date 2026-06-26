@@ -9,6 +9,8 @@ export type {
   GateDNSMode,
   GateErrorCode,
   GateErrorDetails,
+  GateInlineProjectConfig,
+  GateInlineServiceConfig,
   GateScope,
   GateService,
   GateServiceOptions,

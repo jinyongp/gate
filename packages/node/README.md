@@ -65,6 +65,37 @@ That means it can reserve and activate routes before reading service metadata.
 It does not start the daemon unless `daemon: true` is passed. Use
 `service(name, { up: false })`, `ls()`, or `port()` for read-only inspection.
 
+Use inline project config when automation needs project-scoped behavior without
+writing `gate.toml` into the repository:
+
+```ts
+import { createGateClient, type GateInlineProjectConfig } from '@jinyongp/gate'
+
+const config = {
+  name: 'myapp',
+  base: 'myapp.localhost',
+  services: {
+    web: {},
+    api: {
+      port: 3001,
+      env: 'API_URL',
+    },
+  },
+} satisfies GateInlineProjectConfig
+
+const gate = createGateClient({ cwd: process.cwd() })
+const web = await gate.service('web', {
+  scope: { config },
+})
+```
+
+Inline config is materialized as a generated TOML file in the user cache and
+passed to the gate binary through `--config`. `scope.project` may be used with
+inline config, but it must match `config.name`. `envFiles` are intentionally not
+part of the Node API; load environment variables before calling gate if inline
+values use `${NAME}` or `${NAME:-fallback}` references.
+Custom domains still require `dns: 'hosts'` or `dns: 'preconfigured'`.
+
 ## Binary Resolution
 
 Use `resolveGateBinary()` when another process needs the concrete binary path:
@@ -100,6 +131,7 @@ Common error codes:
 | code                        | action                                                               |
 | --------------------------- | -------------------------------------------------------------------- |
 | `GATE_DNS_REQUIRED`         | Use `.localhost`, or pass `dns: 'hosts'` / `dns: 'preconfigured'`.   |
+| `GATE_INVALID_OPTIONS`      | Fix incompatible scope/config options before retrying.               |
 | `GATE_BINARY_NOT_FOUND`     | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`.  |
 | `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`.        |
 | `GATE_PERMISSION_REQUIRED`  | Retry only after explicit approval for privileged DNS/trust changes. |

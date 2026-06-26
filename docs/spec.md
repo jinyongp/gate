@@ -103,11 +103,17 @@ still persist and can be loaded later.
 
 ### Project
 
-A project is a repository with a `gate.toml` file. `gate` discovers the file by
+A project is a named scope backed by a project TOML config. The shareable common
+case is a repository with a `gate.toml` file. `gate` discovers that file by
 walking upward from the current directory until it finds `gate.toml`, a `.git`
 root, the user's home directory, or the filesystem root. Project-mode commands
 may also receive an explicit config path; that path is loaded directly and does
 not need to be named `gate.toml`.
+
+The Node API may materialize an inline project config as a generated TOML file
+in the user cache and pass that file through the same explicit config-path
+mechanism. The gate binary still treats TOML parsing and validation as the
+source of truth.
 
 ```toml
 [project]
@@ -225,6 +231,7 @@ flowchart LR
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |
 | `gate.toml` | user and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |
+| Generated Node config | Node API | TOML | Cache-backed materialization of inline project config, passed to gate with `--config`. |
 | `registry.json` | gate only | JSON | Machine-wide reservations. Uses schema versioning, advisory file locking, and atomic write by temp file + rename. |
 | Admin sockets | daemon | Unix sockets | CLI talks to listener-keyed daemons over a local HTTP API. |
 | CA material | gate | PEM files | Root key is private local state and must not be copied. Export only the root certificate. |
