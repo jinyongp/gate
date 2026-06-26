@@ -231,7 +231,7 @@ flowchart LR
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |
 | `gate.toml` | user and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |
-| Generated Node config | Node API | TOML | Cache-backed materialization of inline project config, passed to gate with `--config`. |
+| Generated Node config | Node API | TOML | Cache-backed materialization of inline project config, passed to gate through the explicit config-path mechanism. |
 | `registry.json` | gate only | JSON | Machine-wide reservations. Uses schema versioning, advisory file locking, and atomic write by temp file + rename. |
 | Admin sockets | daemon | Unix sockets | CLI talks to listener-keyed daemons over a local HTTP API. |
 | CA material | gate | PEM files | Root key is private local state and must not be copied. Export only the root certificate. |
