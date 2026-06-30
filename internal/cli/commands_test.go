@@ -1681,6 +1681,7 @@ port = 4400
 [services.api]
 port = 4501
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 `
 	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
@@ -1693,11 +1694,11 @@ env = "API_URL"
 
 	out.Reset()
 	errb.Reset()
-	code := Run([]string{"web", "--", "sh", "-c", `printf '%s|%s|%s|%s' "$PORT" "$API_URL" "$GATE_API_URL" "$GATE_API_ROUTE_URL"`}, &out, &errb)
+	code := Run([]string{"web", "--", "sh", "-c", `printf '%s|%s|%s|%s|%s' "$PORT" "$API_URL" "$PUBLIC_API_URL" "$GATE_API_URL" "$GATE_API_ROUTE_URL"`}, &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
 	}
-	want := "4400|http://127.0.0.1:4501|http://127.0.0.1:4501|https://api.demo.localhost"
+	want := "4400|http://127.0.0.1:4501|https://api.demo.localhost|http://127.0.0.1:4501|https://api.demo.localhost"
 	if out.String() != want {
 		t.Fatalf("env output = %q, want %q", out.String(), want)
 	}
@@ -1717,6 +1718,7 @@ port = 4400
 [services.api]
 port = 4501
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 `
 	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
@@ -1728,11 +1730,11 @@ env = "API_URL"
 
 	out.Reset()
 	errb.Reset()
-	code := Run([]string{"--config", path, "web", "--", "sh", "-c", `printf '%s|%s|%s' "$PORT" "$API_URL" "$GATE_API_URL"`}, &out, &errb)
+	code := Run([]string{"--config", path, "web", "--", "sh", "-c", `printf '%s|%s|%s|%s' "$PORT" "$API_URL" "$PUBLIC_API_URL" "$GATE_API_URL"`}, &out, &errb)
 	if code != ExitOK {
 		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
 	}
-	want := "4400|http://127.0.0.1:4501|http://127.0.0.1:4501"
+	want := "4400|http://127.0.0.1:4501|https://api.demo.localhost|http://127.0.0.1:4501"
 	if out.String() != want {
 		t.Fatalf("env output = %q, want %q", out.String(), want)
 	}
@@ -1748,7 +1750,7 @@ base = "demo.localhost"
 [services.web]
 
 [services.api]
-env = "API_URL"
+route_env = "API_URL"
 `
 	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)

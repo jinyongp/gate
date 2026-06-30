@@ -123,7 +123,12 @@ test('client commands pass stable generated config path for inline project confi
       name: 'demo',
       base: 'demo.localhost',
       services: {
-        api: { domain: 'api.demo.localhost', env: ['API_URL'], port: 4313 },
+        api: {
+          domain: 'api.demo.localhost',
+          env: ['API_URL'],
+          routeEnv: ['PUBLIC_API_URL'],
+          port: 4313,
+        },
         web: { host: '.', port: '${WEB_PORT:-3000}' },
       },
     },
@@ -151,6 +156,7 @@ base = "demo.localhost"
 domain = "api.demo.localhost"
 port = 4313
 env = ["API_URL"]
+route_env = ["PUBLIC_API_URL"]
 
 [services.web]
 host = "."
@@ -377,6 +383,16 @@ test('inline project config rejects unsupported fields before running gate', asy
         config: {
           name: 'demo',
           services: { web: { envFiles: ['.env'] } },
+        } as never,
+      },
+    }),
+  ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+  await expect(
+    client.up({
+      scope: {
+        config: {
+          name: 'demo',
+          services: { web: { routeEnv: [123] } },
         } as never,
       },
     }),

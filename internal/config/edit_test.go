@@ -23,7 +23,12 @@ func TestAddServicePreservesComments(t *testing.T) {
 	if err := os.WriteFile(path, []byte(withComments), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := AddService(path, "api", Service{Domain: "api.example.com", Port: 3001})
+	err := AddService(path, "api", Service{
+		Domain:   "api.example.com",
+		Port:     3001,
+		Env:      []string{"API_URL"},
+		RouteEnv: []string{"PUBLIC_API_URL"},
+	})
 	if err != nil {
 		t.Fatalf("AddService: %v", err)
 	}
@@ -35,6 +40,8 @@ func TestAddServicePreservesComments(t *testing.T) {
 		"[services.api]",
 		`domain = "api.example.com"`,
 		"port = 3001",
+		`env = "API_URL"`,
+		`route_env = "PUBLIC_API_URL"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("output missing %q:\n%s", want, s)

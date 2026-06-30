@@ -125,6 +125,7 @@ base = "myapp.localhost"
 [services.api]
 port = 3001
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 ```
 
 ### Service
@@ -190,10 +191,15 @@ and earlier dotenv files win over later ones.
 | `host` | string | service name | Single host label under `project.base`; `.` means the bare base domain. |
 | `port` | integer or env string | auto-allocate | Local upstream port. `0` or omitted means allocate from the default pool. |
 | `env` | string or string array | empty | Env names that receive this service's loopback URL in child process environments. |
+| `route_env` | string or string array | empty | Env names that receive this service's local HTTPS route URL in child process environments. |
 
 `base`, `domain`, `host`, and `port` can include environment references through
 `${NAME}` or `${NAME:-fallback}`. `${NAME}` is required and fails if unset.
 `${NAME:-fallback}` uses the fallback when the variable is unset or empty.
+
+`env` values are server-runtime loopback URLs such as
+`http://127.0.0.1:<port>`. `route_env` values are route URLs such as
+`https://api.myapp.localhost`, suitable for browser-visible local base URLs.
 
 ```toml
 [project]

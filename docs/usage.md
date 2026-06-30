@@ -145,6 +145,7 @@ base = "myapp.localhost"
 [services.api]
 port = 3001
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 ```
 
 Bring the project up and start the daemon:
@@ -175,7 +176,9 @@ gate run --up web -- pnpm dev
 `gate run` also injects peer service values into the child process:
 `GATE_<SERVICE>_PORT`, `GATE_<SERVICE>_URL`,
 `GATE_<SERVICE>_ROUTE_URL`, and any service-declared env names such as
-`API_URL`. Loopback URLs use `http://127.0.0.1:<port>`.
+`API_URL`. `env` values use loopback URLs such as
+`http://127.0.0.1:<port>`. `route_env` values use route URLs such as
+`https://api.myapp.localhost`.
 
 Open:
 

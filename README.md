@@ -129,6 +129,7 @@ Run this inside your app repository.
    [services.api]
    port = 3001
    env = "API_URL"
+   route_env = "PUBLIC_API_URL"
    ```
 
    Project commands discover `gate.toml` by default. Use
@@ -143,7 +144,8 @@ Run this inside your app repository.
 
    Replace `pnpm dev` with your app's dev-server command. `gate run` injects
    `PORT`, peer `GATE_<SERVICE>_*` values, and configured service env names
-   such as `API_URL`.
+   such as `API_URL`. `env` receives loopback URLs; `route_env` receives local
+   HTTPS route URLs.
 
 4. Open:
 
@@ -199,6 +201,7 @@ port = "${WEB_PORT:-3000}"
 [services.api]
 port = "${API_PORT}"
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 ```
 
 `env_files` are resolved relative to the selected project config file. Missing

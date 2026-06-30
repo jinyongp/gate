@@ -214,6 +214,11 @@ func renderBlock(name string, svc Service) string {
 	} else if len(svc.Env) > 1 {
 		fmt.Fprintf(&sb, "env = [%s]\n", quoteStringList(svc.Env))
 	}
+	if len(svc.RouteEnv) == 1 {
+		fmt.Fprintf(&sb, "route_env = %q\n", svc.RouteEnv[0])
+	} else if len(svc.RouteEnv) > 1 {
+		fmt.Fprintf(&sb, "route_env = [%s]\n", quoteStringList(svc.RouteEnv))
+	}
 	if svc.TLS != "" && svc.TLS != TLSInternal {
 		fmt.Fprintf(&sb, "tls = %q\n", svc.TLS)
 	}

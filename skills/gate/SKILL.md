@@ -170,6 +170,7 @@ base = "myapp.localhost"
 [services.api]
 port = 3001                      # fixed when needed
 env = "API_URL"                  # injected as http://127.0.0.1:<api-port>
+route_env = "PUBLIC_API_URL"     # injected as https://api.myapp.localhost
 ```
 
 `base`, `domain`, `host`, and `port` support environment interpolation.
@@ -187,6 +188,7 @@ port = "${WEB_PORT:-3000}"
 [services.api]
 port = "${API_PORT}"
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 ```
 
 Inside a project, `gate add <service> <port>` derives the service domain from

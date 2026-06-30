@@ -96,6 +96,9 @@ export function inlineProjectConfigToToml(config: GateInlineProjectConfig): stri
     if (service.env !== undefined) {
       lines.push(`env = ${tomlEnv(service.env)}`)
     }
+    if (service.routeEnv !== undefined) {
+      lines.push(`route_env = ${tomlEnv(service.routeEnv)}`)
+    }
   }
 
   return `${lines.join('\n')}\n`
@@ -168,7 +171,7 @@ function validateInlineServiceConfig(serviceName: string, service: unknown): voi
   }
   assertKnownKeys(
     service,
-    ['domain', 'host', 'port', 'env'],
+    ['domain', 'host', 'port', 'env', 'routeEnv'],
     `inline scope.config.services.${serviceName}`,
   )
   const config = service as GateInlineServiceConfig
@@ -193,14 +196,19 @@ function validateInlineServiceConfig(serviceName: string, service: unknown): voi
   if (config.env !== undefined) {
     validateServiceEnv(serviceName, config.env)
   }
+  if (config.routeEnv !== undefined) {
+    validateServiceEnv(serviceName, config.routeEnv, 'routeEnv')
+  }
 }
 
-function validateServiceEnv(serviceName: string, env: string | string[]): void {
+function validateServiceEnv(serviceName: string, env: string | string[], field = 'env'): void {
   if (typeof env === 'string') {
     return
   }
   if (!Array.isArray(env) || env.some((value) => typeof value !== 'string')) {
-    throw invalidOptions(`inline scope.config.services.${serviceName}.env must be a string array`)
+    throw invalidOptions(
+      `inline scope.config.services.${serviceName}.${field} must be a string array`,
+    )
   }
 }
 

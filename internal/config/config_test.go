@@ -32,6 +32,7 @@ base = "myapp.localhost"
 domain = "api.example.com"
 port = 3001
 env = ["API_URL", "INTERNAL_API_URL"]
+route_env = ["PUBLIC_API_URL", "NEXT_PUBLIC_API_URL"]
 `)
 	p, err := Load(path)
 	if err != nil {
@@ -54,6 +55,9 @@ env = ["API_URL", "INTERNAL_API_URL"]
 	}
 	if got := p.Services["api"].Env; len(got) != 2 || got[0] != "API_URL" || got[1] != "INTERNAL_API_URL" {
 		t.Fatalf("api env = %#v", got)
+	}
+	if got := p.Services["api"].RouteEnv; len(got) != 2 || got[0] != "PUBLIC_API_URL" || got[1] != "NEXT_PUBLIC_API_URL" {
+		t.Fatalf("api route_env = %#v", got)
 	}
 }
 
@@ -167,6 +171,14 @@ base = "demo.localhost"
 [services.api]
 env = "GATE_API_URL"
 `,
+		"reserved route env prefix": `
+[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.api]
+route_env = "GATE_API_ROUTE"
+`,
 		"duplicate service env": `
 [project]
 name = "demo"
@@ -177,6 +189,25 @@ env = "API_URL"
 
 [services.api]
 env = "API_URL"
+`,
+		"duplicate env and route env": `
+[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+env = "API_URL"
+
+[services.api]
+route_env = "API_URL"
+`,
+		"bad route env type": `
+[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.api]
+route_env = [123]
 `,
 		"unsupported acme tls": `
 [project]
@@ -287,6 +318,7 @@ base = "demo.localhost"
 
 [services.api]
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 `)
 	p, err := Load(path)
 	if err != nil {
@@ -294,6 +326,9 @@ env = "API_URL"
 	}
 	if got := p.Services["api"].Env; len(got) != 1 || got[0] != "API_URL" {
 		t.Fatalf("env = %#v", got)
+	}
+	if got := p.Services["api"].RouteEnv; len(got) != 1 || got[0] != "PUBLIC_API_URL" {
+		t.Fatalf("route_env = %#v", got)
 	}
 }
 

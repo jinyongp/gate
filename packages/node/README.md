@@ -153,6 +153,7 @@ base = "myapp.localhost"
 [services.api]
 port = 3001
 env = "API_URL"
+route_env = "PUBLIC_API_URL"
 ```
 
 See the full usage guide:

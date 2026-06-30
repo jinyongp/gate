@@ -3,6 +3,7 @@ export interface GateInlineServiceConfig {
   host?: string
   port?: number | string
   env?: string | string[]
+  routeEnv?: string | string[]
 }
 
 export interface GateInlineProjectConfig {

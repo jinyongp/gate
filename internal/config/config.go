@@ -32,11 +32,12 @@ var ErrNotFound = errors.New("gate.toml not found")
 // resolved domain after loading; Host is used when editing config before a
 // base-derived service has been resolved.
 type Service struct {
-	Domain string   `toml:"domain"`
-	Host   string   `toml:"host,omitempty"`
-	Port   int      `toml:"port,omitempty"` // 0 = auto-allocate
-	TLS    string   `toml:"tls,omitempty"`  // internal only; omitted defaults to internal
-	Env    []string `toml:"env,omitempty"`
+	Domain   string   `toml:"domain"`
+	Host     string   `toml:"host,omitempty"`
+	Port     int      `toml:"port,omitempty"` // 0 = auto-allocate
+	TLS      string   `toml:"tls,omitempty"`  // internal only; omitted defaults to internal
+	Env      []string `toml:"env,omitempty"`
+	RouteEnv []string `toml:"route_env,omitempty"`
 }
 
 // Project is the decoded gate.toml.
@@ -63,6 +64,7 @@ type rawService struct {
 	Port               any     `toml:"port,omitempty"`
 	TLS                string  `toml:"tls,omitempty"`
 	Env                any     `toml:"env,omitempty"`
+	RouteEnv           any     `toml:"route_env,omitempty"`
 	UnsupportedACMEDNS *string `toml:"acme_dns,omitempty"`
 }
 
@@ -115,7 +117,11 @@ func parse(path string, b []byte) (*Project, error) {
 		if err != nil {
 			return nil, err
 		}
-		envNames, err := parseServiceEnv(raw.Env, name)
+		envNames, err := parseServiceEnv(raw.Env, name, "env")
+		if err != nil {
+			return nil, err
+		}
+		routeEnvNames, err := parseServiceEnv(raw.RouteEnv, name, "route_env")
 		if err != nil {
 			return nil, err
 		}
@@ -123,11 +129,12 @@ func parse(path string, b []byte) (*Project, error) {
 			return nil, fmt.Errorf("service %q: acme_dns is not supported", name)
 		}
 		svc := Service{
-			Domain: domain,
-			Host:   host,
-			Port:   port,
-			TLS:    raw.TLS,
-			Env:    envNames,
+			Domain:   domain,
+			Host:     host,
+			Port:     port,
+			TLS:      raw.TLS,
+			Env:      envNames,
+			RouteEnv: routeEnvNames,
 		}
 		if svc.TLS == "" {
 			svc.TLS = TLSInternal
@@ -270,7 +277,7 @@ func parsePort(raw any, env map[string]string, serviceName string) (int, error) 
 	}
 }
 
-func parseServiceEnv(raw any, serviceName string) ([]string, error) {
+func parseServiceEnv(raw any, serviceName, field string) ([]string, error) {
 	switch v := raw.(type) {
 	case nil:
 		return nil, nil
@@ -281,7 +288,7 @@ func parseServiceEnv(raw any, serviceName string) ([]string, error) {
 		for _, item := range v {
 			s, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("service %q: env entries must be strings", serviceName)
+				return nil, fmt.Errorf("service %q: %s entries must be strings", serviceName, field)
 			}
 			out = append(out, strings.TrimSpace(s))
 		}
@@ -293,7 +300,7 @@ func parseServiceEnv(raw any, serviceName string) ([]string, error) {
 		}
 		return out, nil
 	default:
-		return nil, fmt.Errorf("service %q: env must be a string or list of strings", serviceName)
+		return nil, fmt.Errorf("service %q: %s must be a string or list of strings", serviceName, field)
 	}
 }
 
@@ -481,19 +488,31 @@ func (p *Project) Validate() error {
 		}
 		envServiceKeys[envServiceKey] = name
 		for _, envName := range svc.Env {
-			envName = strings.TrimSpace(envName)
-			if !envKeyRe.MatchString(envName) {
-				return fmt.Errorf("service %q: invalid env name %q", name, envName)
+			if err := publishEnvName(envPublishers, name, "env", envName); err != nil {
+				return err
 			}
-			if strings.HasPrefix(envName, "GATE_") {
-				return fmt.Errorf("service %q: env name %q uses reserved GATE_ prefix", name, envName)
+		}
+		for _, envName := range svc.RouteEnv {
+			if err := publishEnvName(envPublishers, name, "route_env", envName); err != nil {
+				return err
 			}
-			if prev, ok := envPublishers[envName]; ok {
-				return fmt.Errorf("services %q and %q both publish env %q", prev, name, envName)
-			}
-			envPublishers[envName] = name
 		}
 	}
+	return nil
+}
+
+func publishEnvName(publishers map[string]string, serviceName, field, envName string) error {
+	envName = strings.TrimSpace(envName)
+	if !envKeyRe.MatchString(envName) {
+		return fmt.Errorf("service %q: invalid %s name %q", serviceName, field, envName)
+	}
+	if strings.HasPrefix(envName, "GATE_") {
+		return fmt.Errorf("service %q: %s name %q uses reserved GATE_ prefix", serviceName, field, envName)
+	}
+	if prev, ok := publishers[envName]; ok {
+		return fmt.Errorf("services %q and %q both publish env %q", prev, serviceName, envName)
+	}
+	publishers[envName] = serviceName
 	return nil
 }
 

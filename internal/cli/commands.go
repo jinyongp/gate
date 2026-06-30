@@ -1103,7 +1103,7 @@ func runEnvForScope(sel registryScopeSelection) ([]string, error) {
 	}
 	if hasProject {
 		for name, svc := range project.Services {
-			if len(svc.Env) == 0 {
+			if len(svc.Env) == 0 && len(svc.RouteEnv) == 0 {
 				continue
 			}
 			res, ok := resByService[name]
@@ -1113,6 +1113,10 @@ func runEnvForScope(sel registryScopeSelection) ([]string, error) {
 			loopbackURL := fmt.Sprintf("http://127.0.0.1:%d", res.Port)
 			for _, envName := range svc.Env {
 				env[envName] = loopbackURL
+			}
+			routeURL := displayDomainURL(res.Domain)
+			for _, envName := range svc.RouteEnv {
+				env[envName] = routeURL
 			}
 		}
 	}
