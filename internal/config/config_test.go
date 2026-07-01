@@ -246,6 +246,29 @@ tls = "bogus"
 	}
 }
 
+func TestLoadRejectsDuplicateEnvWithinServiceWithClearError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Filename)
+	writeFile(t, path, `
+[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.api]
+env = "API_ROUTE_URL"
+route_env = "API_ROUTE_URL"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	want := `service "api" publishes env "API_ROUTE_URL" from both env and route_env`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Load err = %v, want %q", err, want)
+	}
+}
+
 func TestLoadDerivesServiceDomainsFromBase(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, Filename)

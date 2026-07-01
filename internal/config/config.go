@@ -454,7 +454,7 @@ func (p *Project) Validate() error {
 			return fmt.Errorf("project base: %w", err)
 		}
 	}
-	envPublishers := map[string]string{}
+	envPublishers := map[string]envPublisher{}
 	envServiceKeys := map[string]string{}
 	for name, svc := range p.Services {
 		if strings.TrimSpace(name) == "" {
@@ -501,7 +501,12 @@ func (p *Project) Validate() error {
 	return nil
 }
 
-func publishEnvName(publishers map[string]string, serviceName, field, envName string) error {
+type envPublisher struct {
+	service string
+	field   string
+}
+
+func publishEnvName(publishers map[string]envPublisher, serviceName, field, envName string) error {
 	envName = strings.TrimSpace(envName)
 	if !envKeyRe.MatchString(envName) {
 		return fmt.Errorf("service %q: invalid %s name %q", serviceName, field, envName)
@@ -510,9 +515,12 @@ func publishEnvName(publishers map[string]string, serviceName, field, envName st
 		return fmt.Errorf("service %q: %s name %q uses reserved GATE_ prefix", serviceName, field, envName)
 	}
 	if prev, ok := publishers[envName]; ok {
-		return fmt.Errorf("services %q and %q both publish env %q", prev, serviceName, envName)
+		if prev.service == serviceName {
+			return fmt.Errorf("service %q publishes env %q from both %s and %s", serviceName, envName, prev.field, field)
+		}
+		return fmt.Errorf("services %q and %q both publish env %q", prev.service, serviceName, envName)
 	}
-	publishers[envName] = serviceName
+	publishers[envName] = envPublisher{service: serviceName, field: field}
 	return nil
 }
 
