@@ -541,18 +541,23 @@ func stopDaemonProcess(client *daemon.Client, pid int, timeout time.Duration) er
 	if perr == nil {
 		_ = proc.Signal(syscall.SIGTERM)
 	}
-	if !waitForDaemonStop(client, timeout) {
-		return errors.New("daemon did not stop")
+	if !waitForDaemonStop(client, pid, timeout) {
+		if perr == nil {
+			_ = proc.Signal(syscall.SIGKILL)
+		}
+		if !waitForDaemonStop(client, pid, 2*time.Second) {
+			return daemonStopTimeoutError(pid)
+		}
 	}
 	return nil
 }
 
-func waitForDaemonStop(client *daemon.Client, timeout time.Duration) bool {
+func waitForDaemonStop(client *daemon.Client, pid int, timeout time.Duration) bool {
 	deadline := time.After(timeout)
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if !client.IsRunning() {
+		if !client.IsRunning() || !processExists(pid) {
 			return true
 		}
 		select {
@@ -561,6 +566,10 @@ func waitForDaemonStop(client *daemon.Client, timeout time.Duration) bool {
 		case <-tick.C:
 		}
 	}
+}
+
+func daemonStopTimeoutError(pid int) error {
+	return fmt.Errorf("daemon did not stop after SIGTERM and SIGKILL (pid %d). Run `gate daemon status --all`, then `kill -9 %d` if that process is still gate, and retry `gate daemon start` or `gate up -d`", pid, pid)
 }
 
 func daemonStartErrorMessage(waitErr error, childStderr string) string {

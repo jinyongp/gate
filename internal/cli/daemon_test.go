@@ -50,6 +50,16 @@ func TestDaemonStartReportsChildStderr(t *testing.T) {
 	}
 }
 
+func TestDaemonStopTimeoutErrorIncludesRecoveryHint(t *testing.T) {
+	err := daemonStopTimeoutError(12345)
+	got := err.Error()
+	for _, want := range []string{"daemon did not stop after SIGTERM and SIGKILL", "pid 12345", "gate daemon status --all", "kill -9 12345", "gate up -d"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("error missing %q: %q", want, got)
+		}
+	}
+}
+
 func TestDaemonStartCleansUpStartedDaemonWhenRouteReloadFails(t *testing.T) {
 	isolate(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())

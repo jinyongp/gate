@@ -116,7 +116,7 @@ func TestCompleteUpgradePrintsDoctorIssuesWithoutFailingUpgrade(t *testing.T) {
 	}
 }
 
-func TestCompleteUpgradeAttemptsAllRestartsAfterFailure(t *testing.T) {
+func TestCompleteUpgradeWarnsAndContinuesAfterRestartFailure(t *testing.T) {
 	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
@@ -132,17 +132,17 @@ func TestCompleteUpgradeAttemptsAllRestartsAfterFailure(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}, {PID: 456}})
-	if code != ExitError {
-		t.Fatalf("completeUpgrade exit = %d, want first failure", code)
+	if code != ExitOK {
+		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
 	if len(restarted) != 2 || restarted[0] != 123 || restarted[1] != 456 {
 		t.Fatalf("restarted = %v", restarted)
 	}
-	if strings.Contains(out.String(), "upgrade complete") {
-		t.Fatalf("success printed after partial failure: %q", out.String())
+	if !strings.Contains(out.String(), "upgrade complete") || !strings.Contains(out.String(), "doctor") {
+		t.Fatalf("stdout missing completion or doctor: %q", out.String())
 	}
-	if strings.Contains(out.String(), "doctor") {
-		t.Fatalf("doctor should not run after failed restart: %q", out.String())
+	if !strings.Contains(errb.String(), "daemon restart after upgrade failed") || !strings.Contains(errb.String(), "gate daemon restart") {
+		t.Fatalf("stderr missing restart warning: %q", errb.String())
 	}
 }
 
@@ -444,6 +444,37 @@ func TestRestartDaemonAfterUpgradeReloadsListenerRoutes(t *testing.T) {
 		t.Fatal("daemon pid did not change after restart")
 	}
 	_ = stopDaemonProcess(daemonClientForRef(ref), newStatus.PID, 2*time.Second)
+}
+
+func TestRestartDaemonAfterUpgradeStartFailurePrintsRecoveryHint(t *testing.T) {
+	isolate(t)
+	oldNewDaemonServeCommand := newDaemonServeCommand
+	t.Cleanup(func() { newDaemonServeCommand = oldNewDaemonServeCommand })
+	newDaemonServeCommand = func(_, _, _, _ string) *exec.Cmd {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: test launches this same test binary as a helper process.
+		cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+		cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=1")
+		return cmd
+	}
+
+	var out, errb bytes.Buffer
+	st := daemon.Status{PID: 999999, HTTPSAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0"}
+	if code := restartDaemonAfterUpgrade(st, &out, &errb); code != ExitOK {
+		t.Fatalf("restartDaemonAfterUpgrade exit = %d, stderr=%s", code, errb.String())
+	}
+	got := errb.String()
+	for _, want := range []string{"failed to restart daemon after upgrade", "gate daemon restart", "gate daemon stop", "gate up -d"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stderr missing %q: %q", want, got)
+		}
+	}
+	if strings.Contains(out.String(), "daemon restarted") {
+		t.Fatalf("stdout should not report restart success: %q", out.String())
+	}
 }
 
 func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {

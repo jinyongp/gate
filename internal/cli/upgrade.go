@@ -255,14 +255,10 @@ func daemonStatusesBeforeUpgrade() []daemon.Status {
 }
 
 func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status) int {
-	code := ExitOK
 	for _, st := range daemonsBefore {
-		if nextCode := restartDaemonAfterUpgradeFunc(st, stdout, stderr); nextCode != ExitOK && code == ExitOK {
-			code = nextCode
+		if nextCode := restartDaemonAfterUpgradeFunc(st, stdout, stderr); nextCode != ExitOK {
+			printUpgradeDaemonRestartWarning(stderr, "daemon restart after upgrade failed")
 		}
-	}
-	if code != ExitOK {
-		return code
 	}
 	printUpgradeStatus(stdout, "upgrade complete")
 	printDoctorAfterUpgrade(stdout)
@@ -298,7 +294,8 @@ func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 	activity := startActivity(stderr, false, "restarting daemon")
 	if err := stopDaemonProcess(client, st.PID, 5*time.Second); err != nil {
 		activity.Stop()
-		return fail(stderr, false, ExitError, "upgrade", "failed to restart daemon: "+err.Error())
+		printUpgradeDaemonRestartWarning(stderr, "failed to restart daemon after upgrade: "+err.Error())
+		return ExitOK
 	}
 
 	httpsAddr := restartListenAddr(st.HTTPSAddr, defaultDaemonHTTPSAddr)
@@ -309,16 +306,22 @@ func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), httpsAddr, httpAddr), client, ref)
 	if result.Code != ExitOK {
 		activity.Stop()
-		return fail(stderr, false, result.Code, "upgrade", "failed to restart daemon: "+result.Message)
+		printUpgradeDaemonRestartWarning(stderr, "failed to restart daemon after upgrade: "+result.Message)
+		return ExitOK
 	}
 	if err := setListenerRoutesForRef(ref); err != nil {
 		cleanupStartedDaemon(client, ref, result.PID)
 		activity.Stop()
-		return fail(stderr, false, ExitError, "upgrade", "failed to reload daemon routes: "+err.Error())
+		printUpgradeDaemonRestartWarning(stderr, "failed to reload daemon routes after upgrade: "+err.Error())
+		return ExitOK
 	}
 	activity.Complete()
 	printDaemonRunResult(stdout, "daemon restarted", result.PID, httpsAddr, httpAddr)
 	return ExitOK
+}
+
+func printUpgradeDaemonRestartWarning(stderr io.Writer, msg string) {
+	printWarning(stderr, msg+"; run `gate daemon restart` or `gate daemon stop` then `gate up -d`")
 }
 
 func listenerRefFromDaemonStatus(st daemon.Status) listenerDaemonRef {

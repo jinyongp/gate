@@ -838,9 +838,11 @@ logs unless the install command fails.
 After a successful upgrade, gate restarts any daemons that were running before
 the upgrade and automatically runs `doctor`. Any remaining issues are reported
 in the upgrade output with the matching `gate doctor --fix` repair hint, but
-they do not turn a successful upgrade into an upgrade failure. If gate is
-already up to date, it prints the up-to-date status and exits without restarting
-daemons or running `doctor`.
+they do not turn a successful upgrade into an upgrade failure. Daemon restart
+failures are reported as warnings with the manual `gate daemon restart` or
+`gate daemon stop` / `gate up -d` recovery command. If gate is already up to
+date, it prints the up-to-date status and exits without restarting daemons or
+running `doctor`.
 
 Skip confirmation:
 
