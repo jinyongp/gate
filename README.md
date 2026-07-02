@@ -30,8 +30,24 @@ Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
 and internals, see [docs/spec.md](docs/spec.md).
 
-JavaScript automation can install `@jinyongp/gate` for typed access to gate data and
-the package-provided `gate` binary. See the [Node guide](docs/usage.md#node).
+## JavaScript / Agents
+
+JavaScript tooling, dev-server launchers, and agents can install
+`@jinyongp/gate` instead of shelling out to a globally installed binary:
+
+```bash
+pnpm add -D @jinyongp/gate
+```
+
+The package provides:
+
+- typed access to service metadata through `createGateClient()`
+- the package-provided `gate` binary for portable automation
+- inline project config for generated or tool-owned setups
+- `isolatedRoot` for workspace-local agent state
+- `env()` and `run()` helpers for service env injection
+
+See the [Node guide](docs/usage.md#node).
 
 ## Upgrade
 
