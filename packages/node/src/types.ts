@@ -22,6 +22,7 @@ export interface GateClientOptions {
   bin?: string
   cwd?: string
   env?: NodeJS.ProcessEnv
+  isolatedRoot?: string
   signal?: AbortSignal
   timeoutMs?: number
 }
@@ -68,9 +69,24 @@ export interface GateServiceOptions extends GateUpOptions {
 export interface GateClient {
   up(options?: GateUpOptions): Promise<GateUpResult>
   service(name: string, options?: GateServiceOptions): Promise<GateService>
+  env(service: string, options?: GateServiceOptions): Promise<GateRunEnv>
+  run(service: string, command: readonly string[], options?: GateRunOptions): Promise<GateRunResult>
   port(service: string, options?: GateCommandOptions): Promise<number>
   ls(options?: GateCommandOptions): Promise<GateService[]>
   down(options?: GateCommandOptions): Promise<void>
+}
+
+export type GateRunEnv = Record<string, string>
+
+export interface GateRunOptions extends GateServiceOptions {
+  stdio?: 'inherit' | 'pipe'
+}
+
+export interface GateRunResult {
+  exitCode: number
+  signal?: NodeJS.Signals
+  stdout?: string
+  stderr?: string
 }
 
 export type GateErrorCode =
@@ -89,6 +105,7 @@ export interface GateErrorDetails {
   command?: string[]
   gateCode?: string
   exitCode?: number
+  signal?: NodeJS.Signals
   stdout?: string
   stderr?: string
   cause?: unknown

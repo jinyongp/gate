@@ -96,6 +96,56 @@ part of the Node API; load environment variables before calling gate if inline
 values use `${NAME}` or `${NAME:-fallback}` references.
 Custom domains still require `dns: 'hosts'` or `dns: 'preconfigured'`.
 
+Human-facing Node integrations should normally use the default gate state so
+they share the same registry, route, trust, and cache behavior as the `gate`
+CLI. Agent and sandboxed tooling can isolate gate state below a workspace-local,
+git-ignored runtime directory:
+
+```ts
+const gate = createGateClient({
+  cwd: process.cwd(),
+  isolatedRoot: '.gate-agent',
+})
+```
+
+`isolatedRoot` sets the gate subprocess environment to keep generated inline
+config, registry locks, daemon state, and trust material out of the user's home
+config, state, data, and cache directories.
+
+Use `env()` when another runner owns process spawning:
+
+```ts
+const env = await gate.env('web', {
+  scope: { config },
+})
+
+await someRunner.start({
+  env: {
+    ...process.env,
+    ...env,
+  },
+})
+```
+
+`env()` returns `PORT`, peer `GATE_<SERVICE>_PORT`,
+`GATE_<SERVICE>_URL`, `GATE_<SERVICE>_ROUTE_URL`, and service-declared
+`env` / `routeEnv` values from the selected config. Browser-visible variables
+still need framework-public names such as `VITE_API_BASE_URL` or
+`NEXT_PUBLIC_API_BASE_URL` in `routeEnv`.
+
+Use `run()` when the Node API should spawn the child and inject env itself:
+
+```ts
+await gate.run('web', ['pnpm', 'dev'], {
+  scope: { config },
+})
+```
+
+`run()` defaults to `stdio: 'inherit'` for human-readable dev-server logs.
+Agent callers that need structured diagnostics should use `stdio: 'pipe'`;
+non-zero exits throw `GateError` with `exitCode`, `command`, and captured
+stdout/stderr.
+
 ## Binary Resolution
 
 Use `resolveGateBinary()` when another process needs the concrete binary path:

@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { GateError } from './errors.js'
+import { gateOptionEnv } from './environment.js'
 import type {
   GateCommandOptions,
   GateInlineProjectConfig,
@@ -13,6 +14,11 @@ import type {
 export interface PreparedScope {
   args: string[]
   inlineConfigPath?: string
+}
+
+export interface ServiceEnvDeclaration {
+  env: string[]
+  routeEnv: string[]
 }
 
 export async function prepareScope(
@@ -132,6 +138,98 @@ export function inlineConfigToPreflightProject(config: GateInlineProjectConfig):
   return { base: config.base, services }
 }
 
+export async function serviceEnvDeclarations(
+  scope: GateScope | undefined,
+  options: GateCommandOptions = {},
+): Promise<Map<string, ServiceEnvDeclaration>> {
+  if (scope?.kind === 'global') {
+    return new Map()
+  }
+  if (isInlineProjectConfig(scope?.config)) {
+    validateInlineProjectScope(scope.project, scope.config)
+    return inlineServiceEnvDeclarations(scope.config)
+  }
+
+  const path = await resolveDeclarationConfigPath(scope, options)
+  if (!path) {
+    return new Map()
+  }
+  const body = await readFile(path, 'utf8')
+  if (scope?.project && parseProjectName(body) !== scope.project) {
+    return new Map()
+  }
+  return parseServiceEnvDeclarations(body)
+}
+
+function parseProjectName(body: string): string | undefined {
+  let inProjectSection = false
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = stripTomlComment(rawLine).trim()
+    if (!line) {
+      continue
+    }
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/)
+    if (sectionMatch) {
+      inProjectSection = sectionMatch[1] === 'project'
+      continue
+    }
+    if (!inProjectSection) {
+      continue
+    }
+    const keyValue = line.match(/^name\s*=\s*(.+)$/)
+    const value = keyValue?.[1]?.trim()
+    if (value) {
+      return parseTomlStringList(value)[0]
+    }
+  }
+  return undefined
+}
+
+export function parseServiceEnvDeclarations(body: string): Map<string, ServiceEnvDeclaration> {
+  const declarations = new Map<string, ServiceEnvDeclaration>()
+  let serviceName: string | undefined
+
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = stripTomlComment(rawLine).trim()
+    if (!line) {
+      continue
+    }
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/)
+    if (sectionMatch) {
+      const sectionName = sectionMatch[1] ?? ''
+      if (sectionName.startsWith('services.')) {
+        serviceName = sectionName.slice('services.'.length).replace(/^['"]|['"]$/g, '')
+        ensureServiceEnvDeclaration(declarations, serviceName)
+      } else {
+        serviceName = undefined
+      }
+      continue
+    }
+    if (!serviceName) {
+      continue
+    }
+
+    const keyValue = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/)
+    if (!keyValue) {
+      continue
+    }
+    const key = keyValue[1]
+    const value = keyValue[2]?.trim()
+    if (!value) {
+      continue
+    }
+    const declaration = ensureServiceEnvDeclaration(declarations, serviceName)
+    if (key === 'env') {
+      declaration.env = parseTomlStringList(value)
+    }
+    if (key === 'route_env') {
+      declaration.routeEnv = parseTomlStringList(value)
+    }
+  }
+
+  return declarations
+}
+
 function validateGlobalScope(scope: GateScope): void {
   const candidate = scope as { config?: unknown; project?: unknown }
   if (candidate.config !== undefined) {
@@ -212,6 +310,106 @@ function validateServiceEnv(serviceName: string, env: string | string[], field =
   }
 }
 
+function inlineServiceEnvDeclarations(
+  config: GateInlineProjectConfig,
+): Map<string, ServiceEnvDeclaration> {
+  validateInlineProjectConfig(config)
+  const declarations = new Map<string, ServiceEnvDeclaration>()
+  for (const [serviceName, service] of Object.entries(config.services)) {
+    declarations.set(serviceName, {
+      env: normalizeEnvList(service.env),
+      routeEnv: normalizeEnvList(service.routeEnv),
+    })
+  }
+  return declarations
+}
+
+async function resolveDeclarationConfigPath(
+  scope: GateScope | undefined,
+  options: GateCommandOptions,
+): Promise<string | undefined> {
+  const cwd = resolve(options.cwd ?? process.cwd())
+  if (scope?.kind !== 'global' && typeof scope?.config === 'string') {
+    return resolve(cwd, scope.config)
+  }
+  return await findUpFile('gate.toml', cwd)
+}
+
+async function findUpFile(fileName: string, start: string): Promise<string | undefined> {
+  let current = resolve(start)
+
+  while (true) {
+    const candidate = resolve(current, fileName)
+    try {
+      await access(candidate)
+      return candidate
+    } catch {
+      // Keep walking upward.
+    }
+    const parent = dirname(current)
+    if (parent === current) {
+      return undefined
+    }
+    current = parent
+  }
+}
+
+function ensureServiceEnvDeclaration(
+  declarations: Map<string, ServiceEnvDeclaration>,
+  serviceName: string,
+): ServiceEnvDeclaration {
+  const existing = declarations.get(serviceName)
+  if (existing) {
+    return existing
+  }
+  const declaration = { env: [], routeEnv: [] }
+  declarations.set(serviceName, declaration)
+  return declaration
+}
+
+function normalizeEnvList(value: string | string[] | undefined): string[] {
+  if (value === undefined) {
+    return []
+  }
+  return typeof value === 'string' ? [value] : value
+}
+
+function parseTomlStringList(value: string): string[] {
+  if (value.startsWith('[')) {
+    const out: string[] = []
+    const pattern = /'([^']*)'|"((?:\\.|[^"\\])*)"/g
+    for (const match of value.matchAll(pattern)) {
+      out.push(match[1] ?? unescapeTomlBasicString(match[2] ?? ''))
+    }
+    return out
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
+    return [value.slice(1, -1)]
+  }
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return [unescapeTomlBasicString(value.slice(1, -1))]
+  }
+  return []
+}
+
+function stripTomlComment(line: string): string {
+  let quote: "'" | '"' | undefined
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]
+    if ((char === "'" || char === '"') && line[index - 1] !== '\\') {
+      quote = quote === char ? undefined : (quote ?? char)
+    }
+    if (char === '#' && !quote) {
+      return line.slice(0, index)
+    }
+  }
+  return line
+}
+
+function unescapeTomlBasicString(value: string): string {
+  return value.replace(/\\(["\\])/g, '$1')
+}
+
 function tomlKey(value: string): string {
   return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value)
 }
@@ -240,7 +438,7 @@ function stableStringify(value: unknown): string {
 }
 
 function resolveInlineConfigCacheRoot(options: GateCommandOptions): string {
-  const env = { ...process.env, ...options.env }
+  const env = { ...process.env, ...gateOptionEnv(options) }
   if (env.GATE_NODE_CACHE_DIR) {
     return resolve(env.GATE_NODE_CACHE_DIR, 'inline-config')
   }

@@ -3,3 +3,7 @@ name = "node-service-basic"
 base = "node-service-basic.localhost"
 
 [services.web]
+
+[services.api]
+env = "API_URL"
+route_env = "PUBLIC_API_URL"

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { GateError } from './errors.js'
 import type { GateCommandOptions, GateDNSMode } from './types.js'
 import { resolveGateBinary } from './binary.js'
+import { gateProcessEnv } from './environment.js'
 
 export interface CommandResult {
   stdout: string
@@ -21,7 +22,7 @@ export async function runGate(
 ): Promise<CommandResult> {
   const bin = resolveGateBinary(options)
   const command = [bin, ...args]
-  const env = { ...process.env, ...options.env }
+  const env = gateProcessEnv(options)
 
   return await new Promise<CommandResult>((resolve, reject) => {
     const timeoutController = options.timeoutMs ? new AbortController() : undefined
@@ -121,7 +122,10 @@ function parseGateError(stderr: string): { code?: string; message?: string } | u
   }
 }
 
-function composeSignals(primary?: AbortSignal, secondary?: AbortSignal): AbortSignal | undefined {
+export function composeSignals(
+  primary?: AbortSignal,
+  secondary?: AbortSignal,
+): AbortSignal | undefined {
   if (!primary) {
     return secondary
   }

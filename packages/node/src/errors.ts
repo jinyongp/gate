@@ -16,6 +16,7 @@ export class GateError extends Error {
   readonly command: string[]
   readonly gateCode?: string
   readonly exitCode?: number
+  readonly signal?: NodeJS.Signals
   readonly stdout?: string
   readonly stderr?: string
 
@@ -26,6 +27,7 @@ export class GateError extends Error {
     this.command = details.command ?? []
     this.gateCode = details.gateCode
     this.exitCode = details.exitCode
+    this.signal = details.signal
     this.stdout = details.stdout
     this.stderr = details.stderr
   }
