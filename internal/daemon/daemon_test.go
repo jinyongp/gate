@@ -37,7 +37,7 @@ func TestAdminStatusAndRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if !st.Running || st.Routes != 0 {
+	if !st.Running || st.Status != "running" || !st.PIDAlive || st.Routes != 0 {
 		t.Fatalf("status = %+v", st)
 	}
 

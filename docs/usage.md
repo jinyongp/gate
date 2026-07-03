@@ -250,7 +250,7 @@ Example JSON shape:
       "code": "daemon_not_running",
       "severity": "fixable",
       "message": "listener daemon is not running",
-      "suggestedCommand": "gate up --daemon"
+      "suggestedCommand": "gate up --daemon --project myapp"
     }
   ]
 }
@@ -259,7 +259,8 @@ Example JSON shape:
 `standalone: true` appears for global reservations. `project` is omitted when
 the service is not project-scoped. Consumers should ignore unknown fields.
 Descriptor fields are additive across minor releases; existing field types and
-meanings are stable.
+meanings are stable. Daemon diagnostic commands preserve the selected scope and
+may include `--config`, `--global`, `--https-addr`, or `--http-addr` when needed.
 
 Open:
 
@@ -673,8 +674,7 @@ error envelope:
     "hint": "Run `gate up` for the selected scope, or pass `--up` to commands that support it.",
     "nextActions": [
       {
-        "label": "Bring up routes",
-        "command": "gate up"
+        "label": "Bring up routes"
       }
     ]
   }
@@ -683,7 +683,8 @@ error envelope:
 
 `code` and `message` are always present. `severity`, `retryable`, `hint`, and
 `nextActions` are intended for scripts and agents; consumers should ignore
-unknown fields.
+unknown fields. `nextActions.command` is optional and omitted when gate cannot
+encode the selected scope safely.
 
 Some longer operations show a one-line activity indicator on stderr when stderr
 is an interactive terminal. Indicators never appear in JSON mode or when stderr

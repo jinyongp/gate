@@ -135,6 +135,29 @@ func TestDoctorReportsFutureRegistrySchemaWithoutFixing(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsRegistryReadError(t *testing.T) {
+	configDir, _ := isolateDoctor(t)
+	registryPath := filepath.Join(configDir, "registry.json")
+	if err := os.MkdirAll(registryPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Doctor([]string{"--json"}, &out, &errb); code != ExitError {
+		t.Fatalf("Doctor exit = %d, stderr=%s", code, errb.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if report.OK || len(report.Issues) != 1 || report.Issues[0].Code != "registry_read_error" {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if report.Issues[0].Error == "" || report.Issues[0].Severity != "fatal" {
+		t.Fatalf("unexpected registry read issue: %+v", report.Issues[0])
+	}
+}
+
 func TestDoctorReportsRegistryIntegrityIssueCodes(t *testing.T) {
 	configDir, _ := isolateDoctor(t)
 	registryPath := filepath.Join(configDir, "registry.json")
@@ -486,6 +509,16 @@ func TestClassifyDoctorIssueWithFixErrorDoesNotSuggestRetry(t *testing.T) {
 	}
 	if issue.SuggestedCommand != "" {
 		t.Fatalf("failed fix should not suggest immediate retry: %+v", issue)
+	}
+}
+
+func TestClassifyDoctorPermissionError(t *testing.T) {
+	issue := classifyDoctorIssue(doctorIssue{
+		Code:  "stale_scoped_pid_files",
+		Error: "remove /tmp/gate/project-demo.pid: permission denied",
+	})
+	if issue.Severity != "permission" || !issue.RequiresPrivilege || !issue.Fixable || issue.SuggestedCommand != "" {
+		t.Fatalf("permission classification = %+v", issue)
 	}
 }
 

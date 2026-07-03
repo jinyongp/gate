@@ -16,6 +16,7 @@ import (
 
 	"gate/internal/config"
 	"gate/internal/dns"
+	"gate/internal/listener"
 	"gate/internal/port"
 	"gate/internal/proxy"
 	"gate/internal/registry"
@@ -1213,10 +1214,60 @@ func runDescriptorDaemonStatus(res registry.Reservation) (runDaemonStatus, []run
 			Code:             "daemon_not_running",
 			Severity:         "fixable",
 			Message:          "listener daemon is not running",
-			SuggestedCommand: "gate up --daemon",
+			SuggestedCommand: gateUpDaemonCommand(res, ref),
 		})
 	}
 	return out, diagnostics
+}
+
+func gateUpDaemonCommand(res registry.Reservation, ref listenerDaemonRef) string {
+	args := []string{"gate", "up", "--daemon"}
+	switch {
+	case res.Standalone:
+		args = append(args, "--global")
+	case strings.TrimSpace(res.ConfigPath) != "":
+		args = append(args, "--config", res.ConfigPath)
+	case strings.TrimSpace(res.Project) != "":
+		args = append(args, "--project", res.Project)
+	}
+	if !listener.Equivalent(ref.Pair, listener.DefaultPair()) {
+		args = append(args, "--https-addr", ref.Pair.HTTPSAddr, "--http-addr", ref.Pair.HTTPAddr)
+	}
+	return shellCommand(args)
+}
+
+func shellCommand(args []string) string {
+	quoted := make([]string, 0, len(args))
+	for _, arg := range args {
+		quoted = append(quoted, shellQuote(arg))
+	}
+	return strings.Join(quoted, " ")
+}
+
+func shellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if strings.IndexFunc(arg, shellUnsafeRune) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+}
+
+func shellUnsafeRune(r rune) bool {
+	if r == '-' || r == '_' || r == '.' || r == '/' || r == ':' {
+		return false
+	}
+	if r >= '0' && r <= '9' {
+		return false
+	}
+	if r >= 'A' && r <= 'Z' {
+		return false
+	}
+	if r >= 'a' && r <= 'z' {
+		return false
+	}
+	return true
 }
 
 func runEnvMapForScope(sel registryScopeSelection) (map[string]string, error) {

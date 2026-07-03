@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -314,6 +315,7 @@ func canonicalFlagName(names string) string {
 // caller proceeds with fs.Args(). name need not be in Specs (sub-actions like
 // "daemon status" render without a summary).
 func parseFlags(fs *flag.FlagSet, name string, argv []string, stdout, stderr io.Writer) (handled bool, code int) {
+	jsonOut := argvHasJSONFlag(fs, argv)
 	for _, a := range argv {
 		if a == "--" {
 			break
@@ -324,13 +326,43 @@ func parseFlags(fs *flag.FlagSet, name string, argv []string, stdout, stderr io.
 			return true, ExitOK
 		}
 	}
-	fs.SetOutput(stderr)
-	fs.Usage = func() { usageLine(stderr, name) }
+	var errb bytes.Buffer
+	fs.SetOutput(&errb)
+	fs.Usage = func() { usageLine(&errb, name) }
 	argv = normalizeFlags(fs, argv)
 	if err := fs.Parse(argv); err != nil {
+		message := strings.TrimSpace(errb.String())
+		if message == "" {
+			message = err.Error()
+		}
+		if jsonOut {
+			return true, fail(stderr, true, ExitUsage, "usage", message)
+		}
+		_, _ = io.Copy(stderr, &errb)
 		return true, ExitUsage
 	}
 	return false, 0
+}
+
+func argvHasJSONFlag(fs *flag.FlagSet, argv []string) bool {
+	if fs.Lookup("json") == nil {
+		return false
+	}
+	for _, arg := range argv {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--json" || arg == "-json" {
+			return true
+		}
+		if value, ok := strings.CutPrefix(arg, "--json="); ok {
+			return value != "false" && value != "0"
+		}
+		if value, ok := strings.CutPrefix(arg, "-json="); ok {
+			return value != "false" && value != "0"
+		}
+	}
+	return false
 }
 
 func normalizeFlags(fs *flag.FlagSet, argv []string) []string {

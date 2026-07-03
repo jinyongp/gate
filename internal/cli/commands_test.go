@@ -12,6 +12,7 @@ import (
 
 	"gate/internal/dns"
 	"gate/internal/expose"
+	"gate/internal/listener"
 	"gate/internal/proxy"
 	"gate/internal/registry"
 	"gate/internal/ui/uitest"
@@ -163,9 +164,27 @@ func TestAddDomainConflictJSONErrorEnvelope(t *testing.T) {
 }
 
 func TestTransientJSONErrorEnvelopeIsRetryable(t *testing.T) {
-	body := errorBodyFor(ExitError, "daemon_start", "daemon failed")
-	if !body.Retryable {
-		t.Fatalf("daemon_start should be retryable: %+v", body)
+	if body := errorBodyFor(ExitError, "reload_failed", "reload failed"); !body.Retryable {
+		t.Fatalf("reload_failed should be retryable: %+v", body)
+	}
+	if body := errorBodyFor(ExitConflict, "daemon_start", "daemon already running"); body.Retryable {
+		t.Fatalf("daemon_start conflict should not be retryable: %+v", body)
+	}
+}
+
+func TestScopeSensitiveJSONErrorActionsOmitCommands(t *testing.T) {
+	for _, code := range []string{"not_allocated", "no_service"} {
+		t.Run(code, func(t *testing.T) {
+			body := errorBodyFor(ExitError, code, "failed")
+			if len(body.NextActions) == 0 {
+				t.Fatalf("next actions missing: %+v", body)
+			}
+			for _, action := range body.NextActions {
+				if action.Command != "" {
+					t.Fatalf("%s action should not carry unsafe command: %+v", code, action)
+				}
+			}
+		})
 	}
 }
 
@@ -1636,6 +1655,29 @@ func TestEnvJSONReturnsSelectedServiceAndEnv(t *testing.T) {
 	}
 }
 
+func TestEnvJSONFlagParseErrorUsesEnvelope(t *testing.T) {
+	setupProject(t)
+	var out, errb bytes.Buffer
+	if code := Env([]string{"--json", "--bad", "web"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("Env exit = %d, want %d", code, ExitUsage)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("json parse error should not write stdout: %s", out.String())
+	}
+	var env struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(errb.Bytes(), &env); err != nil {
+		t.Fatalf("stderr not JSON: %v\n%s", err, errb.String())
+	}
+	if env.Error.Code != "usage" || !strings.Contains(env.Error.Message, "flag provided but not defined") {
+		t.Fatalf("error envelope = %+v", env.Error)
+	}
+}
+
 func TestEnvJSONReportsDaemonDiagnosticForActiveRoute(t *testing.T) {
 	setupProject(t)
 	var out, errb bytes.Buffer
@@ -1651,6 +1693,38 @@ func TestEnvJSONReportsDaemonDiagnosticForActiveRoute(t *testing.T) {
 	}
 	if len(got.Diagnostics) != 1 || got.Diagnostics[0].Code != "daemon_not_running" || got.Diagnostics[0].Severity != "fixable" {
 		t.Fatalf("diagnostics = %+v", got.Diagnostics)
+	}
+}
+
+func TestEnvJSONDaemonDiagnosticPreservesScopeAndListener(t *testing.T) {
+	setupProject(t)
+	pair := listener.Pair{HTTPSAddr: "127.0.0.1:18443", HTTPAddr: "127.0.0.1:18080"}
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		res, ok := r.Get(registry.Key("demo", "web"))
+		if !ok {
+			t.Fatal("missing demo/web reservation")
+		}
+		res.Active = true
+		res.SetListenerPair(pair)
+		return r.Reserve(res)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Env([]string{"web", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Env --json exit = %d, stderr=%s", code, errb.String())
+	}
+	var got runDescriptor
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if len(got.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %+v", got.Diagnostics)
+	}
+	want := "gate up --daemon --project demo --https-addr 127.0.0.1:18443 --http-addr 127.0.0.1:18080"
+	if got.Diagnostics[0].SuggestedCommand != want {
+		t.Fatalf("suggested command = %q, want %q", got.Diagnostics[0].SuggestedCommand, want)
 	}
 }
 

@@ -123,7 +123,7 @@ func errorSeverity(exitCode int, code string) string {
 
 func errorRetryable(code string) bool {
 	switch code {
-	case "daemon_start", "reload_failed", "up_failed", "dns_failed":
+	case "reload_failed", "up_failed", "dns_failed":
 		return true
 	default:
 		return false
@@ -152,9 +152,9 @@ func errorHint(code string) string {
 func errorNextActions(code string) []nextAction {
 	switch code {
 	case "not_allocated":
-		return []nextAction{{Label: "Bring up routes", Command: "gate up"}, {Label: "List services", Command: "gate ls --json"}}
+		return []nextAction{{Label: "Bring up routes"}, {Label: "List services"}}
 	case "no_service":
-		return []nextAction{{Label: "List services", Command: "gate ls --json"}}
+		return []nextAction{{Label: "List services"}}
 	case "permission":
 		return []nextAction{{Label: "Check setup", Command: "gate doctor --json"}}
 	case "daemon_start", "reload_failed":

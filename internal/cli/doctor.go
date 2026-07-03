@@ -85,9 +85,12 @@ func runDoctorChecks(fix bool) []doctorIssue {
 	if issue, ok := checkLegacyDaemonState(fix); ok {
 		issues = append(issues, issue)
 	}
-	issues = append(issues, checkRegistryIntegrity()...)
-	if issue, ok := checkLegacyRegistryAdhoc(fix); ok {
-		issues = append(issues, issue)
+	registryIssues := checkRegistryIntegrity()
+	issues = append(issues, registryIssues...)
+	if len(registryIssues) == 0 {
+		if issue, ok := checkLegacyRegistryAdhoc(fix); ok {
+			issues = append(issues, issue)
+		}
 	}
 	issues = append(issues, checkStaleServiceReservations()...)
 	var staleScopedPIDPaths []string
@@ -95,12 +98,8 @@ func runDoctorChecks(fix bool) []doctorIssue {
 		staleScopedPIDPaths = issue.Paths
 		issues = append(issues, issue)
 	}
-	if issue, ok := checkOldScopedDaemonState(fix); ok {
-		issue.Paths = pathsWithout(issue.Paths, staleScopedPIDPaths)
-		if len(issue.Paths) > 0 || issue.Error != "" {
-			issue.Message = fmt.Sprintf("%d old scoped daemon file(s) found", len(issue.Paths))
-			issues = append(issues, issue)
-		}
+	if issue, ok := checkOldScopedDaemonState(fix, staleScopedPIDPaths); ok {
+		issues = append(issues, issue)
 	}
 	for i := range issues {
 		issues[i] = classifyDoctorIssue(issues[i])
@@ -139,6 +138,10 @@ func classifyDoctorIssue(issue doctorIssue) doctorIssue {
 	}
 	if issue.Fixed {
 		issue.Fixable = true
+	}
+	if doctorErrorPermission(issue.Error) {
+		issue.Severity = "permission"
+		issue.RequiresPrivilege = true
 	}
 	if issue.Error != "" {
 		issue.SuggestedCommand = ""
@@ -197,6 +200,16 @@ func checkRegistryIntegrity() []doctorIssue {
 			Paths:   []string{registryPath},
 		}}
 	}
+	var syntax *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &syntax) || errors.As(err, &typeErr) {
+		return []doctorIssue{{
+			Code:    "registry_invalid_json",
+			Message: "registry JSON is invalid",
+			Paths:   []string{registryPath},
+			Error:   err.Error(),
+		}}
+	}
 	var integrity *registry.IntegrityError
 	if errors.As(err, &integrity) {
 		issues := make([]doctorIssue, 0, len(integrity.Issues))
@@ -209,7 +222,12 @@ func checkRegistryIntegrity() []doctorIssue {
 		}
 		return issues
 	}
-	return nil
+	return []doctorIssue{{
+		Code:    "registry_read_error",
+		Message: "registry could not be read",
+		Paths:   []string{registryPath},
+		Error:   err.Error(),
+	}}
 }
 
 func doctorReportOK(report doctorReport) bool {
@@ -549,11 +567,12 @@ func checkStaleScopedPIDs(fix bool) (doctorIssue, bool) {
 	return issue, true
 }
 
-func checkOldScopedDaemonState(fix bool) (doctorIssue, bool) {
+func checkOldScopedDaemonState(fix bool, excludePaths []string) (doctorIssue, bool) {
 	files, err := oldScopedDaemonFiles()
 	if err != nil {
 		return doctorIssue{Code: "old_scoped_daemon_scan_error", Message: "old scoped daemon state could not be read", Error: err.Error()}, true
 	}
+	files = pathsWithout(files, excludePaths)
 	if len(files) == 0 {
 		return doctorIssue{}, false
 	}
@@ -678,6 +697,11 @@ func containsPath(paths []string, path string) bool {
 		}
 	}
 	return false
+}
+
+func doctorErrorPermission(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "permission denied") || strings.Contains(message, "operation not permitted")
 }
 
 func pathsWithout(paths []string, excluded []string) []string {

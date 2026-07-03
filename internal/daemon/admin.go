@@ -47,7 +47,9 @@ func adminHandlerWithListen(srv *proxy.Server, started time.Time, httpsAddr, htt
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, Status{
+			Status:    "running",
 			Running:   true,
+			PIDAlive:  true,
 			PID:       os.Getpid(),
 			Routes:    srv.RouteCount(),
 			UptimeSec: int64(time.Since(started).Seconds()),
