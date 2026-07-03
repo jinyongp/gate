@@ -107,15 +107,37 @@ function errorFromGateFailure(
     message: gateEnvelope?.message ?? (stderr.trim() || `gate exited with code ${exitCode}`),
     command,
     gateCode: gateEnvelope?.code,
+    severity: gateEnvelope?.severity,
+    retryable: gateEnvelope?.retryable,
+    hint: gateEnvelope?.hint,
+    nextActions: gateEnvelope?.nextActions,
     exitCode,
     stdout,
     stderr,
   })
 }
 
-function parseGateError(stderr: string): { code?: string; message?: string } | undefined {
+function parseGateError(stderr: string):
+  | {
+      code?: string
+      message?: string
+      severity?: string
+      retryable?: boolean
+      hint?: string
+      nextActions?: Array<{ label: string; command?: string }>
+    }
+  | undefined {
   try {
-    const parsed = JSON.parse(stderr) as { error?: { code?: string; message?: string } }
+    const parsed = JSON.parse(stderr) as {
+      error?: {
+        code?: string
+        message?: string
+        severity?: string
+        retryable?: boolean
+        hint?: string
+        nextActions?: Array<{ label: string; command?: string }>
+      }
+    }
     return parsed.error
   } catch {
     return undefined

@@ -60,12 +60,21 @@ func writeJSON(w io.Writer, v any) int {
 }
 
 type errBody struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code        string       `json:"code"`
+	Message     string       `json:"message"`
+	Severity    string       `json:"severity,omitempty"`
+	Retryable   bool         `json:"retryable"`
+	Hint        string       `json:"hint,omitempty"`
+	NextActions []nextAction `json:"nextActions,omitempty"`
 }
 
 type errEnvelope struct {
 	Error errBody `json:"error"`
+}
+
+type nextAction struct {
+	Label   string `json:"label"`
+	Command string `json:"command,omitempty"`
 }
 
 // fail reports an error: a JSON envelope on stderr under --json, else a plain
@@ -74,13 +83,85 @@ func fail(stderr io.Writer, jsonOut bool, code int, errCode, msg string) int {
 	switch {
 	case jsonOut:
 		enc := json.NewEncoder(stderr)
-		_ = enc.Encode(errEnvelope{Error: errBody{Code: errCode, Message: msg}})
+		_ = enc.Encode(errEnvelope{Error: errorBodyFor(code, errCode, msg)})
 	case richOut(stderr, false):
 		fmt.Fprintf(stderr, "%s %s\n", ui.Tint(ui.Danger, "gate:"), msg)
 	default:
 		fmt.Fprintf(stderr, "gate: %s\n", msg)
 	}
 	return code
+}
+
+func errorBodyFor(exitCode int, code, msg string) errBody {
+	body := errBody{
+		Code:      code,
+		Message:   msg,
+		Severity:  errorSeverity(exitCode, code),
+		Retryable: errorRetryable(code),
+		Hint:      errorHint(code),
+	}
+	body.NextActions = errorNextActions(code)
+	return body
+}
+
+func errorSeverity(exitCode int, code string) string {
+	switch {
+	case exitCode == ExitPerm:
+		return "permission"
+	case exitCode == ExitConflict:
+		return "fixable"
+	case exitCode == ExitUsage:
+		return "fatal"
+	case strings.Contains(code, "permission"):
+		return "permission"
+	case strings.Contains(code, "conflict"), strings.Contains(code, "not_allocated"), strings.Contains(code, "not_active"):
+		return "fixable"
+	default:
+		return "fatal"
+	}
+}
+
+func errorRetryable(code string) bool {
+	switch code {
+	case "daemon_start", "reload_failed", "up_failed", "dns_failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func errorHint(code string) string {
+	switch code {
+	case "not_allocated":
+		return "Run `gate up` for the selected scope, or pass `--up` to commands that support it."
+	case "no_service":
+		return "Check the service name in gate.toml or list the selected scope."
+	case "bad_scope":
+		return "Use one of --config, --project, --global, or --all where supported."
+	case "permission":
+		return "Run the suggested gate command outside the sandbox or with the required privilege."
+	case "daemon_start":
+		return "Check the requested listener addresses or stop the conflicting daemon first."
+	case "reload_failed":
+		return "Check `gate daemon status --json` and restart the daemon if needed."
+	default:
+		return ""
+	}
+}
+
+func errorNextActions(code string) []nextAction {
+	switch code {
+	case "not_allocated":
+		return []nextAction{{Label: "Bring up routes", Command: "gate up"}, {Label: "List services", Command: "gate ls --json"}}
+	case "no_service":
+		return []nextAction{{Label: "List services", Command: "gate ls --json"}}
+	case "permission":
+		return []nextAction{{Label: "Check setup", Command: "gate doctor --json"}}
+	case "daemon_start", "reload_failed":
+		return []nextAction{{Label: "Inspect daemon", Command: "gate daemon status --json"}}
+	default:
+		return nil
+	}
 }
 
 func printSuccess(stdout io.Writer, msg string) {

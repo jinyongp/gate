@@ -271,6 +271,12 @@ func daemonClientForRef(ref daemonStateRef) *daemon.Client {
 
 func allListenerRefs() ([]listenerDaemonRef, error) {
 	seen := map[string]listenerDaemonRef{defaultListenerRef().fileKey(): defaultListenerRef()}
+	if reg, err := registryStore().Read(); err == nil {
+		for _, key := range reg.Keys() {
+			ref := listenerRefFor(reg.Services[key].ListenerPair())
+			seen[ref.fileKey()] = ref
+		}
+	}
 	for _, dir := range []string{
 		filepath.Join(paths.RuntimeDir(), "daemons"),
 		filepath.Join(paths.ConfigDir(), "daemons"),
@@ -289,6 +295,9 @@ func allListenerRefs() ([]listenerDaemonRef, error) {
 			}
 			listenerKey := listener.Key(strings.TrimPrefix(key, "listener-"))
 			ref := listenerDaemonRef{Key: listenerKey, Pair: listenerPairForKey(listenerKey)}
+			if existing, ok := seen[ref.fileKey()]; ok && listenerPairKnown(existing.Pair) && !listenerPairKnown(ref.Pair) {
+				continue
+			}
 			seen[ref.fileKey()] = ref
 		}
 	}
@@ -319,6 +328,10 @@ func listenerPairForKey(key listener.Key) listener.Pair {
 		return listener.Pair{}
 	}
 	return listener.Pair{HTTPSAddr: ":" + httpsPort, HTTPAddr: ":" + httpPort}
+}
+
+func listenerPairKnown(pair listener.Pair) bool {
+	return strings.TrimSpace(pair.HTTPSAddr) != "" && strings.TrimSpace(pair.HTTPAddr) != ""
 }
 
 func listenerPortKey(key string) (string, bool) {

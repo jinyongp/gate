@@ -70,7 +70,13 @@ export interface GateClient {
   up(options?: GateUpOptions): Promise<GateUpResult>
   service(name: string, options?: GateServiceOptions): Promise<GateService>
   env(service: string, options?: GateServiceOptions): Promise<GateRunEnv>
+  ready(service: string, options?: GateServiceOptions): Promise<GateReadyResult>
   run(service: string, command: readonly string[], options?: GateRunOptions): Promise<GateRunResult>
+  run(
+    ready: GateRunReady,
+    command: readonly string[],
+    options?: GateRunOptions,
+  ): Promise<GateRunResult>
   port(service: string, options?: GateCommandOptions): Promise<number>
   ls(options?: GateCommandOptions): Promise<GateService[]>
   down(options?: GateCommandOptions): Promise<void>
@@ -78,14 +84,38 @@ export interface GateClient {
 
 export type GateRunEnv = Record<string, string>
 
+export interface GateDaemonReadiness {
+  required: boolean
+  running: boolean
+  listener: string
+  httpsAddr?: string
+  httpAddr?: string
+}
+
+export interface GateDiagnostic {
+  code: string
+  severity: 'fatal' | 'fixable' | 'permission' | 'warning' | 'info'
+  message: string
+  suggestedCommand?: string
+}
+
+export interface GateReadyResult {
+  service: GateService
+  env: GateRunEnv
+  daemon?: GateDaemonReadiness
+  diagnostics: GateDiagnostic[]
+}
+
 export interface GateRunReady {
   service: GateService
   env: GateRunEnv
+  daemon?: GateDaemonReadiness
+  diagnostics?: GateDiagnostic[]
 }
 
 export interface GateRunOptions extends GateServiceOptions {
   stdio?: 'inherit' | 'pipe'
-  onReady?: (ready: GateRunReady) => void | Promise<void>
+  onReady?: (ready: GateReadyResult) => void | Promise<void>
 }
 
 export interface GateRunResult {
@@ -112,9 +142,18 @@ export interface GateErrorDetails {
   message: string
   command?: string[]
   gateCode?: string
+  severity?: string
+  retryable?: boolean
+  hint?: string
+  nextActions?: GateErrorNextAction[]
   exitCode?: number
   signal?: NodeJS.Signals
   stdout?: string
   stderr?: string
   cause?: unknown
+}
+
+export interface GateErrorNextAction {
+  label: string
+  command?: string
 }

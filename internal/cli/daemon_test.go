@@ -155,9 +155,19 @@ func TestDaemonStatusAllJSONIncludesKnownScopes(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
 	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
 	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	pair := listener.Pair{HTTPSAddr: "127.0.0.1:18443", HTTPAddr: "127.0.0.1:18080"}
 	if err := registryStore().Update(func(r *registry.Registry) error {
-		return r.Reserve(registry.Reservation{Project: "demo", Service: "web", Domain: "web.localhost", Port: 4300})
+		res := registry.Reservation{Project: "demo", Service: "web", Domain: "web.localhost", Port: 4300}
+		res.SetListenerPair(pair)
+		return r.Reserve(res)
 	}); err != nil {
+		t.Fatal(err)
+	}
+	hostRef := listenerRefFor(pair)
+	if err := os.MkdirAll(filepath.Dir(hostRef.pidPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hostRef.pidPath(), []byte("99999999"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,10 +183,44 @@ func TestDaemonStatusAllJSONIncludesKnownScopes(t *testing.T) {
 	for _, st := range got {
 		scopes[st.Scope] = true
 	}
-	for _, want := range []string{defaultListenerRef().String()} {
+	for _, want := range []string{defaultListenerRef().String(), listenerRefFor(pair).String()} {
 		if !scopes[want] {
 			t.Fatalf("statuses = %+v, missing %q", got, want)
 		}
+	}
+	normalized := listener.Normalize(pair)
+	for _, st := range got {
+		if st.Scope == listenerRefFor(pair).String() {
+			if st.HTTPSAddr != normalized.HTTPSAddr || st.HTTPAddr != normalized.HTTPAddr {
+				t.Fatalf("host-specific listener addrs lost: %+v", st)
+			}
+			return
+		}
+	}
+	t.Fatalf("host-specific listener missing from statuses: %+v", got)
+}
+
+func TestDaemonStatusAllJSONIgnoresMalformedRegistry(t *testing.T) {
+	isolate(t)
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := os.MkdirAll(filepath.Join(configDir, "gate"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "gate", "registry.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := daemonStatus([]string{"--all", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("daemonStatus exit = %d, stderr=%s", code, errb.String())
+	}
+	var got []daemon.Status
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("status json: %v\n%s", err, out.String())
+	}
+	if len(got) == 0 || got[0].Scope != defaultListenerRef().String() {
+		t.Fatalf("statuses = %+v", got)
 	}
 }
 
@@ -192,6 +236,32 @@ func TestDaemonStatusSingleJSONIsObject(t *testing.T) {
 	}
 	if got.Scope != defaultListenerRef().String() || got.Running {
 		t.Fatalf("status = %+v", got)
+	}
+	if got.Status != "stopped" || got.Listener != defaultListenerRef().String() || got.Socket == "" || got.PIDPath == "" || got.PIDAlive {
+		t.Fatalf("status metadata = %+v", got)
+	}
+}
+
+func TestDaemonStatusJSONReportsStalePID(t *testing.T) {
+	isolate(t)
+	ref := defaultListenerRef()
+	if err := os.MkdirAll(filepath.Dir(ref.pidPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ref.pidPath(), []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := daemonStatus([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("daemonStatus exit = %d, stderr=%s", code, errb.String())
+	}
+	var got daemon.Status
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("status json: %v\n%s", err, out.String())
+	}
+	if got.Status != "stale" || got.Running || !got.PIDAlive {
+		t.Fatalf("stale status = %+v", got)
 	}
 }
 
@@ -228,6 +298,18 @@ func TestPrintDaemonStoppedStatusUsesListenAddrs(t *testing.T) {
 	if strings.Contains(got, "listener") {
 		t.Fatalf("daemon stopped output leaked listener key:\n%s", got)
 	}
+}
+
+func TestPrintDaemonStatusShowsStaleStatus(t *testing.T) {
+	var out bytes.Buffer
+	printDaemonStatus(&out, daemon.Status{
+		Status:    "stale",
+		Running:   false,
+		HTTPSAddr: ":443",
+		HTTPAddr:  ":80",
+	})
+	got := out.String()
+	assertTableFields(t, got, 1, []string{"stale", ":443", ":80", "-", "-", "-"})
 }
 
 func TestPrintDaemonStatusesUsesOneTableForMultipleDaemons(t *testing.T) {

@@ -12,6 +12,7 @@ import type {
   GateRunEnv,
   GateRunOptions,
   GateRunReady,
+  GateReadyResult,
   GateRunResult,
   GateService,
   GateServiceOptions,
@@ -50,6 +51,8 @@ interface GateUpJSON {
 
 interface GateEnvJSON extends GateService {
   env: GateRunEnv
+  daemon?: GateReadyResult['daemon']
+  diagnostics?: GateReadyResult['diagnostics']
 }
 
 export function createGateClient(defaults: GateClientOptions = {}): GateClient {
@@ -92,7 +95,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
   const readyForService = async (
     name: string,
     options?: GateServiceOptions,
-  ): Promise<GateRunReady> => {
+  ): Promise<GateReadyResult> => {
     const merged = withDefaults(options)
     const serviceOptions = { ...merged, dns: merged.dns ?? 'localhost' }
     if (merged.up ?? true) {
@@ -103,8 +106,8 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
     const args = ['env', '--json', ...scope.args, name]
     const result = await runGate(args, serviceOptions)
     const parsed = parseJSON<GateEnvJSON>([resultCommand(serviceOptions), ...args], result.stdout)
-    const { env, ...service } = parsed
-    return { service, env }
+    const { env, daemon, diagnostics, ...service } = parsed
+    return { service, env, daemon, diagnostics: diagnostics ?? [] }
   }
 
   const envForService = async (name: string, options?: GateServiceOptions): Promise<GateRunEnv> => {
@@ -121,14 +124,19 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
     env: envForService,
 
+    ready: readyForService,
+
     async run(
-      name: string,
+      serviceOrReady: string | GateRunReady,
       command: readonly string[],
       options?: GateRunOptions,
     ): Promise<GateRunResult> {
       validateCommand(command)
       const merged = withDefaults(options)
-      const ready = await readyForService(name, merged)
+      const ready =
+        typeof serviceOrReady === 'string'
+          ? await readyForService(serviceOrReady, merged)
+          : validateReadyResult(serviceOrReady)
       return await runChild(command, ready, merged)
     },
 
@@ -202,9 +210,104 @@ function validateCommand(command: readonly string[]): void {
   }
 }
 
+function validateReadyResult(ready: GateRunReady): GateReadyResult {
+  if (
+    !ready ||
+    typeof ready !== 'object' ||
+    !isGateService(ready.service) ||
+    !isStringRecord(ready.env) ||
+    (ready.daemon !== undefined && !isGateDaemonReadiness(ready.daemon)) ||
+    (ready.diagnostics !== undefined && !isGateDiagnostics(ready.diagnostics))
+  ) {
+    throw new GateError({
+      code: 'GATE_INVALID_OPTIONS',
+      message: 'ready descriptor must come from gate.ready()',
+    })
+  }
+  return { ...ready, diagnostics: ready.diagnostics ?? [] }
+}
+
+function isGateService(value: unknown): value is GateService {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const service = value as Partial<GateService>
+  return (
+    typeof service.service === 'string' &&
+    typeof service.domain === 'string' &&
+    typeof service.port === 'number' &&
+    typeof service.url === 'string' &&
+    typeof service.loopbackUrl === 'string' &&
+    (service.route === 'active' || service.route === 'inactive') &&
+    (service.upstream === 'live' || service.upstream === 'down')
+  )
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+  return Object.values(value).every((entry) => typeof entry === 'string')
+}
+
+function isGateDaemonReadiness(value: unknown): boolean {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const daemon = value as {
+    required?: unknown
+    running?: unknown
+    listener?: unknown
+    httpsAddr?: unknown
+    httpAddr?: unknown
+  }
+  return (
+    typeof daemon.required === 'boolean' &&
+    typeof daemon.running === 'boolean' &&
+    typeof daemon.listener === 'string' &&
+    (daemon.httpsAddr === undefined || typeof daemon.httpsAddr === 'string') &&
+    (daemon.httpAddr === undefined || typeof daemon.httpAddr === 'string')
+  )
+}
+
+function isGateDiagnostics(value: unknown): boolean {
+  if (!Array.isArray(value)) {
+    return false
+  }
+  return value.every((item) => {
+    if (!item || typeof item !== 'object') {
+      return false
+    }
+    const diagnostic = item as {
+      code?: unknown
+      severity?: unknown
+      message?: unknown
+      suggestedCommand?: unknown
+    }
+    return (
+      typeof diagnostic.code === 'string' &&
+      isGateDiagnosticSeverity(diagnostic.severity) &&
+      typeof diagnostic.message === 'string' &&
+      (diagnostic.suggestedCommand === undefined || typeof diagnostic.suggestedCommand === 'string')
+    )
+  })
+}
+
+function isGateDiagnosticSeverity(
+  value: unknown,
+): value is GateReadyResult['diagnostics'][number]['severity'] {
+  return (
+    value === 'fatal' ||
+    value === 'fixable' ||
+    value === 'permission' ||
+    value === 'warning' ||
+    value === 'info'
+  )
+}
+
 async function runChild(
   command: readonly string[],
-  ready: GateRunReady,
+  ready: GateReadyResult,
   options: GateRunOptions,
 ): Promise<GateRunResult> {
   const stdio = options.stdio ?? 'inherit'

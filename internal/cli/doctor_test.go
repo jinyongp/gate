@@ -63,8 +63,11 @@ func TestDoctorMigratesLegacyAdhocRegistry(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("json: %v\n%s", err, out.String())
 	}
-	if report.OK || len(report.Issues) != 1 || report.Issues[0].Code != "legacy_registry_adhoc" {
+	if report.OK || report.Status != "fail" || len(report.Issues) != 1 || report.Issues[0].Code != "legacy_registry_adhoc" {
 		t.Fatalf("unexpected report: %+v", report)
+	}
+	if report.Issues[0].Severity != "fixable" || !report.Issues[0].Fixable || report.Issues[0].SuggestedCommand != "gate doctor --fix" {
+		t.Fatalf("unexpected issue classification: %+v", report.Issues[0])
 	}
 	if errb.Len() != 0 {
 		t.Fatalf("doctor --json wrote stderr: %s", errb.String())
@@ -79,7 +82,7 @@ func TestDoctorMigratesLegacyAdhocRegistry(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("json: %v\n%s", err, out.String())
 	}
-	if !report.OK || len(report.Issues) != 1 || !report.Issues[0].Fixed {
+	if !report.OK || report.Status != "pass" || len(report.Issues) != 1 || !report.Issues[0].Fixed {
 		t.Fatalf("unexpected fixed report: %+v", report)
 	}
 	if errb.Len() != 0 {
@@ -181,6 +184,9 @@ func TestDoctorReportsRegistryIntegrityIssueCodes(t *testing.T) {
 		if issue.Fixed {
 			t.Fatalf("registry integrity issue should not be fixed: %+v", issue)
 		}
+		if issue.Severity != "fatal" || issue.Fixable || issue.SuggestedCommand != "" {
+			t.Fatalf("registry integrity issue should be non-fixable fatal: %+v", issue)
+		}
 	}
 	for _, code := range []string{"registry_key_mismatch", "registry_duplicate_domain", "registry_empty_domain", "registry_invalid_port"} {
 		if !codes[code] {
@@ -246,6 +252,9 @@ domain = "api.localhost"
 	if report.OK || len(report.Issues) != 1 || report.Issues[0].Code != "registry_stale_service" || report.Issues[0].Fixed {
 		t.Fatalf("unexpected report: %+v", report)
 	}
+	if report.Issues[0].Severity != "fatal" || report.Issues[0].Fixable || report.Issues[0].SuggestedCommand != "" {
+		t.Fatalf("stale service should be non-fixable fatal: %+v", report.Issues[0])
+	}
 	reg, err := registry.Open(filepath.Join(configDir, "registry.json")).Read()
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +293,16 @@ func TestPrintDoctorReportGroupsIssuesAndIndentsPaths(t *testing.T) {
 	}
 	if strings.Contains(got, " · ") {
 		t.Fatalf("doctor output should not use the old dense separator:\n%s", got)
+	}
+}
+
+func TestDoctorReportOKAllowsWarningAndInfoIssues(t *testing.T) {
+	report := doctorReport{Issues: []doctorIssue{
+		{Code: "daemon_not_running", Severity: "warning", Message: "daemon is not running"},
+		{Code: "note", Severity: "info", Message: "informational note"},
+	}}
+	if !doctorReportOK(report) {
+		t.Fatalf("warning/info report should be ok: %+v", report)
 	}
 }
 
@@ -429,11 +448,44 @@ func TestDoctorFixRemovesStaleScopedPIDFiles(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := Doctor([]string{"--fix"}, &out, &errb); code != ExitOK {
+	if code := Doctor([]string{"--json"}, &out, &errb); code != ExitError {
+		t.Fatalf("Doctor check exit = %d, stderr=%s", code, errb.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("doctor json: %v\n%s", err, out.String())
+	}
+	if len(report.Issues) != 1 || report.Issues[0].Code != "stale_scoped_pid_files" {
+		t.Fatalf("stale pid should be classified precisely: %+v", report.Issues)
+	}
+
+	out.Reset()
+	errb.Reset()
+	if code := Doctor([]string{"--fix", "--json"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Doctor fix exit = %d, stderr=%s", code, errb.String())
+	}
+	report = doctorReport{}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("doctor fix json: %v\n%s", err, out.String())
+	}
+	if !report.OK || len(report.Issues) != 1 || report.Issues[0].Code != "stale_scoped_pid_files" || !report.Issues[0].Fixed {
+		t.Fatalf("doctor fix report = %+v", report)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("%s still exists or stat failed: %v", stale, err)
+	}
+}
+
+func TestClassifyDoctorIssueWithFixErrorDoesNotSuggestRetry(t *testing.T) {
+	issue := classifyDoctorIssue(doctorIssue{
+		Code:  "legacy_daemon_files",
+		Error: "permission denied",
+	})
+	if !issue.Fixable {
+		t.Fatalf("fixable capability should remain true: %+v", issue)
+	}
+	if issue.SuggestedCommand != "" {
+		t.Fatalf("failed fix should not suggest immediate retry: %+v", issue)
 	}
 }
 

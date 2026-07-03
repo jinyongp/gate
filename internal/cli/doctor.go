@@ -23,16 +23,21 @@ import (
 )
 
 type doctorReport struct {
+	Status string        `json:"status"`
 	OK     bool          `json:"ok"`
 	Issues []doctorIssue `json:"issues"`
 }
 
 type doctorIssue struct {
-	Code    string   `json:"code"`
-	Message string   `json:"message"`
-	Paths   []string `json:"paths,omitempty"`
-	Fixed   bool     `json:"fixed"`
-	Error   string   `json:"error,omitempty"`
+	Code              string   `json:"code"`
+	Severity          string   `json:"severity"`
+	Message           string   `json:"message"`
+	Paths             []string `json:"paths,omitempty"`
+	Fixed             bool     `json:"fixed"`
+	Fixable           bool     `json:"fixable"`
+	RequiresPrivilege bool     `json:"requiresPrivilege"`
+	SuggestedCommand  string   `json:"suggestedCommand,omitempty"`
+	Error             string   `json:"error,omitempty"`
 }
 
 // Doctor checks local gate-owned state and optionally repairs stale state left
@@ -57,6 +62,11 @@ func Doctor(args []string, stdout, stderr io.Writer) int {
 		activity.Complete()
 	}
 	report.OK = doctorReportOK(report)
+	if report.OK {
+		report.Status = "pass"
+	} else {
+		report.Status = "fail"
+	}
 	if *jsonOut {
 		if code := writeJSON(stdout, report); code != ExitOK {
 			return code
@@ -80,13 +90,64 @@ func runDoctorChecks(fix bool) []doctorIssue {
 		issues = append(issues, issue)
 	}
 	issues = append(issues, checkStaleServiceReservations()...)
-	if issue, ok := checkOldScopedDaemonState(fix); ok {
+	var staleScopedPIDPaths []string
+	if issue, ok := checkStaleScopedPIDs(fix); ok {
+		staleScopedPIDPaths = issue.Paths
 		issues = append(issues, issue)
 	}
-	if issue, ok := checkStaleScopedPIDs(fix); ok {
-		issues = append(issues, issue)
+	if issue, ok := checkOldScopedDaemonState(fix); ok {
+		issue.Paths = pathsWithout(issue.Paths, staleScopedPIDPaths)
+		if len(issue.Paths) > 0 || issue.Error != "" {
+			issue.Message = fmt.Sprintf("%d old scoped daemon file(s) found", len(issue.Paths))
+			issues = append(issues, issue)
+		}
+	}
+	for i := range issues {
+		issues[i] = classifyDoctorIssue(issues[i])
 	}
 	return issues
+}
+
+func classifyDoctorIssue(issue doctorIssue) doctorIssue {
+	if issue.Severity == "" {
+		issue.Severity = "fixable"
+	}
+	switch {
+	case issue.Code == "registry_unsupported_schema",
+		issue.Code == "registry_config_load_error",
+		issue.Code == "registry_read_error",
+		issue.Code == "registry_invalid_json",
+		issue.Code == "scoped_pid_scan_error",
+		issue.Code == "old_scoped_daemon_scan_error",
+		issue.Code == "registry_stale_service",
+		strings.HasPrefix(issue.Code, "registry_"):
+		issue.Severity = "fatal"
+		issue.Fixable = false
+	case issue.Code == "legacy_daemon_files",
+		issue.Code == "legacy_registry_adhoc",
+		issue.Code == "old_scoped_daemon_files",
+		issue.Code == "stale_scoped_pid_files":
+		issue.Fixable = true
+	default:
+		if strings.Contains(issue.Code, "permission") {
+			issue.Severity = "permission"
+			issue.RequiresPrivilege = true
+		}
+		if !issue.Fixed && issue.Severity == "fixable" {
+			issue.Fixable = true
+		}
+	}
+	if issue.Fixed {
+		issue.Fixable = true
+	}
+	if issue.Error != "" {
+		issue.SuggestedCommand = ""
+		return issue
+	}
+	if issue.Fixable && !issue.Fixed && issue.SuggestedCommand == "" {
+		issue.SuggestedCommand = "gate doctor --fix"
+	}
+	return issue
 }
 
 func checkStaleServiceReservations() []doctorIssue {
@@ -153,6 +214,9 @@ func checkRegistryIntegrity() []doctorIssue {
 
 func doctorReportOK(report doctorReport) bool {
 	for _, issue := range report.Issues {
+		if (issue.Severity == "warning" || issue.Severity == "info") && issue.Error == "" {
+			continue
+		}
 		if !issue.Fixed || issue.Error != "" {
 			return false
 		}
@@ -614,4 +678,21 @@ func containsPath(paths []string, path string) bool {
 		}
 	}
 	return false
+}
+
+func pathsWithout(paths []string, excluded []string) []string {
+	if len(paths) == 0 || len(excluded) == 0 {
+		return paths
+	}
+	excludedSet := make(map[string]bool, len(excluded))
+	for _, path := range excluded {
+		excludedSet[path] = true
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !excludedSet[path] {
+			out = append(out, path)
+		}
+	}
+	return out
 }

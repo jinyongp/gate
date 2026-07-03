@@ -112,7 +112,14 @@ func TestAddJSONErrorEnvelope(t *testing.T) {
 	}
 	var env struct {
 		Error struct {
-			Code string `json:"code"`
+			Code        string `json:"code"`
+			Severity    string `json:"severity"`
+			Retryable   bool   `json:"retryable"`
+			Hint        string `json:"hint"`
+			NextActions []struct {
+				Label   string `json:"label"`
+				Command string `json:"command"`
+			} `json:"nextActions"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(errb.Bytes(), &env); err != nil {
@@ -120,6 +127,9 @@ func TestAddJSONErrorEnvelope(t *testing.T) {
 	}
 	if env.Error.Code != "port_conflict" {
 		t.Fatalf("error code = %q", env.Error.Code)
+	}
+	if env.Error.Severity != "fixable" || env.Error.Retryable {
+		t.Fatalf("error metadata = %+v", env.Error)
 	}
 }
 
@@ -137,7 +147,8 @@ func TestAddDomainConflictJSONErrorEnvelope(t *testing.T) {
 	}
 	var env struct {
 		Error struct {
-			Code string `json:"code"`
+			Code      string `json:"code"`
+			Retryable bool   `json:"retryable"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(errb.Bytes(), &env); err != nil {
@@ -145,6 +156,16 @@ func TestAddDomainConflictJSONErrorEnvelope(t *testing.T) {
 	}
 	if env.Error.Code != "domain_conflict" {
 		t.Fatalf("error code = %q", env.Error.Code)
+	}
+	if env.Error.Retryable {
+		t.Fatalf("domain conflict should not be retryable: %+v", env.Error)
+	}
+}
+
+func TestTransientJSONErrorEnvelopeIsRetryable(t *testing.T) {
+	body := errorBodyFor(ExitError, "daemon_start", "daemon failed")
+	if !body.Retryable {
+		t.Fatalf("daemon_start should be retryable: %+v", body)
 	}
 }
 
@@ -1603,6 +1624,33 @@ func TestEnvJSONReturnsSelectedServiceAndEnv(t *testing.T) {
 		got.Env["GATE_WEB_URL"] != "http://127.0.0.1:4400" ||
 		got.Env["GATE_WEB_ROUTE_URL"] != "https://app.localhost" {
 		t.Fatalf("env = %+v", got.Env)
+	}
+	if got.Daemon.Required || got.Daemon.Running || got.Daemon.Listener == "" {
+		t.Fatalf("daemon readiness = %+v", got.Daemon)
+	}
+	if len(got.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %+v", got.Diagnostics)
+	}
+	if !strings.Contains(out.String(), `"diagnostics": []`) {
+		t.Fatalf("diagnostics should encode as empty array, got:\n%s", out.String())
+	}
+}
+
+func TestEnvJSONReportsDaemonDiagnosticForActiveRoute(t *testing.T) {
+	setupProject(t)
+	var out, errb bytes.Buffer
+	if code := Env([]string{"--up", "web", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Env --up --json exit = %d, stderr=%s", code, errb.String())
+	}
+	var got runDescriptor
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if !got.Daemon.Required || got.Daemon.Running || got.Daemon.Listener == "" {
+		t.Fatalf("daemon readiness = %+v", got.Daemon)
+	}
+	if len(got.Diagnostics) != 1 || got.Diagnostics[0].Code != "daemon_not_running" || got.Diagnostics[0].Severity != "fixable" {
+		t.Fatalf("diagnostics = %+v", got.Diagnostics)
 	}
 }
 

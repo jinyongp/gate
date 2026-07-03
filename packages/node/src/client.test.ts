@@ -411,6 +411,165 @@ test('client run uses gate env descriptor route URLs with listener ports', async
   })
 })
 
+test('client ready returns canonical env descriptor diagnostics', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'))
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  const ready = await client.ready('web', { up: false })
+
+  expect(ready.service.url).toBe('https://web.demo.localhost')
+  expect(ready.env.PORT).toBe('4312')
+  expect(ready.daemon).toMatchObject({
+    required: true,
+    running: false,
+    listener: 'listener:https-443-http-80',
+  })
+  expect(ready.diagnostics).toEqual([
+    {
+      code: 'daemon_not_running',
+      severity: 'fixable',
+      message: 'listener daemon is not running',
+      suggestedCommand: 'gate up --daemon',
+    },
+  ])
+})
+
+test('client run accepts ready descriptor without resolving it again', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const child = await fakeChild(dir, `console.log(process.env.PORT);`)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  const ready = await client.ready('web', { up: false })
+  const result = await client.run(ready, [process.execPath, child], { stdio: 'pipe' })
+
+  expect(result.stdout?.trim()).toBe('4312')
+  expect(await readFile(log, 'utf8')).toBe('env --json web\n')
+})
+
+test('client run accepts legacy ready descriptor without diagnostics', async () => {
+  const dir = await tempDir()
+  const child = await fakeChild(dir, `console.log(process.env.PORT);`)
+  const client = createGateClient({ bin: join(dir, 'missing-gate'), cwd: dir })
+
+  const result = await client.run(
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: '4312' },
+    },
+    [process.execPath, child],
+    { stdio: 'pipe' },
+  )
+
+  expect(result.stdout?.trim()).toBe('4312')
+  expect(result.service?.service).toBe('web')
+  expect(result.env?.PORT).toBe('4312')
+})
+
+test.each([
+  ['missing service fields', { service: { service: 'web', port: 4312 }, env: {} }],
+  [
+    'array env',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: [],
+      diagnostics: [],
+    },
+  ],
+  [
+    'non-string env value',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: 4312 },
+      diagnostics: [],
+    },
+  ],
+  [
+    'bad daemon optional field',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: '4312' },
+      daemon: {
+        required: true,
+        running: false,
+        listener: 'listener:https-443-http-80',
+        httpsAddr: 443,
+      },
+      diagnostics: [],
+    },
+  ],
+  [
+    'bad diagnostic optional field',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: '4312' },
+      diagnostics: [
+        {
+          code: 'daemon_not_running',
+          severity: 'surprising',
+          message: 'listener daemon is not running',
+          suggestedCommand: 123,
+        },
+      ],
+    },
+  ],
+])(
+  'client run rejects malformed ready descriptors before spawning child: %s',
+  async (_name, ready) => {
+    const dir = await tempDir()
+    const gate = await fakeGate(dir, join(dir, 'args.log'))
+    const child = await fakeChild(dir, `console.log("ran");`)
+    const client = createGateClient({ bin: gate, cwd: dir })
+
+    await expect(client.run(ready as never, [process.execPath, child])).rejects.toMatchObject({
+      code: 'GATE_INVALID_OPTIONS',
+      message: 'ready descriptor must come from gate.ready()',
+    })
+  },
+)
+
 test('client run calls onReady with service and env before spawning child', async () => {
   const dir = await tempDir()
   const marker = join(dir, 'ready.txt')
@@ -503,6 +662,10 @@ test('client maps permission failures', async () => {
     code: 'GATE_PERMISSION_REQUIRED',
     exitCode: 3,
     gateCode: 'permission',
+    severity: 'permission',
+    retryable: false,
+    hint: 'Run outside the sandbox.',
+    nextActions: [{ label: 'Check setup', command: 'gate doctor --json' }],
   })
 })
 
@@ -815,7 +978,16 @@ if (${JSON.stringify(options.envLog)}) {
   }));
 }
 if (${JSON.stringify(options.mode)} === "permission") {
-  console.error(JSON.stringify({ error: { code: "permission", message: "permission required" } }));
+  console.error(JSON.stringify({
+    error: {
+      code: "permission",
+      message: "permission required",
+      severity: "permission",
+      retryable: false,
+      hint: "Run outside the sandbox.",
+      nextActions: [{ label: "Check setup", command: "gate doctor --json" }],
+    },
+  }));
   process.exit(3);
 }
 if (${JSON.stringify(options.mode)} === "invalid-json") {
@@ -879,6 +1051,19 @@ if (cmd === "env") {
     route: "active",
     upstream: "down",
     env: envFor(service),
+    daemon: {
+      required: true,
+      running: false,
+      listener: "listener:https-443-http-80",
+      httpsAddr: ":443",
+      httpAddr: ":80",
+    },
+    diagnostics: [{
+      code: "daemon_not_running",
+      severity: "fixable",
+      message: "listener daemon is not running",
+      suggestedCommand: "gate up --daemon",
+    }],
   }));
   process.exit(0);
 }

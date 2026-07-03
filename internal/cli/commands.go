@@ -62,6 +62,23 @@ type runDescriptor struct {
 	Route       string            `json:"route"`
 	Upstream    string            `json:"upstream"`
 	Env         map[string]string `json:"env"`
+	Daemon      runDaemonStatus   `json:"daemon"`
+	Diagnostics []runDiagnostic   `json:"diagnostics"`
+}
+
+type runDaemonStatus struct {
+	Required  bool   `json:"required"`
+	Running   bool   `json:"running"`
+	Listener  string `json:"listener"`
+	HTTPSAddr string `json:"httpsAddr,omitempty"`
+	HTTPAddr  string `json:"httpAddr,omitempty"`
+}
+
+type runDiagnostic struct {
+	Code             string `json:"code"`
+	Severity         string `json:"severity"`
+	Message          string `json:"message"`
+	SuggestedCommand string `json:"suggestedCommand,omitempty"`
 }
 
 type reservationLookupError struct {
@@ -1154,6 +1171,7 @@ func buildRunDescriptor(name string, sel registryScopeSelection) (runDescriptor,
 		return runDescriptor{}, &reservationLookupError{Exit: ExitError, Code: "run_env", Message: err.Error()}
 	}
 	env["PORT"] = strconv.Itoa(res.Port)
+	daemonStatus, diagnostics := runDescriptorDaemonStatus(res)
 	return runDescriptor{
 		Service:     res.Service,
 		Project:     res.Project,
@@ -1165,7 +1183,40 @@ func buildRunDescriptor(name string, sel registryScopeSelection) (runDescriptor,
 		Route:       routeStatus(res),
 		Upstream:    upstreamStatus(res),
 		Env:         env,
+		Daemon:      daemonStatus,
+		Diagnostics: diagnostics,
 	}, nil
+}
+
+func runDescriptorDaemonStatus(res registry.Reservation) (runDaemonStatus, []runDiagnostic) {
+	ref := listenerRefFor(res.ListenerPair())
+	out := runDaemonStatus{
+		Required:  res.Active,
+		Listener:  ref.String(),
+		HTTPSAddr: ref.Pair.HTTPSAddr,
+		HTTPAddr:  ref.Pair.HTTPAddr,
+	}
+	diagnostics := []runDiagnostic{}
+	st, err := daemonClientForRef(ref).Status()
+	if err == nil && daemonStatusMatchesListener(st, ref.Pair) {
+		out.Running = true
+		if st.HTTPSAddr != "" {
+			out.HTTPSAddr = st.HTTPSAddr
+		}
+		if st.HTTPAddr != "" {
+			out.HTTPAddr = st.HTTPAddr
+		}
+		return out, diagnostics
+	}
+	if out.Required {
+		diagnostics = append(diagnostics, runDiagnostic{
+			Code:             "daemon_not_running",
+			Severity:         "fixable",
+			Message:          "listener daemon is not running",
+			SuggestedCommand: "gate up --daemon",
+		})
+	}
+	return out, diagnostics
 }
 
 func runEnvMapForScope(sel registryScopeSelection) (map[string]string, error) {

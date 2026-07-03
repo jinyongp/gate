@@ -49,6 +49,8 @@ import { createGateClient, isGateError } from '@jinyongp/gate'
 
 const gate = createGateClient({ cwd: process.cwd() })
 const web = await gate.service('web', { up: true })
+const ready = await gate.ready('web', { up: true })
+await gate.run(ready, ['pnpm', 'dev'])
 
 try {
   await gate.service('web')
@@ -82,6 +84,9 @@ pnpm exec gate env web --json
 
 `gate env` is read-only by default. Use `gate env --up web --json` only when the
 script intentionally wants to reserve/activate routes first.
+The JSON descriptor is the canonical route/env readiness contract. It includes
+`service`, route URLs, loopback URL, `env`, daemon readiness, and diagnostics.
+Unknown fields should be ignored.
 
 For sandboxed agents or tests, isolate gate state under a workspace-local,
 git-ignored directory instead of writing registry locks, daemon sockets, logs,
@@ -100,6 +105,9 @@ can reserve/activate routes, but it does not start the daemon unless
 `daemon: true` is passed. Use `service(name, { up: false })`, `ls()`, or
 `port()` for read-only inspection. Custom domains must explicitly choose
 `dns: 'hosts'` or `dns: 'preconfigured'`.
+Use `ready(name, options)` when automation needs the canonical descriptor before
+spawning, then pass that snapshot to `run(ready, argv)` to avoid duplicate
+resolution.
 
 Use inline project config when an agent needs project-scoped Node API behavior
 without creating `gate.toml`:
@@ -135,6 +143,8 @@ Common Node error actions:
   reservations exist.
 - `GATE_COMMAND_FAILED` / `GATE_JSON_PARSE_FAILED`: inspect command metadata and
   stderr before retrying.
+When a JSON error envelope is available, `GateError` also carries `severity`,
+`retryable`, `hint`, and `nextActions`.
 
 ## Operational workflows
 

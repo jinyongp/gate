@@ -98,12 +98,39 @@ func daemonStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func daemonStatusForRef(ref listenerDaemonRef) daemon.Status {
+	pid, pidErr := readPIDFile(ref.pidPath())
+	pidAlive := pidErr == nil && processExists(pid)
 	st, err := daemonClientForRef(ref).Status()
 	if err != nil {
-		return daemon.Status{Scope: ref.String(), ScopeKey: ref.fileKey(), Running: false, HTTPSAddr: ref.Pair.HTTPSAddr, HTTPAddr: ref.Pair.HTTPAddr}
+		status := "stopped"
+		if pidAlive {
+			status = "stale"
+		}
+		return daemon.Status{
+			Scope:     ref.String(),
+			ScopeKey:  ref.fileKey(),
+			Status:    status,
+			Listener:  ref.String(),
+			Socket:    ref.socketPath(),
+			PIDPath:   ref.pidPath(),
+			PIDAlive:  pidAlive,
+			PID:       pid,
+			Running:   false,
+			HTTPSAddr: ref.Pair.HTTPSAddr,
+			HTTPAddr:  ref.Pair.HTTPAddr,
+		}
 	}
 	st.Scope = ref.String()
 	st.ScopeKey = ref.fileKey()
+	st.Status = "running"
+	st.Listener = ref.String()
+	st.Socket = ref.socketPath()
+	st.PIDPath = ref.pidPath()
+	if st.PID > 0 {
+		st.PIDAlive = processExists(st.PID)
+	} else {
+		st.PIDAlive = pidAlive
+	}
 	if st.HTTPSAddr == "" {
 		st.HTTPSAddr = ref.Pair.HTTPSAddr
 	}
@@ -137,7 +164,11 @@ func printDaemonStatuses(stdout io.Writer, statuses []daemon.Status) {
 
 func daemonStatusRow(st daemon.Status) []string {
 	if !st.Running {
-		return []string{"stopped", daemonStatusAddr(st.HTTPSAddr), daemonStatusAddr(st.HTTPAddr), "-", "-", "-"}
+		status := strings.TrimSpace(st.Status)
+		if status == "" {
+			status = "stopped"
+		}
+		return []string{status, daemonStatusAddr(st.HTTPSAddr), daemonStatusAddr(st.HTTPAddr), "-", "-", "-"}
 	}
 	return []string{
 		"running",

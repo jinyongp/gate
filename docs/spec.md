@@ -483,6 +483,14 @@ Automation compatibility is a product invariant:
   non-TTY or machine-readable behavior.
 - Long-running progress indicators must not interfere with final output,
   errors, prompts, or child-process stdio ownership.
+- The selected service descriptor is the automation contract for route/env
+  readiness. Descriptor fields are additive across minor releases; existing
+  field types and meanings must not change without an explicit compatibility
+  boundary.
+- Machine-readable error contracts must remain backward-compatible and additive
+  across minor releases.
+- Diagnostic schemas are stable once documented, but the presence of a specific
+  diagnostic is best-effort and environment-dependent.
 
 Detailed JSON behavior, text examples, environment-variable controls, and exit
 codes are usage-document responsibilities.

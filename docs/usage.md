@@ -217,7 +217,8 @@ gate env --up web --json
 ```
 
 `gate env --json` includes the selected service, local route URL, loopback URL,
-route/upstream status, and the environment map that `gate run` would inject.
+route/upstream status, daemon readiness, diagnostics, and the environment map
+that `gate run` would inject.
 
 Example JSON shape:
 
@@ -236,12 +237,29 @@ Example JSON shape:
     "GATE_WEB_PORT": "4310",
     "GATE_WEB_URL": "http://127.0.0.1:4310",
     "GATE_WEB_ROUTE_URL": "https://web.myapp.localhost"
-  }
+  },
+  "daemon": {
+    "required": true,
+    "running": false,
+    "listener": "listener:https-443-http-80",
+    "httpsAddr": ":443",
+    "httpAddr": ":80"
+  },
+  "diagnostics": [
+    {
+      "code": "daemon_not_running",
+      "severity": "fixable",
+      "message": "listener daemon is not running",
+      "suggestedCommand": "gate up --daemon"
+    }
+  ]
 }
 ```
 
 `standalone: true` appears for global reservations. `project` is omitted when
-the service is not project-scoped.
+the service is not project-scoped. Consumers should ignore unknown fields.
+Descriptor fields are additive across minor releases; existing field types and
+meanings are stable.
 
 Open:
 
@@ -350,6 +368,18 @@ const gate = createGateClient()
 const web = await gate.service('web', { up: true })
 ```
 
+Use `ready()` when an agent needs to inspect the same descriptor as
+`gate env --json` before deciding how to launch the child:
+
+```ts
+const ready = await gate.ready('web', { up: true })
+
+console.log(ready.service.url)
+console.log(ready.daemon?.running)
+
+await gate.run(ready, ['pnpm', 'dev'])
+```
+
 Inline project config:
 
 ```ts
@@ -377,7 +407,8 @@ Inline config gives Node API callers project-scoped behavior without a
 checked-in `gate.toml`. The package writes a generated TOML file to the user
 cache and passes that file to the gate binary with `--config`. `scope.project`
 may be supplied, but it must match `config.name`. The inline shape supports
-`name`, `base`, and service `domain`, `host`, `port`, and `env` fields.
+`name`, `base`, and service `domain`, `host`, `port`, `env`, and `routeEnv`
+fields.
 `envFiles` are intentionally excluded; load environment variables before
 calling gate if inline values use `${NAME}` or `${NAME:-fallback}` references.
 
@@ -417,6 +448,9 @@ Common `GateError` codes:
 | `GATE_SERVICE_NOT_FOUND`    | Check scope, config path, service name, and whether reservations exist.                 |
 | `GATE_COMMAND_FAILED`       | Inspect `exitCode`, `gateCode`, stdout, and stderr before retrying.                     |
 | `GATE_JSON_PARSE_FAILED`    | Treat as a gate/version mismatch or broken binary output.                               |
+
+When the gate binary emits a JSON error envelope, `GateError` also preserves
+`gateCode`, `severity`, `retryable`, `hint`, and `nextActions`.
 
 ## Global Reservations
 
@@ -617,12 +651,39 @@ gate daemon logs --all
 `gate up -d` starts the listener daemon when needed and reloads the merged route
 table for that listener.
 
+`gate daemon status --json` includes additive machine-readable health fields
+such as `status`, `listener`, `socket_path`, `pid_path`, `pid_alive`,
+`https_addr`, `http_addr`, `running`, `pid`, and `routes`. `status` is
+`running`, `stopped`, or `stale`.
+
 ## JSON Output
 
 Commands that support `--json` usually write a single JSON object to stdout.
 Commands that target multiple listener daemons, such as `gate daemon status --all
 --json`, write a JSON array. Errors in JSON mode are written to stderr as an
-error envelope.
+error envelope:
+
+```json
+{
+  "error": {
+    "code": "not_allocated",
+    "message": "no reservation for \"web\" in project \"myapp\"",
+    "severity": "fixable",
+    "retryable": false,
+    "hint": "Run `gate up` for the selected scope, or pass `--up` to commands that support it.",
+    "nextActions": [
+      {
+        "label": "Bring up routes",
+        "command": "gate up"
+      }
+    ]
+  }
+}
+```
+
+`code` and `message` are always present. `severity`, `retryable`, `hint`, and
+`nextActions` are intended for scripts and agents; consumers should ignore
+unknown fields.
 
 Some longer operations show a one-line activity indicator on stderr when stderr
 is an interactive terminal. Indicators never appear in JSON mode or when stderr
@@ -655,6 +716,17 @@ gate expose web --via local --json
 gate expose ls --json
 gate expose stop web --via cloudflared --json
 ```
+
+CI and automation scripts should combine JSON output with explicit state and
+non-interactive output controls:
+
+```bash
+CI=1 NO_COLOR=1 GATE_NO_INDICATOR=1 gate --isolated-root .gate-agent env --up web --json
+```
+
+Use an explicit `--up` in CI when the script expects route allocation or daemon
+state to be prepared as part of the command. Without `--up`, `env --json` is a
+read-only descriptor lookup.
 
 ## Access From Another Device
 

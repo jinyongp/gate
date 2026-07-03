@@ -138,6 +138,19 @@ still need framework-public names such as `VITE_API_BASE_URL` or
 descriptor as `gate env --json`, so route URLs match CLI behavior, including
 non-default gate listener ports.
 
+Use `ready()` when automation needs the selected service descriptor before it
+starts a child:
+
+```ts
+const ready = await gate.ready('web', {
+  scope: { config },
+  up: true,
+})
+
+console.log(ready.service.url)
+console.log(ready.daemon?.running)
+```
+
 Use `run()` when the Node API should spawn the child and inject env itself:
 
 ```ts
@@ -147,6 +160,14 @@ await gate.run('web', ['pnpm', 'dev'], {
     console.log(service.url)
   },
 })
+```
+
+If you already resolved readiness, pass that snapshot to `run()` to avoid a
+second descriptor resolution:
+
+```ts
+const ready = await gate.ready('web', { scope: { config }, up: true })
+await gate.run(ready, ['pnpm', 'dev'])
 ```
 
 `run()` defaults to `stdio: 'inherit'` for human-readable dev-server logs.
@@ -198,6 +219,9 @@ Common error codes:
 | `GATE_SERVICE_NOT_FOUND`    | Check scope, config path, service name, and reservations.            |
 | `GATE_COMMAND_FAILED`       | Inspect `exitCode`, `gateCode`, stdout, and stderr.                  |
 | `GATE_JSON_PARSE_FAILED`    | Treat as a gate/version mismatch or broken binary output.            |
+
+When available, `GateError` also preserves the gate JSON error metadata:
+`severity`, `retryable`, `hint`, and `nextActions`.
 
 ## Project Config
 

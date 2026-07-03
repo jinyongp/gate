@@ -21,6 +21,11 @@ const maxRoutesBodyBytes = 1 << 20
 type Status struct {
 	Scope     string `json:"scope,omitempty"`
 	ScopeKey  string `json:"-"`
+	Status    string `json:"status,omitempty"`
+	Listener  string `json:"listener,omitempty"`
+	Socket    string `json:"socket_path,omitempty"`
+	PIDPath   string `json:"pid_path,omitempty"`
+	PIDAlive  bool   `json:"pid_alive"`
 	Running   bool   `json:"running"`
 	PID       int    `json:"pid"`
 	Routes    int    `json:"routes"`
