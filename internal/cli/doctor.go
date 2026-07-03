@@ -58,6 +58,9 @@ func Doctor(args []string, stdout, stderr io.Writer) int {
 		activity = startActivity(stderr, *jsonOut, "repairing local state")
 	}
 	report := doctorReport{Issues: runDoctorChecks(*fix)}
+	if report.Issues == nil {
+		report.Issues = []doctorIssue{}
+	}
 	if activity != nil {
 		activity.Complete()
 	}

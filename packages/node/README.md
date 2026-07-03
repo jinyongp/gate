@@ -114,6 +114,9 @@ const gate = createGateClient({
 state variables for gate subprocesses. This keeps generated inline config,
 registry locks, daemon state, and trust material out of the user's home config,
 state, data, and cache directories.
+Use isolated state for temporary agent inspection, tests, and sandboxed setup
+checks. Use normal gate state for real dev app launches that should share the
+user's registry, trusted certificate material, and listener daemon.
 
 Use `env()` when another runner owns process spawning:
 
@@ -136,7 +139,8 @@ await someRunner.start({
 still need framework-public names such as `VITE_API_BASE_URL` or
 `NEXT_PUBLIC_API_BASE_URL` in `routeEnv`. The values come from the same
 descriptor as `gate env --json`, so route URLs match CLI behavior, including
-non-default gate listener ports.
+non-default gate listener ports when gate can read the active listener daemon
+status.
 
 Use `ready()` when automation needs the selected service descriptor before it
 starts a child:
@@ -148,6 +152,7 @@ const ready = await gate.ready('web', {
 })
 
 console.log(ready.service.url)
+console.log(ready.envKeys)
 console.log(ready.daemon?.running)
 ```
 
@@ -175,7 +180,15 @@ Agent callers that need structured diagnostics should use `stdio: 'pipe'`;
 non-zero exits throw `GateError` with `exitCode`, `command`, and captured
 stdout/stderr. `onReady` runs after route/env resolution and before the child is
 spawned; if it throws, the child is not started. Successful `run()` results also
-include `service` and `env` for short-lived commands and tests.
+include `service`, `env`, and `envKeys` for short-lived commands and tests.
+Readiness diagnostics may include `actions[]`; `suggestedCommand` remains
+available for compatibility.
+
+The Node API does not call `gate doctor` during normal `service()`, `ready()`,
+`env()`, or `run()` flows. Use `gate doctor --json` separately for install,
+setup, CI, preflight, or explicit local state diagnosis. Normal API failures
+surface through `GateError` fields such as `gateCode`, `severity`, `retryable`,
+`hint`, and `nextActions`.
 
 ## Binary Resolution
 

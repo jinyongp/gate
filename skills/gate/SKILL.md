@@ -85,8 +85,9 @@ pnpm exec gate env web --json
 `gate env` is read-only by default. Use `gate env --up web --json` only when the
 script intentionally wants to reserve/activate routes first.
 The JSON descriptor is the canonical route/env readiness contract. It includes
-`service`, route URLs, loopback URL, `env`, daemon readiness, and diagnostics.
-Unknown fields should be ignored.
+`service`, route URLs, loopback URL, `env`, `envKeys`, daemon readiness, and
+diagnostics. `diagnostics[].actions` contains recommended next steps;
+`suggestedCommand` remains for compatibility. Unknown fields should be ignored.
 
 For sandboxed agents or tests, isolate gate state under a workspace-local,
 git-ignored directory instead of writing registry locks, daemon sockets, logs,
@@ -99,6 +100,9 @@ pnpm exec gate --isolated-root .gate-agent run --up web -- pnpm dev
 
 The CLI flag sets `GATE_ISOLATED_ROOT` for that command. Node callers should
 use `createGateClient({ isolatedRoot: '.gate-agent' })`.
+Use isolated state for temporary inspection, tests, and sandboxed setup checks.
+Use normal gate state for real dev app launches that should share the user's
+registry, trusted certificate material, and listener daemon.
 
 `service(name)` defaults to `{ up: true, dns: 'localhost', daemon: false }`. It
 can reserve/activate routes, but it does not start the daemon unless
@@ -108,6 +112,9 @@ can reserve/activate routes, but it does not start the daemon unless
 Use `ready(name, options)` when automation needs the canonical descriptor before
 spawning, then pass that snapshot to `run(ready, argv)` to avoid duplicate
 resolution.
+Do not call `doctor` from normal Node `service()`, `ready()`, or `run()` flows.
+Use `GateError` metadata for command failures, and run `gate doctor --json`
+only for install/setup/CI/preflight or explicit local state diagnosis.
 
 Use inline project config when an agent needs project-scoped Node API behavior
 without creating `gate.toml`:
@@ -192,6 +199,7 @@ Check local state when routing or trust looks wrong:
 
 ```bash
 "$GATE_BIN" doctor
+"$GATE_BIN" doctor --json
 ```
 
 ## gate.toml
@@ -208,6 +216,10 @@ port = 3001                      # fixed when needed
 env = "API_URL"                  # injected as http://127.0.0.1:<api-port>
 route_env = "PUBLIC_API_URL"     # injected as https://api.myapp.localhost
 ```
+
+For browser-visible URLs, prefer framework-public `route_env` names such as
+`VITE_API_BASE_URL`, `NEXT_PUBLIC_API_BASE_URL`, or
+`NUXT_PUBLIC_API_BASE_URL` instead of hardcoded HTTPS URLs.
 
 `base`, `domain`, `host`, and `port` support environment interpolation.
 `env_files` are resolved relative to the selected project config file.

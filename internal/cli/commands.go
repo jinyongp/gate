@@ -63,6 +63,7 @@ type runDescriptor struct {
 	Route       string            `json:"route"`
 	Upstream    string            `json:"upstream"`
 	Env         map[string]string `json:"env"`
+	EnvKeys     []string          `json:"envKeys"`
 	Daemon      runDaemonStatus   `json:"daemon"`
 	Diagnostics []runDiagnostic   `json:"diagnostics"`
 }
@@ -76,10 +77,16 @@ type runDaemonStatus struct {
 }
 
 type runDiagnostic struct {
-	Code             string `json:"code"`
-	Severity         string `json:"severity"`
-	Message          string `json:"message"`
-	SuggestedCommand string `json:"suggestedCommand,omitempty"`
+	Code             string                `json:"code"`
+	Severity         string                `json:"severity"`
+	Message          string                `json:"message"`
+	SuggestedCommand string                `json:"suggestedCommand,omitempty"`
+	Actions          []runDiagnosticAction `json:"actions,omitempty"`
+}
+
+type runDiagnosticAction struct {
+	Label   string `json:"label"`
+	Command string `json:"command,omitempty"`
 }
 
 type reservationLookupError struct {
@@ -1126,6 +1133,23 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 func printRunRoute(stderr io.Writer, desc runDescriptor) {
 	fmt.Fprintf(stderr, "gate route  %s  %s  ->  %s\n", desc.Service, desc.URL, desc.LoopbackURL)
+	for _, diagnostic := range desc.Diagnostics {
+		printRunDiagnosticHint(stderr, diagnostic)
+	}
+}
+
+func printRunDiagnosticHint(stderr io.Writer, diagnostic runDiagnostic) {
+	if diagnostic.Severity == "" || diagnostic.Severity == "info" {
+		return
+	}
+	fmt.Fprintf(stderr, "gate %s  %s: %s\n", diagnostic.Severity, diagnostic.Code, diagnostic.Message)
+	for _, action := range diagnostic.Actions {
+		if action.Command != "" {
+			fmt.Fprintf(stderr, "gate action  %s: %s\n", action.Label, action.Command)
+			continue
+		}
+		fmt.Fprintf(stderr, "gate action  %s\n", action.Label)
+	}
 }
 
 func runUpBeforeExec(scopeFlags daemonScopeFlags, stderr io.Writer, jsonOut bool) int {
@@ -1184,6 +1208,7 @@ func buildRunDescriptor(name string, sel registryScopeSelection) (runDescriptor,
 		Route:       routeStatus(res),
 		Upstream:    upstreamStatus(res),
 		Env:         env,
+		EnvKeys:     sortedEnvKeys(env),
 		Daemon:      daemonStatus,
 		Diagnostics: diagnostics,
 	}, nil
@@ -1210,14 +1235,28 @@ func runDescriptorDaemonStatus(res registry.Reservation) (runDaemonStatus, []run
 		return out, diagnostics
 	}
 	if out.Required {
+		command := gateUpDaemonCommand(res, ref)
 		diagnostics = append(diagnostics, runDiagnostic{
 			Code:             "daemon_not_running",
 			Severity:         "fixable",
 			Message:          "listener daemon is not running",
-			SuggestedCommand: gateUpDaemonCommand(res, ref),
+			SuggestedCommand: command,
+			Actions: []runDiagnosticAction{{
+				Label:   "Start listener daemon",
+				Command: command,
+			}},
 		})
 	}
 	return out, diagnostics
+}
+
+func sortedEnvKeys(env map[string]string) []string {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func gateUpDaemonCommand(res registry.Reservation, ref listenerDaemonRef) string {

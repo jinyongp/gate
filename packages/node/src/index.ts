@@ -8,6 +8,7 @@ export type {
   GateCommandOptions,
   GateDaemonReadiness,
   GateDiagnostic,
+  GateDiagnosticAction,
   GateDNSMode,
   GateErrorCode,
   GateErrorDetails,

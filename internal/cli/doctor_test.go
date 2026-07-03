@@ -31,6 +31,22 @@ func TestDoctorNoIssues(t *testing.T) {
 	if !strings.Contains(out.String(), "no issues found") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
+
+	out.Reset()
+	errb.Reset()
+	if code := Doctor([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Doctor --json exit = %d, stderr=%s", code, errb.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if !report.OK || report.Status != "pass" || report.Issues == nil || len(report.Issues) != 0 {
+		t.Fatalf("unexpected json report: %+v", report)
+	}
+	if strings.Contains(out.String(), `"issues": null`) || !strings.Contains(out.String(), `"issues": []`) {
+		t.Fatalf("issues should encode as []:\n%s", out.String())
+	}
 }
 
 func TestDoctorMigratesLegacyAdhocRegistry(t *testing.T) {

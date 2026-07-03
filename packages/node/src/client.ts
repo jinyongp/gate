@@ -51,6 +51,7 @@ interface GateUpJSON {
 
 interface GateEnvJSON extends GateService {
   env: GateRunEnv
+  envKeys?: string[]
   daemon?: GateReadyResult['daemon']
   diagnostics?: GateReadyResult['diagnostics']
 }
@@ -106,8 +107,14 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
     const args = ['env', '--json', ...scope.args, name]
     const result = await runGate(args, serviceOptions)
     const parsed = parseJSON<GateEnvJSON>([resultCommand(serviceOptions), ...args], result.stdout)
-    const { env, daemon, diagnostics, ...service } = parsed
-    return { service, env, daemon, diagnostics: diagnostics ?? [] }
+    const { env, envKeys, daemon, diagnostics, ...service } = parsed
+    return {
+      service,
+      env,
+      envKeys: envKeys ?? sortedKeys(env),
+      daemon,
+      diagnostics: diagnostics ?? [],
+    }
   }
 
   const envForService = async (name: string, options?: GateServiceOptions): Promise<GateRunEnv> => {
@@ -216,6 +223,8 @@ function validateReadyResult(ready: GateRunReady): GateReadyResult {
     typeof ready !== 'object' ||
     !isGateService(ready.service) ||
     !isStringRecord(ready.env) ||
+    (ready.envKeys !== undefined &&
+      (!isStringArray(ready.envKeys) || !sameStrings(ready.envKeys, sortedKeys(ready.env)))) ||
     (ready.daemon !== undefined && !isGateDaemonReadiness(ready.daemon)) ||
     (ready.diagnostics !== undefined && !isGateDiagnostics(ready.diagnostics))
   ) {
@@ -224,7 +233,11 @@ function validateReadyResult(ready: GateRunReady): GateReadyResult {
       message: 'ready descriptor must come from gate.ready()',
     })
   }
-  return { ...ready, diagnostics: ready.diagnostics ?? [] }
+  return {
+    ...ready,
+    envKeys: ready.envKeys ?? sortedKeys(ready.env),
+    diagnostics: ready.diagnostics ?? [],
+  }
 }
 
 function isGateService(value: unknown): value is GateService {
@@ -248,6 +261,18 @@ function isStringRecord(value: unknown): value is Record<string, string> {
     return false
   }
   return Object.values(value).every((entry) => typeof entry === 'string')
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+}
+
+function sortedKeys(value: Record<string, string>): string[] {
+  return Object.keys(value).toSorted()
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
 function isGateDaemonReadiness(value: unknown): boolean {
@@ -283,12 +308,31 @@ function isGateDiagnostics(value: unknown): boolean {
       severity?: unknown
       message?: unknown
       suggestedCommand?: unknown
+      actions?: unknown
     }
     return (
       typeof diagnostic.code === 'string' &&
       isGateDiagnosticSeverity(diagnostic.severity) &&
       typeof diagnostic.message === 'string' &&
-      (diagnostic.suggestedCommand === undefined || typeof diagnostic.suggestedCommand === 'string')
+      (diagnostic.suggestedCommand === undefined ||
+        typeof diagnostic.suggestedCommand === 'string') &&
+      (diagnostic.actions === undefined || isGateDiagnosticActions(diagnostic.actions))
+    )
+  })
+}
+
+function isGateDiagnosticActions(value: unknown): boolean {
+  if (!Array.isArray(value)) {
+    return false
+  }
+  return value.every((item) => {
+    if (!item || typeof item !== 'object') {
+      return false
+    }
+    const action = item as { label?: unknown; command?: unknown }
+    return (
+      typeof action.label === 'string' &&
+      (action.command === undefined || typeof action.command === 'string')
     )
   })
 }
@@ -391,6 +435,7 @@ async function runChild(
             stderr: stdio === 'pipe' ? stderr : undefined,
             service: ready.service,
             env: ready.env,
+            envKeys: ready.envKeys,
           })
           return
         }

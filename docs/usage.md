@@ -103,6 +103,10 @@ gate doctor --json
 files, and legacy registry entries from pre-scoped development builds. It exits
 with `1` when issues remain. In JSON mode, the issue report is written to stdout
 even when the command exits `1`; usage and internal errors still use stderr.
+Use `doctor --json` for install, setup, CI, preflight, and explicit local state
+diagnostics. Normal Node API flows such as `service()`, `ready()`, and `run()`
+do not call `doctor`; they use command-specific JSON output and `GateError`
+metadata for failures.
 
 ## Project Mode
 
@@ -186,6 +190,8 @@ stdout stays clean:
 
 ```text
 gate route  web  https://web.myapp.localhost  ->  http://127.0.0.1:4310
+gate fixable  daemon_not_running: listener daemon is not running
+gate action  Start listener daemon: gate up --daemon --project myapp
 ```
 
 Use `--quiet` to suppress gate's parent route/status hint without suppressing
@@ -238,6 +244,12 @@ Example JSON shape:
     "GATE_WEB_URL": "http://127.0.0.1:4310",
     "GATE_WEB_ROUTE_URL": "https://web.myapp.localhost"
   },
+  "envKeys": [
+    "GATE_WEB_PORT",
+    "GATE_WEB_ROUTE_URL",
+    "GATE_WEB_URL",
+    "PORT"
+  ],
   "daemon": {
     "required": true,
     "running": false,
@@ -250,7 +262,13 @@ Example JSON shape:
       "code": "daemon_not_running",
       "severity": "fixable",
       "message": "listener daemon is not running",
-      "suggestedCommand": "gate up --daemon --project myapp"
+      "suggestedCommand": "gate up --daemon --project myapp",
+      "actions": [
+        {
+          "label": "Start listener daemon",
+          "command": "gate up --daemon --project myapp"
+        }
+      ]
     }
   ]
 }
@@ -259,8 +277,12 @@ Example JSON shape:
 `standalone: true` appears for global reservations. `project` is omitted when
 the service is not project-scoped. Consumers should ignore unknown fields.
 Descriptor fields are additive across minor releases; existing field types and
-meanings are stable. Daemon diagnostic commands preserve the selected scope and
-may include `--config`, `--global`, `--https-addr`, or `--http-addr` when needed.
+meanings are stable. `envKeys` is summary metadata for agents that need to know
+which variables are available without inspecting every value. `diagnostics`
+describe current readiness state; `actions` are recommended next steps.
+`suggestedCommand` is kept for compatibility. Daemon diagnostic commands
+preserve the selected scope and may include `--config`, `--global`,
+`--https-addr`, or `--http-addr` when needed.
 
 Open:
 
@@ -303,6 +325,29 @@ Configure Tauri's `devUrl` to the same gate route, for example
 `https://desktop.app.localhost`. If your Tauri config is JavaScript or
 TypeScript, read `process.env.TAURI_DEV_URL` from `route_env`.
 
+### Browser dev apps
+
+For browser frameworks, publish route URLs through framework-public env names
+instead of hardcoding `https://...` in app config:
+
+```toml
+[services.api]
+route_env = [
+  "VITE_API_BASE_URL",
+  "NEXT_PUBLIC_API_BASE_URL",
+  "NUXT_PUBLIC_API_BASE_URL",
+]
+```
+
+Then start the app through gate:
+
+```bash
+gate run --up web -- pnpm dev
+```
+
+The child process receives gate-calculated route URLs. Custom listener ports are
+included when gate can read the active listener daemon status.
+
 Stop routing for the current project while keeping reservations:
 
 ```bash
@@ -334,6 +379,10 @@ state below:
 `GATE_ISOLATED_ROOT` takes precedence over `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
 and `XDG_DATA_HOME`. Existing XDG variables still work when
 `GATE_ISOLATED_ROOT` is not set.
+
+Use isolated state for temporary agent inspection, tests, and sandboxed setup
+checks. Use the user's normal gate state for real dev app launches that should
+share the user's registry, trusted certificate material, and listener daemon.
 
 ## Node
 

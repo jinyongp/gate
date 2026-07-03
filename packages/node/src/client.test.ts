@@ -420,6 +420,7 @@ test('client ready returns canonical env descriptor diagnostics', async () => {
 
   expect(ready.service.url).toBe('https://web.demo.localhost')
   expect(ready.env.PORT).toBe('4312')
+  expect(ready.envKeys).toEqual(['GATE_WEB_PORT', 'GATE_WEB_ROUTE_URL', 'GATE_WEB_URL', 'PORT'])
   expect(ready.daemon).toMatchObject({
     required: true,
     running: false,
@@ -431,6 +432,7 @@ test('client ready returns canonical env descriptor diagnostics', async () => {
       severity: 'fixable',
       message: 'listener daemon is not running',
       suggestedCommand: 'gate up --daemon',
+      actions: [{ label: 'Start listener daemon', command: 'gate up --daemon' }],
     },
   ])
 })
@@ -474,6 +476,7 @@ test('client run accepts legacy ready descriptor without diagnostics', async () 
   expect(result.stdout?.trim()).toBe('4312')
   expect(result.service?.service).toBe('web')
   expect(result.env?.PORT).toBe('4312')
+  expect(result.envKeys).toEqual(['PORT'])
 })
 
 test.each([
@@ -507,6 +510,40 @@ test.each([
         upstream: 'down',
       },
       env: { PORT: 4312 },
+      diagnostics: [],
+    },
+  ],
+  [
+    'bad envKeys',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: '4312' },
+      envKeys: ['PORT', 4312],
+      diagnostics: [],
+    },
+  ],
+  [
+    'mismatched envKeys',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: '4312' },
+      envKeys: ['GATE_WEB_PORT'],
       diagnostics: [],
     },
   ],
@@ -551,6 +588,29 @@ test.each([
           severity: 'surprising',
           message: 'listener daemon is not running',
           suggestedCommand: 123,
+        },
+      ],
+    },
+  ],
+  [
+    'bad diagnostic action',
+    {
+      service: {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost',
+        loopbackUrl: 'http://127.0.0.1:4312',
+        route: 'active',
+        upstream: 'down',
+      },
+      env: { PORT: '4312' },
+      diagnostics: [
+        {
+          code: 'daemon_not_running',
+          severity: 'fixable',
+          message: 'listener daemon is not running',
+          actions: [{ label: 123 }],
         },
       ],
     },
@@ -1051,6 +1111,7 @@ if (cmd === "env") {
     route: "active",
     upstream: "down",
     env: envFor(service),
+    envKeys: Object.keys(envFor(service)).sort(),
     daemon: {
       required: true,
       running: false,
@@ -1063,6 +1124,7 @@ if (cmd === "env") {
       severity: "fixable",
       message: "listener daemon is not running",
       suggestedCommand: "gate up --daemon",
+      actions: [{ label: "Start listener daemon", command: "gate up --daemon" }],
     }],
   }));
   process.exit(0);

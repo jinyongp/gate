@@ -1644,6 +1644,10 @@ func TestEnvJSONReturnsSelectedServiceAndEnv(t *testing.T) {
 		got.Env["GATE_WEB_ROUTE_URL"] != "https://app.localhost" {
 		t.Fatalf("env = %+v", got.Env)
 	}
+	wantKeys := []string{"GATE_WEB_PORT", "GATE_WEB_ROUTE_URL", "GATE_WEB_URL", "PORT"}
+	if strings.Join(got.EnvKeys, "\n") != strings.Join(wantKeys, "\n") {
+		t.Fatalf("envKeys = %#v, want %#v", got.EnvKeys, wantKeys)
+	}
 	if got.Daemon.Required || got.Daemon.Running || got.Daemon.Listener == "" {
 		t.Fatalf("daemon readiness = %+v", got.Daemon)
 	}
@@ -1694,6 +1698,9 @@ func TestEnvJSONReportsDaemonDiagnosticForActiveRoute(t *testing.T) {
 	if len(got.Diagnostics) != 1 || got.Diagnostics[0].Code != "daemon_not_running" || got.Diagnostics[0].Severity != "fixable" {
 		t.Fatalf("diagnostics = %+v", got.Diagnostics)
 	}
+	if len(got.Diagnostics[0].Actions) != 1 || got.Diagnostics[0].Actions[0].Command == "" {
+		t.Fatalf("diagnostic actions = %+v", got.Diagnostics[0].Actions)
+	}
 }
 
 func TestEnvJSONDaemonDiagnosticPreservesScopeAndListener(t *testing.T) {
@@ -1725,6 +1732,9 @@ func TestEnvJSONDaemonDiagnosticPreservesScopeAndListener(t *testing.T) {
 	want := "gate up --daemon --project demo --https-addr 127.0.0.1:18443 --http-addr 127.0.0.1:18080"
 	if got.Diagnostics[0].SuggestedCommand != want {
 		t.Fatalf("suggested command = %q, want %q", got.Diagnostics[0].SuggestedCommand, want)
+	}
+	if len(got.Diagnostics[0].Actions) != 1 || got.Diagnostics[0].Actions[0].Command != want {
+		t.Fatalf("actions = %+v, want command %q", got.Diagnostics[0].Actions, want)
 	}
 }
 
@@ -1824,6 +1834,12 @@ port = 4400
 		t.Fatalf("stdout = %q", out.String())
 	}
 	if !strings.HasPrefix(errb.String(), "gate route  web  https://web.demo.localhost  ->  http://127.0.0.1:4400\n") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+	if !strings.Contains(errb.String(), "gate fixable  daemon_not_running: listener daemon is not running\n") {
+		t.Fatalf("stderr missing diagnostic = %q", errb.String())
+	}
+	if !strings.Contains(errb.String(), "gate action  Start listener daemon: gate up --daemon --config ") {
 		t.Fatalf("stderr = %q", errb.String())
 	}
 }

@@ -97,11 +97,18 @@ export interface GateDiagnostic {
   severity: 'fatal' | 'fixable' | 'permission' | 'warning' | 'info'
   message: string
   suggestedCommand?: string
+  actions?: GateDiagnosticAction[]
+}
+
+export interface GateDiagnosticAction {
+  label: string
+  command?: string
 }
 
 export interface GateReadyResult {
   service: GateService
   env: GateRunEnv
+  envKeys?: string[]
   daemon?: GateDaemonReadiness
   diagnostics: GateDiagnostic[]
 }
@@ -109,6 +116,7 @@ export interface GateReadyResult {
 export interface GateRunReady {
   service: GateService
   env: GateRunEnv
+  envKeys?: string[]
   daemon?: GateDaemonReadiness
   diagnostics?: GateDiagnostic[]
 }
@@ -125,6 +133,7 @@ export interface GateRunResult {
   stderr?: string
   service?: GateService
   env?: GateRunEnv
+  envKeys?: string[]
 }
 
 export type GateErrorCode =
