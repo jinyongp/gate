@@ -78,8 +78,14 @@ export interface GateClient {
 
 export type GateRunEnv = Record<string, string>
 
+export interface GateRunReady {
+  service: GateService
+  env: GateRunEnv
+}
+
 export interface GateRunOptions extends GateServiceOptions {
   stdio?: 'inherit' | 'pipe'
+  onReady?: (ready: GateRunReady) => void | Promise<void>
 }
 
 export interface GateRunResult {
@@ -87,6 +93,8 @@ export interface GateRunResult {
   signal?: NodeJS.Signals
   stdout?: string
   stderr?: string
+  service?: GateService
+  env?: GateRunEnv
 }
 
 export type GateErrorCode =

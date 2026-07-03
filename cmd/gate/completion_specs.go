@@ -65,6 +65,9 @@ func completionSpecs() []completionSpec {
 			}
 			return completeScopedNames(ctx)
 		}, DisableFileCompletion: true},
+		{Command: "env", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
+			boolFlag("up", "", "bring up the selected scope before printing env"),
+		}, Args: scopedService, DisableFileCompletion: true},
 		{Command: "add", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsScope}, Flags: []completionFlagSpec{
 			stringFlag("host", "", "service host label under project base", nil),
 			stringFlag("domain", "", "full service domain", nil),
@@ -74,6 +77,7 @@ func completionSpecs() []completionSpec {
 		{Command: "prune", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Args: noArgs, DisableFileCompletion: true},
 		{Command: "run", FlagGroups: []completionFlagGroup{flagsHelp, flagsScope}, Flags: []completionFlagSpec{
 			boolFlag("up", "", "bring up the selected scope before running the child command"),
+			boolFlag("quiet", "", "suppress gate route/status hints"),
 		}, Args: scopedService, DisableFileCompletion: true, StopAfterDashDash: true},
 		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
 			{Command: "status", Summary: "show listener daemon status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},

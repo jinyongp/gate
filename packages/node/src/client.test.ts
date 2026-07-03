@@ -188,6 +188,7 @@ test('client isolatedRoot relocates gate subprocess state and inline config cach
 
   const root = join(dir, '.gate-agent')
   const env = JSON.parse(await readFile(envLog, 'utf8')) as Record<string, string>
+  expect(env.GATE_ISOLATED_ROOT).toBe(root)
   expect(env.GATE_NODE_CACHE_DIR).toBe(join(root, 'cache', 'node'))
   expect(env.XDG_CONFIG_HOME).toBe(join(root, 'xdg', 'config'))
   expect(env.XDG_STATE_HOME).toBe(join(root, 'xdg', 'state'))
@@ -355,12 +356,120 @@ test('client run injects generated env into child process', async () => {
   })
 
   expect(result.exitCode).toBe(0)
+  expect(result.service?.url).toBe('https://web.demo.localhost')
+  expect(result.env?.PORT).toBe('4312')
   expect(JSON.parse(result.stdout ?? '{}')).toEqual({
     PORT: '4312',
     API_URL: 'http://127.0.0.1:4313',
     PUBLIC_API_URL: 'https://api.demo.localhost',
     GATE_API_ROUTE_URL: 'https://api.demo.localhost',
   })
+})
+
+test('client run uses gate env descriptor route URLs with listener ports', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'), {
+    services: [
+      {
+        service: 'api',
+        domain: 'api.demo.localhost',
+        port: 4313,
+        url: 'https://api.demo.localhost:3443',
+      },
+      {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost:3443',
+      },
+    ],
+  })
+  const child = await fakeChild(
+    dir,
+    `console.log(JSON.stringify({
+      route: process.env.GATE_WEB_ROUTE_URL,
+      apiRoute: process.env.GATE_API_ROUTE_URL,
+    }));`,
+  )
+  const client = createGateClient({ bin: gate, cwd: dir })
+  const readyUrls: string[] = []
+
+  const result = await client.run('web', [process.execPath, child], {
+    stdio: 'pipe',
+    up: false,
+    onReady({ service, env }) {
+      readyUrls.push(service.url, env.GATE_API_ROUTE_URL)
+    },
+  })
+
+  expect(readyUrls).toEqual(['https://web.demo.localhost:3443', 'https://api.demo.localhost:3443'])
+  expect(result.service?.url).toBe('https://web.demo.localhost:3443')
+  expect(result.env?.GATE_WEB_ROUTE_URL).toBe('https://web.demo.localhost:3443')
+  expect(JSON.parse(result.stdout ?? '{}')).toEqual({
+    route: 'https://web.demo.localhost:3443',
+    apiRoute: 'https://api.demo.localhost:3443',
+  })
+})
+
+test('client run calls onReady with service and env before spawning child', async () => {
+  const dir = await tempDir()
+  const marker = join(dir, 'ready.txt')
+  const gate = await fakeGate(dir, join(dir, 'args.log'))
+  const child = await fakeChild(
+    dir,
+    `import { existsSync, readFileSync } from 'node:fs';
+console.log(JSON.stringify({
+  ready: existsSync(${JSON.stringify(marker)}),
+  marker: readFileSync(${JSON.stringify(marker)}, 'utf8'),
+  port: process.env.PORT,
+}));`,
+  )
+  const client = createGateClient({ bin: gate, cwd: dir })
+  const readyCalls: string[] = []
+
+  const result = await client.run('web', [process.execPath, child], {
+    stdio: 'pipe',
+    up: false,
+    async onReady({ service, env }) {
+      readyCalls.push(service.url)
+      await writeFile(marker, env.PORT)
+    },
+  })
+
+  expect(readyCalls).toEqual(['https://web.demo.localhost'])
+  expect(result.service?.service).toBe('web')
+  expect(result.env?.PORT).toBe('4312')
+  expect(JSON.parse(result.stdout ?? '{}')).toEqual({
+    ready: true,
+    marker: '4312',
+    port: '4312',
+  })
+})
+
+test('client run does not spawn child when onReady fails', async () => {
+  const dir = await tempDir()
+  const marker = join(dir, 'child-ran.txt')
+  const gate = await fakeGate(dir, join(dir, 'args.log'))
+  const child = await fakeChild(
+    dir,
+    `import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(marker)}, 'ran');`,
+  )
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(
+    client.run('web', [process.execPath, child], {
+      stdio: 'pipe',
+      up: false,
+      onReady() {
+        throw new Error('ready failed')
+      },
+    }),
+  ).rejects.toMatchObject({
+    code: 'GATE_COMMAND_FAILED',
+    message: 'run onReady failed',
+  })
+  await expect(readFile(marker, 'utf8')).rejects.toThrow(/ENOENT/)
 })
 
 test('client run reports non-zero child exits with captured output', async () => {
@@ -685,7 +794,7 @@ async function fakeGate(
   options: {
     mode?: 'permission' | 'invalid-json' | 'hang'
     envLog?: string
-    services?: Array<{ service: string; domain: string; port: number }>
+    services?: Array<{ service: string; domain: string; port: number; url?: string }>
   } = {},
 ): Promise<string> {
   const path = join(dir, 'gate-fake.mjs')
@@ -693,11 +802,12 @@ async function fakeGate(
     { service: 'web', domain: 'web.demo.localhost', port: 4312 },
   ]
   const body = `#!/usr/bin/env node
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, args.join(" ") + "\\n");
 if (${JSON.stringify(options.envLog)}) {
   writeFileSync(${JSON.stringify(options.envLog)}, JSON.stringify({
+    GATE_ISOLATED_ROOT: process.env.GATE_ISOLATED_ROOT,
     GATE_NODE_CACHE_DIR: process.env.GATE_NODE_CACHE_DIR,
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
     XDG_STATE_HOME: process.env.XDG_STATE_HOME,
@@ -717,12 +827,59 @@ if (${JSON.stringify(options.mode)} === "hang") {
 }
 const cmd = args[0];
 const services = ${JSON.stringify(services)};
+const loopbackUrl = (service) => "http://127.0.0.1:" + service.port;
+const routeUrl = (service) => service.url ?? ("https://" + service.domain);
+const configPath = (() => {
+  const index = args.indexOf("--config");
+  if (index !== -1) return args[index + 1];
+  return existsSync("gate.toml") ? "gate.toml" : undefined;
+})();
+const configBody = configPath && existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+const projectName = (() => {
+  const match = configBody.match(/\\[project\\][\\s\\S]*?name\\s*=\\s*"([^"]+)"/);
+  return match?.[1];
+})();
+const includeDeclarations = Boolean(configBody.includes("[services.api]") && configBody.includes("env") && projectName === "demo");
+const envFor = (selected) => {
+  const env = { PORT: String(selected.port) };
+  for (const service of services) {
+    const key = service.service.trim().toUpperCase().replace(/[^A-Z0-9]/g, "_");
+    env["GATE_" + key + "_PORT"] = String(service.port);
+    env["GATE_" + key + "_URL"] = loopbackUrl(service);
+    env["GATE_" + key + "_ROUTE_URL"] = routeUrl(service);
+  }
+  const api = services.find((service) => service.service === "api");
+  if (includeDeclarations && api) {
+    env.API_URL = loopbackUrl(api);
+    env.PUBLIC_API_URL = routeUrl(api);
+  }
+  return env;
+};
 if (cmd === "up") {
   console.log(JSON.stringify({ project: "demo", reloaded: false, services: services.map((service) => ({ ...service, allocated: true })) }));
   process.exit(0);
 }
 if (cmd === "ls") {
   console.log(JSON.stringify({ services: services.map((service) => ({ project: "demo", ...service, route: "active", upstream: "down" })) }));
+  process.exit(0);
+}
+if (cmd === "env") {
+  const service = services.find((candidate) => candidate.service === args.at(-1));
+  if (!service) {
+    console.error(JSON.stringify({ error: { code: "service_not_found", message: "service not found" } }));
+    process.exit(2);
+  }
+  console.log(JSON.stringify({
+    project: "demo",
+    service: service.service,
+    domain: service.domain,
+    port: service.port,
+    url: routeUrl(service),
+    loopbackUrl: loopbackUrl(service),
+    route: "active",
+    upstream: "down",
+    env: envFor(service),
+  }));
   process.exit(0);
 }
 if (cmd === "port") {

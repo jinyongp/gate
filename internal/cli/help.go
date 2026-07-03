@@ -32,6 +32,7 @@ var Specs = []CmdSpec{
 	{"up", "", "bring up scoped reservations: reserve ports, render routes, reload"},
 	{"ls", "", "list scoped reservations with route and upstream status"},
 	{"port", "[service]", "print one scoped service port, or list reserved ports"},
+	{"env", "<service>", "print the environment for a scoped service"},
 	{"run", "<service> -- <cmd> [args]", "run a child process with PORT injected from the reservation"},
 	{"down", "", "tear down scoped routes and keep reservations"},
 	{"expose", "<service> --via <provider> | ls | stop <service>", "publish, list, or stop external access"},

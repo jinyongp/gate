@@ -262,13 +262,15 @@ func TestCompletionEnumFlagValues(t *testing.T) {
 func TestCompletionFlagPrefixes(t *testing.T) {
 	isolateCompletion(t)
 
+	assertCompletionContains(t, completeGate(t, "--"), "--help", "--version", "--isolated-root")
 	longFlags := completeGate(t, "up", "--")
 	assertCompletionContains(t, longFlags, "--help", "--global", "--project", "--json", "--dns", "--daemon")
 	assertInOrder(t, longFlags, "--daemon", "--dns", "--global", "--project", "--json", "--help")
 	assertCompletionExcludes(t, longFlags, "--http-addr", "--https-addr")
 	shortFlags := completeGate(t, "up", "-")
 	assertCompletionContains(t, shortFlags, "-h", "-g", "-p", "-d")
-	assertCompletionContains(t, completeGate(t, "run", "--"), "--help", "--global", "--project", "--up")
+	assertCompletionContains(t, completeGate(t, "run", "--"), "--help", "--global", "--project", "--up", "--quiet")
+	assertCompletionContains(t, completeGate(t, "env", "--"), "--help", "--global", "--project", "--up", "--json")
 	assertCompletionContains(t, completeGate(t, "trust", "--"), "--help")
 }
 
@@ -326,7 +328,7 @@ func TestCompletionRootHidesInternalCommands(t *testing.T) {
 	out := completeGate(t, "")
 
 	assertCompletionContains(t, out, "add", "up", "daemon")
-	assertInOrder(t, out, "init", "up", "ls", "port", "run", "down", "expose", "daemon", "add", "rm", "clear", "prune")
+	assertInOrder(t, out, "init", "up", "ls", "port", "env", "run", "down", "expose", "daemon", "add", "rm", "clear", "prune")
 	assertKeepOrderDirective(t, out)
 	assertCompletionExcludes(t, out, "__serve")
 }

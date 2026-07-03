@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -19,6 +20,8 @@ import (
 
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+const isolatedRootEnv = "GATE_ISOLATED_ROOT"
 
 func main() {
 	cli.SetVersion(version)
@@ -42,6 +45,7 @@ var commands = map[string]command{
 	"down":      cli.Down,
 	"ls":        cli.Ls,
 	"port":      cli.Port,
+	"env":       cli.Env,
 	"add":       cli.Add,
 	"rm":        cli.Rm,
 	"clear":     cli.Clear,
@@ -60,6 +64,22 @@ var commands = map[string]command{
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	nextArgs, isolatedRoot, err := extractIsolatedRoot(args)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		usage(stderr)
+		return 2
+	}
+	if isolatedRoot != "" {
+		restore, err := setIsolatedRoot(isolatedRoot)
+		if err != nil {
+			fmt.Fprintf(stderr, "gate: invalid --isolated-root: %v\n", err)
+			return 2
+		}
+		defer restore()
+		args = nextArgs
+	}
+
 	cobra.EnableCommandSorting = false
 	root := &cobra.Command{
 		Use:           "gate",
@@ -80,6 +100,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.SetArgs(args)
+	root.PersistentFlags().String("isolated-root", "", "isolate gate state under path")
 	root.Version = version
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.SetHelpCommand(&cobra.Command{Use: "help", Short: "show help for a command"})
@@ -182,6 +203,72 @@ func extraCommandNames() []string {
 	return extra
 }
 
+func extractIsolatedRoot(args []string) ([]string, string, error) {
+	var out []string
+	var root string
+	seen := false
+	expectValue := false
+	for i, arg := range args {
+		if expectValue {
+			if arg == "--" {
+				return nil, "", errors.New("gate: --isolated-root requires a value")
+			}
+			if arg == "" {
+				return nil, "", errors.New("gate: --isolated-root requires a non-empty value")
+			}
+			root = arg
+			expectValue = false
+			continue
+		}
+		if arg == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if arg == "--isolated-root" {
+			if seen {
+				return nil, "", errors.New("gate: --isolated-root specified more than once")
+			}
+			seen = true
+			expectValue = true
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--isolated-root="); ok {
+			if seen {
+				return nil, "", errors.New("gate: --isolated-root specified more than once")
+			}
+			if value == "" {
+				return nil, "", errors.New("gate: --isolated-root requires a non-empty value")
+			}
+			root = value
+			seen = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	if expectValue {
+		return nil, "", errors.New("gate: --isolated-root requires a value")
+	}
+	return out, root, nil
+}
+
+func setIsolatedRoot(root string) (func(), error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	prev, hadPrev := os.LookupEnv(isolatedRootEnv)
+	if err := os.Setenv(isolatedRootEnv, abs); err != nil {
+		return nil, err
+	}
+	return func() {
+		if hadPrev {
+			_ = os.Setenv(isolatedRootEnv, prev)
+			return
+		}
+		_ = os.Unsetenv(isolatedRootEnv)
+	}, nil
+}
+
 // commandSummary returns a subcommand's one-line summary from cli.Specs, the
 // single source of truth shared with per-command help.
 func commandSummary(name string) string {
@@ -211,11 +298,12 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `gate — local-dev HTTPS reverse proxy + port registry
 
 usage:
-  gate [-h|--help] [-v|--version] <command> [args]
+  gate [-h|--help] [-v|--version] [--isolated-root path] <command> [args]
 
 flags:
-  -h, --help     show help
-  -v, --version  print version
+  -h, --help             show help
+  -v, --version          print version
+      --isolated-root    isolate gate state under path
 
 commands:
 `)
@@ -236,7 +324,7 @@ var commandGroups = []struct {
 	title string
 	names []string
 }{
-	{"PROJECT", []string{"init", "up", "ls", "port", "run", "down"}},
+	{"PROJECT", []string{"init", "up", "ls", "port", "env", "run", "down"}},
 	{"SHARE", []string{"expose"}},
 	{"DAEMON", []string{"daemon"}},
 	{"REGISTRY", []string{"add", "rm", "clear", "prune"}},
@@ -256,10 +344,11 @@ func usageRich(w io.Writer) {
 	}
 
 	fmt.Fprintln(w, ui.Title("gate", "local-dev HTTPS reverse proxy + port registry"))
-	fmt.Fprintf(w, "\n%s\n  gate [-h|--help] [-v|--version] <command> [args]\n", ui.Section("USAGE"))
+	fmt.Fprintf(w, "\n%s\n  gate [-h|--help] [-v|--version] [--isolated-root path] <command> [args]\n", ui.Section("USAGE"))
 	fmt.Fprintf(w, "\n%s\n", ui.Section("FLAGS"))
-	fmt.Fprintf(w, "  %s  %s\n", ui.Command("-h, --help", 13), "show help")
-	fmt.Fprintf(w, "  %s  %s\n", ui.Command("-v, --version", 13), "print version")
+	fmt.Fprintf(w, "  %s  %s\n", ui.Command("-h, --help", 18), "show help")
+	fmt.Fprintf(w, "  %s  %s\n", ui.Command("-v, --version", 18), "print version")
+	fmt.Fprintf(w, "  %s  %s\n", ui.Command("--isolated-root", 18), "isolate gate state under path")
 
 	grouped := map[string]bool{}
 	for _, g := range commandGroups {

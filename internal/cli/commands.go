@@ -20,6 +20,8 @@ import (
 	"gate/internal/proxy"
 	"gate/internal/registry"
 	"gate/internal/ui"
+
+	"golang.org/x/term"
 )
 
 // service is one row of `gate ls` output.
@@ -49,6 +51,19 @@ type portRow struct {
 	Standalone bool   `json:"standalone,omitempty"`
 }
 
+type runDescriptor struct {
+	Service     string            `json:"service"`
+	Project     string            `json:"project,omitempty"`
+	Standalone  bool              `json:"standalone,omitempty"`
+	Domain      string            `json:"domain"`
+	Port        int               `json:"port"`
+	URL         string            `json:"url"`
+	LoopbackURL string            `json:"loopbackUrl"`
+	Route       string            `json:"route"`
+	Upstream    string            `json:"upstream"`
+	Env         map[string]string `json:"env"`
+}
+
 type reservationLookupError struct {
 	Exit    int
 	Code    string
@@ -59,6 +74,7 @@ var (
 	selectDNSProvider     = dns.Select
 	setListenerRoutesFunc = setListenerRoutes
 	stdinIsTTYFunc        = stdinIsTTY
+	routeHintEnabledFunc  = routeHintEnabled
 )
 
 func liveness(p int) string {
@@ -81,6 +97,24 @@ func upstreamStatus(res registry.Reservation) string {
 
 func displayDomainURL(domain string) string {
 	return "https://" + domain
+}
+
+func displayRouteURL(res registry.Reservation) string {
+	ref := listenerRefFor(res.ListenerPair())
+	st, err := daemonClientForRef(ref).Status()
+	if err != nil || !daemonStatusMatchesListener(st, ref.Pair) {
+		return displayDomainURL(res.Domain)
+	}
+	return proxyURL(res.Domain, st.HTTPSAddr)
+}
+
+func routeHintEnabled(w io.Writer) bool {
+	ciValue := strings.ToLower(strings.TrimSpace(os.Getenv("CI")))
+	if ciValue != "" && ciValue != "false" && ciValue != "0" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 func currentProjectPath() (*config.Project, string, error) {
@@ -989,10 +1023,46 @@ func Prune(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
+// Env prints the environment gate would inject for a scoped service.
+func Env(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("env", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "emit JSON")
+	up := fs.Bool("up", false, "bring up the selected scope before printing env")
+	scopeFlags := defineDaemonScopeFlags(fs, false)
+	if handled, code := parseFlags(fs, "env", args, stdout, stderr); handled {
+		return code
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return usageFail(stderr, *jsonOut, "env")
+	}
+	sel, err := registryScopeFromFlags(scopeFlags, false)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
+	}
+	if *up {
+		if code := runUpBeforeExec(scopeFlags, stderr, *jsonOut); code != ExitOK {
+			return code
+		}
+	}
+	desc, lerr := buildRunDescriptor(rest[0], sel)
+	if lerr != nil {
+		return fail(stderr, *jsonOut, lerr.Exit, lerr.Code, lerr.Message)
+	}
+	if *jsonOut {
+		return writeJSON(stdout, desc)
+	}
+	for _, pair := range envPairs(desc.Env) {
+		fmt.Fprintln(stdout, pair)
+	}
+	return ExitOK
+}
+
 // Run executes `gate run <service> -- <cmd...>` with PORT injected.
 func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	up := fs.Bool("up", false, "bring up the selected scope before running the child command")
+	quiet := fs.Bool("quiet", false, "suppress gate route/status hints")
 	scopeFlags := defineDaemonScopeFlags(fs, false)
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		sp := specFor("run")
@@ -1021,23 +1091,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	cmd := args[sep+1:]
 
 	if *up {
-		if code := runUpBeforeExec(scopeFlags, stderr); code != ExitOK {
+		if code := runUpBeforeExec(scopeFlags, stderr, false); code != ExitOK {
 			return code
 		}
 	}
 
-	res, lerr := lookupScopedReservation(svc, sel)
+	desc, lerr := buildRunDescriptor(svc, sel)
 	if lerr != nil {
 		return fail(stderr, false, lerr.Exit, lerr.Code, lerr.Message)
 	}
-	env, err := runEnvForScope(sel)
-	if err != nil {
-		return fail(stderr, false, ExitError, "run_env", err.Error())
+	if !*quiet && *up && routeHintEnabledFunc(stderr) {
+		printRunRoute(stderr, desc)
 	}
-	return port.Exec(res.Port, env, cmd[0], cmd[1:], os.Stdin, stdout, stderr)
+	return port.Exec(desc.Port, envPairs(desc.Env), cmd[0], cmd[1:], os.Stdin, stdout, stderr)
 }
 
-func runUpBeforeExec(scopeFlags daemonScopeFlags, stderr io.Writer) int {
+func printRunRoute(stderr io.Writer, desc runDescriptor) {
+	fmt.Fprintf(stderr, "gate route  %s  %s  ->  %s\n", desc.Service, desc.URL, desc.LoopbackURL)
+}
+
+func runUpBeforeExec(scopeFlags daemonScopeFlags, stderr io.Writer, jsonOut bool) int {
 	args := []string{"--json"}
 	if scopeFlags.global != nil && *scopeFlags.global {
 		args = append(args, "--global")
@@ -1053,12 +1126,12 @@ func runUpBeforeExec(scopeFlags daemonScopeFlags, stderr io.Writer) int {
 	code := Up(args, &out, &errb)
 	if code != ExitOK {
 		if envelope, ok := parseErrorEnvelope(errb.Bytes()); ok {
-			return fail(stderr, false, code, envelope.Error.Code, envelope.Error.Message)
+			return fail(stderr, jsonOut, code, envelope.Error.Code, envelope.Error.Message)
 		}
 		if errb.Len() > 0 {
-			return fail(stderr, false, code, "up_failed", strings.TrimSpace(errb.String()))
+			return fail(stderr, jsonOut, code, "up_failed", strings.TrimSpace(errb.String()))
 		}
-		return fail(stderr, false, code, "up_failed", strings.TrimSpace(out.String()))
+		return fail(stderr, jsonOut, code, "up_failed", strings.TrimSpace(out.String()))
 	}
 	return code
 }
@@ -1071,7 +1144,31 @@ func parseErrorEnvelope(data []byte) (errEnvelope, bool) {
 	return envelope, envelope.Error.Message != ""
 }
 
-func runEnvForScope(sel registryScopeSelection) ([]string, error) {
+func buildRunDescriptor(name string, sel registryScopeSelection) (runDescriptor, *reservationLookupError) {
+	res, lerr := lookupScopedReservation(name, sel)
+	if lerr != nil {
+		return runDescriptor{}, lerr
+	}
+	env, err := runEnvMapForScope(sel)
+	if err != nil {
+		return runDescriptor{}, &reservationLookupError{Exit: ExitError, Code: "run_env", Message: err.Error()}
+	}
+	env["PORT"] = strconv.Itoa(res.Port)
+	return runDescriptor{
+		Service:     res.Service,
+		Project:     res.Project,
+		Standalone:  res.Standalone,
+		Domain:      res.Domain,
+		Port:        res.Port,
+		URL:         displayRouteURL(res),
+		LoopbackURL: loopbackURL(res.Port),
+		Route:       routeStatus(res),
+		Upstream:    upstreamStatus(res),
+		Env:         env,
+	}, nil
+}
+
+func runEnvMapForScope(sel registryScopeSelection) (map[string]string, error) {
 	reg, err := registryStore().Read()
 	if err != nil {
 		return nil, err
@@ -1091,10 +1188,10 @@ func runEnvForScope(sel registryScopeSelection) ([]string, error) {
 		if existing, ok := env["GATE_"+key+"_PORT"]; ok {
 			return nil, fmt.Errorf("duplicate gate env service key %q for %s and port %s", key, res.Service, existing)
 		}
-		loopbackURL := fmt.Sprintf("http://127.0.0.1:%d", res.Port)
+		loopbackURL := loopbackURL(res.Port)
 		env["GATE_"+key+"_PORT"] = strconv.Itoa(res.Port)
 		env["GATE_"+key+"_URL"] = loopbackURL
-		env["GATE_"+key+"_ROUTE_URL"] = displayDomainURL(res.Domain)
+		env["GATE_"+key+"_ROUTE_URL"] = displayRouteURL(res)
 		resByService[res.Service] = res
 	}
 	project, hasProject, err := projectForRunEnv(sel, reservations)
@@ -1110,16 +1207,24 @@ func runEnvForScope(sel registryScopeSelection) ([]string, error) {
 			if !ok || res.Port == 0 {
 				return nil, fmt.Errorf("service %q publishes env names but has no reserved port", name)
 			}
-			loopbackURL := fmt.Sprintf("http://127.0.0.1:%d", res.Port)
+			loopbackURL := loopbackURL(res.Port)
 			for _, envName := range svc.Env {
 				env[envName] = loopbackURL
 			}
-			routeURL := displayDomainURL(res.Domain)
+			routeURL := displayRouteURL(res)
 			for _, envName := range svc.RouteEnv {
 				env[envName] = routeURL
 			}
 		}
 	}
+	return env, nil
+}
+
+func loopbackURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+func envPairs(env map[string]string) []string {
 	keys := make([]string, 0, len(env))
 	for key := range env {
 		keys = append(keys, key)
@@ -1129,7 +1234,7 @@ func runEnvForScope(sel registryScopeSelection) ([]string, error) {
 	for _, key := range keys {
 		out = append(out, key+"="+env[key])
 	}
-	return out, nil
+	return out
 }
 
 func projectForRunEnv(sel registryScopeSelection, reservations []projectReservation) (*config.Project, bool, error) {

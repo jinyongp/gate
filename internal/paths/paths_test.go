@@ -20,6 +20,14 @@ func TestConfigDir(t *testing.T) {
 			t.Fatalf("ConfigDir() = %q, want %q", got, want)
 		}
 	})
+	t.Run("isolated root overrides xdg", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("GATE_ISOLATED_ROOT", root)
+		t.Setenv("XDG_CONFIG_HOME", "/xdg/cfg")
+		if got, want := ConfigDir(), filepath.Join(root, "xdg", "config", "gate"); got != want {
+			t.Fatalf("ConfigDir() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestDataDir(t *testing.T) {
@@ -33,6 +41,14 @@ func TestDataDir(t *testing.T) {
 		t.Setenv("XDG_DATA_HOME", "")
 		t.Setenv("HOME", "/home/u")
 		if got, want := DataDir(), filepath.Join("/home/u", ".local", "share", "gate"); got != want {
+			t.Fatalf("DataDir() = %q, want %q", got, want)
+		}
+	})
+	t.Run("isolated root overrides xdg", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("GATE_ISOLATED_ROOT", root)
+		t.Setenv("XDG_DATA_HOME", "/xdg/data")
+		if got, want := DataDir(), filepath.Join(root, "xdg", "data", "gate"); got != want {
 			t.Fatalf("DataDir() = %q, want %q", got, want)
 		}
 	})
@@ -60,6 +76,14 @@ func TestStateDir(t *testing.T) {
 		t.Setenv("HOME", "/home/u")
 		if got, want := stateDir("linux"), filepath.Join("/home/u", ".local", "state", "gate"); got != want {
 			t.Fatalf("stateDir(linux) = %q, want %q", got, want)
+		}
+	})
+	t.Run("isolated root overrides xdg", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv("GATE_ISOLATED_ROOT", root)
+		t.Setenv("XDG_STATE_HOME", "/xdg/state")
+		if got, want := StateDir(), filepath.Join(root, "xdg", "state", "gate"); got != want {
+			t.Fatalf("StateDir() = %q, want %q", got, want)
 		}
 	})
 }

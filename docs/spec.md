@@ -234,6 +234,12 @@ flowchart LR
     statedir --> logs
 ```
 
+Storage paths normally follow XDG/macOS defaults. When `GATE_ISOLATED_ROOT` is
+set, gate resolves config, state, data, daemon socket, registry, and CA paths
+below that root instead of the user's normal state locations. This is an
+explicit sandbox/test mode; default CLI and Node API behavior must continue to
+share normal user gate state unless callers opt in.
+
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |
 | `gate.toml` | user and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |

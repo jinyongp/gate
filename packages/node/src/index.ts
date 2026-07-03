@@ -13,6 +13,7 @@ export type {
   GateInlineServiceConfig,
   GateRunEnv,
   GateRunOptions,
+  GateRunReady,
   GateRunResult,
   GateScope,
   GateService,

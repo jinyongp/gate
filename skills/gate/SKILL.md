@@ -69,6 +69,32 @@ processes:
 pnpm exec gate run --up web -- pnpm dev
 ```
 
+In an interactive terminal, `gate run --up` prints the selected route to stderr
+before starting the child process. Use `--quiet` when only child stderr should
+appear.
+
+For scripts or agents that need structured route/env data without spawning a
+child, use:
+
+```bash
+pnpm exec gate env web --json
+```
+
+`gate env` is read-only by default. Use `gate env --up web --json` only when the
+script intentionally wants to reserve/activate routes first.
+
+For sandboxed agents or tests, isolate gate state under a workspace-local,
+git-ignored directory instead of writing registry locks, daemon sockets, logs,
+or CA material under the user's normal gate state:
+
+```bash
+pnpm exec gate --isolated-root .gate-agent env --up web --json
+pnpm exec gate --isolated-root .gate-agent run --up web -- pnpm dev
+```
+
+The CLI flag sets `GATE_ISOLATED_ROOT` for that command. Node callers should
+use `createGateClient({ isolatedRoot: '.gate-agent' })`.
+
 `service(name)` defaults to `{ up: true, dns: 'localhost', daemon: false }`. It
 can reserve/activate routes, but it does not start the daemon unless
 `daemon: true` is passed. Use `service(name, { up: false })`, `ls()`, or

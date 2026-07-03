@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1581,6 +1582,48 @@ func TestPortListsReservedPortsJSON(t *testing.T) {
 	}
 }
 
+func TestEnvJSONReturnsSelectedServiceAndEnv(t *testing.T) {
+	setupProject(t)
+	var out, errb bytes.Buffer
+	if code := Env([]string{"web", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Env --json exit = %d, stderr=%s", code, errb.String())
+	}
+	var got runDescriptor
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v\n%s", err, out.String())
+	}
+	if got.Service != "web" || got.Project != "demo" || got.Port != 4400 {
+		t.Fatalf("descriptor = %+v", got)
+	}
+	if got.URL != "https://app.localhost" || got.LoopbackURL != "http://127.0.0.1:4400" {
+		t.Fatalf("urls = %q %q", got.URL, got.LoopbackURL)
+	}
+	if got.Env["PORT"] != "4400" ||
+		got.Env["GATE_WEB_PORT"] != "4400" ||
+		got.Env["GATE_WEB_URL"] != "http://127.0.0.1:4400" ||
+		got.Env["GATE_WEB_ROUTE_URL"] != "https://app.localhost" {
+		t.Fatalf("env = %+v", got.Env)
+	}
+}
+
+func TestEnvTextPrintsSortedAssignments(t *testing.T) {
+	setupProject(t)
+	var out, errb bytes.Buffer
+	if code := Env([]string{"web"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Env exit = %d, stderr=%s", code, errb.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	want := []string{
+		"GATE_WEB_PORT=4400",
+		"GATE_WEB_ROUTE_URL=https://app.localhost",
+		"GATE_WEB_URL=http://127.0.0.1:4400",
+		"PORT=4400",
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("env text = %#v, want %#v", lines, want)
+	}
+}
+
 func TestLsHelpGroupsAllAlias(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := Ls([]string{"-h"}, &out, &errb); code != ExitOK {
@@ -1629,6 +1672,68 @@ port = 4400
 	}
 	if errb.String() != "" {
 		t.Fatalf("stderr should not include hidden up output: %q", errb.String())
+	}
+}
+
+func TestRunUpPrintsRouteHintBeforeExecWhenEnabled(t *testing.T) {
+	isolate(t)
+	oldHint := routeHintEnabledFunc
+	routeHintEnabledFunc = func(io.Writer) bool { return true }
+	t.Cleanup(func() { routeHintEnabledFunc = oldHint })
+	dir := t.TempDir()
+	toml := `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+port = 4400
+`
+	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	var out, errb bytes.Buffer
+	code := Run([]string{"--up", "web", "--", "sh", "-c", `printf child`}, &out, &errb)
+	if code != ExitOK {
+		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
+	}
+	if out.String() != "child" {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if !strings.HasPrefix(errb.String(), "gate route  web  https://web.demo.localhost  ->  http://127.0.0.1:4400\n") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+}
+
+func TestRunQuietSuppressesRouteHint(t *testing.T) {
+	isolate(t)
+	oldHint := routeHintEnabledFunc
+	routeHintEnabledFunc = func(io.Writer) bool { return true }
+	t.Cleanup(func() { routeHintEnabledFunc = oldHint })
+	dir := t.TempDir()
+	toml := `[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.web]
+port = 4400
+`
+	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	var out, errb bytes.Buffer
+	code := Run([]string{"--up", "--quiet", "web", "--", "sh", "-c", `printf child`}, &out, &errb)
+	if code != ExitOK {
+		t.Fatalf("Run exit = %d, stderr=%s", code, errb.String())
+	}
+	if out.String() != "child" {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if errb.String() != "" {
+		t.Fatalf("stderr = %q", errb.String())
 	}
 }
 

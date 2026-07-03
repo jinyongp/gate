@@ -12,6 +12,12 @@ project file.
 Use `gate --help` for the root command list, or `gate <command> --help` for one
 command's flags and positional arguments.
 
+Global flags:
+
+- `--isolated-root path`: isolate gate registry, daemon sockets, logs, and CA
+  material under `path`. The flag may appear before the command or before a
+  command's `--` child separator. Child arguments after `--` are left untouched.
+
 | command                                                                                                                                                                                   | purpose                                                                      |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `gate init [--name name] [--force] [-y\|--yes] [--json]`                                                                                                                                  | scaffold a starter `gate.toml`                                               |
@@ -19,7 +25,8 @@ command's flags and positional arguments.
 | `gate down [--config path] [-g\|--global] [-p name\|--project name] [--json]`                                                                                                             | deactivate scoped routes while keeping reservations                          |
 | `gate ls [--route active\|inactive] [--upstream live\|down] [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [--json]`                                                | list reservations with route and upstream status                             |
 | `gate port [--config path] [-g\|--global] [-p name\|--project name] [-a\|--all] [service] [--json]`                                                                                       | print one service port or list reserved ports                                |
-| `gate run [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>`                                                                                          | run a child command with `PORT` injected                                     |
+| `gate env [--up] [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]`                                                                                              | print the environment for one scoped service                                 |
+| `gate run [--up] [--quiet] [--config path] [-g\|--global] [-p name\|--project name] <service> -- <cmd...>`                                                                                  | run a child command with `PORT` injected                                     |
 | `gate add [--config path] [-g\|--global] [-p name\|--project name] [--host host] [--domain domain] <service> <port> [--json]`                                                             | add or update one reservation                                                |
 | `gate rm [--config path] [-g\|--global] [-p name\|--project name] <service> [--json]`                                                                                                     | remove one reservation                                                       |
 | `gate clear [--config path] [-g\|--global] [-p name\|--project name] [-y\|--yes] [--json]`                                                                                                | remove all reservations in one scope                                         |
@@ -173,6 +180,21 @@ Reserve first, then run the child command:
 gate run --up web -- pnpm dev
 ```
 
+When stderr is an interactive terminal, `gate run --up` prints the selected
+route before starting the child process. The hint is written to stderr so child
+stdout stays clean:
+
+```text
+gate route  web  https://web.myapp.localhost  ->  http://127.0.0.1:4310
+```
+
+Use `--quiet` to suppress gate's parent route/status hint without suppressing
+the child process output:
+
+```bash
+gate run --up --quiet web -- pnpm dev
+```
+
 `gate run` also injects peer service values into the child process:
 `GATE_<SERVICE>_PORT`, `GATE_<SERVICE>_URL`,
 `GATE_<SERVICE>_ROUTE_URL`, and any service-declared env names such as
@@ -180,17 +202,119 @@ gate run --up web -- pnpm dev
 `http://127.0.0.1:<port>`. `route_env` values use route URLs such as
 `https://api.myapp.localhost`.
 
+Print the same environment without spawning a child:
+
+```bash
+gate env web
+gate env web --json
+```
+
+`gate env` is read-only by default. Pass `--up` when a script intentionally
+wants to reserve or activate the selected scope before reading the environment:
+
+```bash
+gate env --up web --json
+```
+
+`gate env --json` includes the selected service, local route URL, loopback URL,
+route/upstream status, and the environment map that `gate run` would inject.
+
+Example JSON shape:
+
+```json
+{
+  "service": "web",
+  "project": "myapp",
+  "domain": "web.myapp.localhost",
+  "port": 4310,
+  "url": "https://web.myapp.localhost",
+  "loopbackUrl": "http://127.0.0.1:4310",
+  "route": "active",
+  "upstream": "down",
+  "env": {
+    "PORT": "4310",
+    "GATE_WEB_PORT": "4310",
+    "GATE_WEB_URL": "http://127.0.0.1:4310",
+    "GATE_WEB_ROUTE_URL": "https://web.myapp.localhost"
+  }
+}
+```
+
+`standalone: true` appears for global reservations. `project` is omitted when
+the service is not project-scoped.
+
 Open:
 
 ```text
 https://web.myapp.localhost
 ```
 
+### Tauri + Vite
+
+Use gate's route URL as the app URL and gate's reserved port as Vite's dev
+server port:
+
+```toml
+[project]
+name = "desktop"
+base = "app.localhost"
+
+[services.desktop]
+route_env = "TAURI_DEV_URL"
+```
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+  server: {
+    host: '127.0.0.1',
+    port: Number(process.env.PORT),
+    strictPort: true,
+  },
+})
+```
+
+```bash
+gate run --up desktop -- pnpm dev
+```
+
+Configure Tauri's `devUrl` to the same gate route, for example
+`https://desktop.app.localhost`. If your Tauri config is JavaScript or
+TypeScript, read `process.env.TAURI_DEV_URL` from `route_env`.
+
 Stop routing for the current project while keeping reservations:
 
 ```bash
 gate down
 ```
+
+## Agent and Sandbox Isolation
+
+By default, gate uses the user's normal XDG/macOS state locations, such as
+`~/.config/gate`, for registry locks, daemon sockets, logs, and certificate
+material. Agents, tests, and sandboxed runners should use an isolated root when
+they must avoid writing to the user's normal gate state:
+
+```bash
+gate --isolated-root .gate-agent env --up web --json
+gate --isolated-root .gate-agent run --up web -- pnpm dev
+```
+
+`--isolated-root path` sets `GATE_ISOLATED_ROOT` for that command. Relative
+paths resolve from the current working directory. `GATE_ISOLATED_ROOT` maps gate
+state below:
+
+```text
+<root>/xdg/config/gate
+<root>/xdg/state/gate
+<root>/xdg/data/gate
+```
+
+`GATE_ISOLATED_ROOT` takes precedence over `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
+and `XDG_DATA_HOME`. Existing XDG variables still work when
+`GATE_ISOLATED_ROOT` is not set.
 
 ## Node
 
@@ -520,6 +644,7 @@ gate up --json
 gate down --json
 gate ls --json
 gate port -a --json
+gate env web --json
 gate daemon status --json
 gate doctor --json
 gate add web 3000 --json

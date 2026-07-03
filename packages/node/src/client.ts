@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { dnsArgs, parseJSON, runGate } from './command.js'
 import { composeSignals } from './command.js'
-import { prepareScope, serviceEnvDeclarations } from './config.js'
+import { prepareScope } from './config.js'
 import { gateProcessEnv } from './environment.js'
 import { GateError } from './errors.js'
 import { assertDNSAllowed, assertScopeDNSAllowed } from './preflight.js'
@@ -11,6 +11,7 @@ import type {
   GateCommandOptions,
   GateRunEnv,
   GateRunOptions,
+  GateRunReady,
   GateRunResult,
   GateService,
   GateServiceOptions,
@@ -45,6 +46,10 @@ interface GateUpJSON {
     port: number
     allocated?: boolean
   }>
+}
+
+interface GateEnvJSON extends GateService {
+  env: GateRunEnv
 }
 
 export function createGateClient(defaults: GateClientOptions = {}): GateClient {
@@ -84,11 +89,26 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
     }))
   }
 
-  const envForService = async (name: string, options?: GateServiceOptions): Promise<GateRunEnv> => {
+  const readyForService = async (
+    name: string,
+    options?: GateServiceOptions,
+  ): Promise<GateRunReady> => {
     const merged = withDefaults(options)
-    const { selected, services } = await resolveServiceSet(name, merged, up, ls)
-    const declarations = await serviceEnvDeclarations(merged.scope, merged)
-    return buildRunEnv(selected, services, declarations)
+    const serviceOptions = { ...merged, dns: merged.dns ?? 'localhost' }
+    if (merged.up ?? true) {
+      await assertDNSAllowed(name, serviceOptions)
+      await up(serviceOptions)
+    }
+    const scope = await prepareScope(serviceOptions.scope, serviceOptions)
+    const args = ['env', '--json', ...scope.args, name]
+    const result = await runGate(args, serviceOptions)
+    const parsed = parseJSON<GateEnvJSON>([resultCommand(serviceOptions), ...args], result.stdout)
+    const { env, ...service } = parsed
+    return { service, env }
+  }
+
+  const envForService = async (name: string, options?: GateServiceOptions): Promise<GateRunEnv> => {
+    return (await readyForService(name, options)).env
   }
 
   return {
@@ -108,8 +128,8 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
     ): Promise<GateRunResult> {
       validateCommand(command)
       const merged = withDefaults(options)
-      const generatedEnv = await envForService(name, merged)
-      return await runChild(command, generatedEnv, merged)
+      const ready = await readyForService(name, merged)
+      return await runChild(command, ready, merged)
     },
 
     async port(service: string, options?: GateCommandOptions): Promise<number> {
@@ -167,57 +187,6 @@ async function resolveServiceSet(
   return { selected, services }
 }
 
-function buildRunEnv(
-  selected: GateService,
-  services: GateService[],
-  declarations: Map<string, { env: string[]; routeEnv: string[] }>,
-): GateRunEnv {
-  const out: GateRunEnv = { PORT: String(selected.port) }
-  const byService = new Map(services.map((service) => [service.service, service]))
-
-  for (const service of services) {
-    const key = serviceEnvKey(service.service)
-    const portName = `GATE_${key}_PORT`
-    if (out[portName] !== undefined) {
-      throw new GateError({
-        code: 'GATE_COMMAND_FAILED',
-        message: `duplicate gate env service key "${key}" for service "${service.service}"`,
-      })
-    }
-    out[portName] = String(service.port)
-    out[`GATE_${key}_URL`] = service.loopbackUrl
-    out[`GATE_${key}_ROUTE_URL`] = service.url
-  }
-
-  for (const [serviceName, declaration] of declarations) {
-    if (declaration.env.length === 0 && declaration.routeEnv.length === 0) {
-      continue
-    }
-    const service = byService.get(serviceName)
-    if (!service) {
-      throw new GateError({
-        code: 'GATE_COMMAND_FAILED',
-        message: `service "${serviceName}" publishes env names but has no reserved port`,
-      })
-    }
-    for (const envName of declaration.env) {
-      out[envName] = service.loopbackUrl
-    }
-    for (const envName of declaration.routeEnv) {
-      out[envName] = service.url
-    }
-  }
-
-  return out
-}
-
-function serviceEnvKey(name: string): string {
-  return name
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '_')
-}
-
 function validateCommand(command: readonly string[]): void {
   if (!Array.isArray(command) || command.length === 0) {
     throw new GateError({
@@ -235,11 +204,22 @@ function validateCommand(command: readonly string[]): void {
 
 async function runChild(
   command: readonly string[],
-  generatedEnv: GateRunEnv,
+  ready: GateRunReady,
   options: GateRunOptions,
 ): Promise<GateRunResult> {
   const stdio = options.stdio ?? 'inherit'
-  const env = { ...gateProcessEnv(options), ...generatedEnv }
+  const env = { ...gateProcessEnv(options), ...ready.env }
+
+  try {
+    await options.onReady?.(ready)
+  } catch (cause) {
+    throw new GateError({
+      code: 'GATE_COMMAND_FAILED',
+      message: 'run onReady failed',
+      command: [...command],
+      cause,
+    })
+  }
 
   return await new Promise<GateRunResult>((resolve, reject) => {
     const timeoutController = options.timeoutMs ? new AbortController() : undefined
@@ -306,6 +286,8 @@ async function runChild(
             exitCode: 0,
             stdout: stdio === 'pipe' ? stdout : undefined,
             stderr: stdio === 'pipe' ? stderr : undefined,
+            service: ready.service,
+            env: ready.env,
           })
           return
         }

@@ -15,12 +15,18 @@ const appName = "gate"
 // ConfigDir returns the directory for configuration and the global registry
 // (default ~/.config/gate).
 func ConfigDir() string {
+	if root := isolatedRoot(); root != "" {
+		return filepath.Join(root, "xdg", "config", appName)
+	}
 	return base("XDG_CONFIG_HOME", ".config")
 }
 
 // DataDir returns the directory for the CA and certificates
 // (default ~/.local/share/gate).
 func DataDir() string {
+	if root := isolatedRoot(); root != "" {
+		return filepath.Join(root, "xdg", "data", appName)
+	}
 	return base("XDG_DATA_HOME", filepath.Join(".local", "share"))
 }
 
@@ -73,6 +79,9 @@ func Ensure(dir string) (string, error) {
 }
 
 func stateDir(goos string) string {
+	if root := isolatedRoot(); root != "" {
+		return filepath.Join(root, "xdg", "state", appName)
+	}
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {
 		return filepath.Join(v, appName)
 	}
@@ -95,4 +104,15 @@ func home() string {
 		return os.TempDir()
 	}
 	return h
+}
+
+func isolatedRoot() string {
+	root := os.Getenv("GATE_ISOLATED_ROOT")
+	if root == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		return abs
+	}
+	return filepath.Clean(root)
 }

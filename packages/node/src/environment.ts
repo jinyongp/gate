@@ -22,6 +22,7 @@ function isolatedRootEnv(options: GateClientOptions): NodeJS.ProcessEnv {
     return {}
   }
   return {
+    GATE_ISOLATED_ROOT: root,
     GATE_NODE_CACHE_DIR: join(root, 'cache', 'node'),
     XDG_CONFIG_HOME: join(root, 'xdg', 'config'),
     XDG_STATE_HOME: join(root, 'xdg', 'state'),

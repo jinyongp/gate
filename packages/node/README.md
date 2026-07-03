@@ -40,7 +40,9 @@ pnpm exec gate run --up web -- pnpm dev
 
 Prefer `gate run` when launching dev servers. It injects `PORT`, peer
 `GATE_<SERVICE>_*` values, and service-specific env values declared in
-`gate.toml`.
+`gate.toml`. When `--up` is used in an interactive terminal, gate prints the
+selected route before starting the child process. Use `--quiet` to suppress that
+parent hint.
 
 ## Node API
 
@@ -108,9 +110,10 @@ const gate = createGateClient({
 })
 ```
 
-`isolatedRoot` sets the gate subprocess environment to keep generated inline
-config, registry locks, daemon state, and trust material out of the user's home
-config, state, data, and cache directories.
+`isolatedRoot` sets `GATE_ISOLATED_ROOT`, `GATE_NODE_CACHE_DIR`, and the XDG
+state variables for gate subprocesses. This keeps generated inline config,
+registry locks, daemon state, and trust material out of the user's home config,
+state, data, and cache directories.
 
 Use `env()` when another runner owns process spawning:
 
@@ -131,20 +134,27 @@ await someRunner.start({
 `GATE_<SERVICE>_URL`, `GATE_<SERVICE>_ROUTE_URL`, and service-declared
 `env` / `routeEnv` values from the selected config. Browser-visible variables
 still need framework-public names such as `VITE_API_BASE_URL` or
-`NEXT_PUBLIC_API_BASE_URL` in `routeEnv`.
+`NEXT_PUBLIC_API_BASE_URL` in `routeEnv`. The values come from the same
+descriptor as `gate env --json`, so route URLs match CLI behavior, including
+non-default gate listener ports.
 
 Use `run()` when the Node API should spawn the child and inject env itself:
 
 ```ts
 await gate.run('web', ['pnpm', 'dev'], {
   scope: { config },
+  onReady({ service }) {
+    console.log(service.url)
+  },
 })
 ```
 
 `run()` defaults to `stdio: 'inherit'` for human-readable dev-server logs.
 Agent callers that need structured diagnostics should use `stdio: 'pipe'`;
 non-zero exits throw `GateError` with `exitCode`, `command`, and captured
-stdout/stderr.
+stdout/stderr. `onReady` runs after route/env resolution and before the child is
+spawned; if it throws, the child is not started. Successful `run()` results also
+include `service` and `env` for short-lived commands and tests.
 
 ## Binary Resolution
 

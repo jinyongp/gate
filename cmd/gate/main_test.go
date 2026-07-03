@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -53,6 +55,52 @@ func TestRunDispatch(t *testing.T) {
 	}
 }
 
+func TestRunIsolatedRootSetsEnvForCommand(t *testing.T) {
+	prev, hadPrev := os.LookupEnv(isolatedRootEnv)
+	if err := os.Unsetenv(isolatedRootEnv); err != nil {
+		t.Fatalf("unset %s: %v", isolatedRootEnv, err)
+	}
+	t.Cleanup(func() {
+		if hadPrev {
+			_ = os.Setenv(isolatedRootEnv, prev)
+			return
+		}
+		_ = os.Unsetenv(isolatedRootEnv)
+	})
+
+	commands["ping"] = func(_ []string, stdout, _ io.Writer) int {
+		_, _ = io.WriteString(stdout, os.Getenv(isolatedRootEnv))
+		return 0
+	}
+	t.Cleanup(func() { delete(commands, "ping") })
+
+	root := filepath.Join(t.TempDir(), "isolated")
+	var out, errb bytes.Buffer
+	if code := run([]string{"ping", "--isolated-root", root}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	if got, want := out.String(), root; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if _, ok := os.LookupEnv(isolatedRootEnv); ok {
+		t.Fatalf("%s leaked after run", isolatedRootEnv)
+	}
+}
+
+func TestExtractIsolatedRootPreservesChildArgsAfterSeparator(t *testing.T) {
+	args, root, err := extractIsolatedRoot([]string{"run", "--isolated-root=.gate", "web", "--", "cmd", "--isolated-root", "child"})
+	if err != nil {
+		t.Fatalf("extractIsolatedRoot() error = %v", err)
+	}
+	if root != ".gate" {
+		t.Fatalf("root = %q, want .gate", root)
+	}
+	want := []string{"run", "web", "--", "cmd", "--isolated-root", "child"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
 func TestRunDoctorHelpIsReachable(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run([]string{"doctor", "-h"}, &out, &errb); code != 0 {
@@ -78,7 +126,7 @@ func TestRootUsageIncludesFlags(t *testing.T) {
 	if code := run(nil, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
 	}
-	for _, want := range []string{"flags:", "-h, --help", "-v, --version"} {
+	for _, want := range []string{"flags:", "-h, --help", "-v, --version", "--isolated-root"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("stdout = %q, want %q", out.String(), want)
 		}
