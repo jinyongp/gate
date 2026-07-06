@@ -56,6 +56,31 @@ interface GateEnvJSON extends GateService {
   diagnostics?: GateReadyResult['diagnostics']
 }
 
+/**
+ * Create a high-level Node client backed by the gate CLI JSON contracts.
+ *
+ * @remarks
+ * Defaults are merged into every method call. Per-call options override client
+ * defaults, and per-call `env` values are merged over default `env` values.
+ *
+ * The client does not reimplement gate routing logic. It invokes the selected
+ * gate binary, requests JSON output, and maps command failures to
+ * {@link GateError}.
+ *
+ * @param defaults - Options applied to all client methods.
+ * @returns A {@link GateClient} instance.
+ *
+ * @example
+ * ```ts
+ * import { createGateClient } from '@jinyongp/gate'
+ *
+ * const gate = createGateClient({ cwd: process.cwd() })
+ * const web = await gate.service('web', { up: true })
+ * console.log(web.url)
+ * ```
+ *
+ * @public
+ */
 export function createGateClient(defaults: GateClientOptions = {}): GateClient {
   const withDefaults = <T extends GateCommandOptions>(options?: T): T & GateCommandOptions =>
     ({

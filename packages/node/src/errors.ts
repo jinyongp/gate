@@ -11,19 +11,51 @@ const gateErrorCodes = new Set<GateErrorCode>([
   'GATE_UNSUPPORTED_PLATFORM',
 ])
 
+/**
+ * Error type thrown by the Node API for gate command and option failures.
+ *
+ * @remarks
+ * `code` is the stable Node API category. When the gate binary emits a JSON
+ * error envelope, fields such as `gateCode`, `severity`, `retryable`, `hint`,
+ * and `nextActions` preserve that metadata for automation.
+ *
+ * @public
+ */
 export class GateError extends Error {
+  /** Stable Node API error code. */
   readonly code: GateErrorCode
+
+  /** Command argv that failed, including the resolved gate binary name. */
   readonly command: string[]
+
+  /** Gate CLI JSON error code, when available. */
   readonly gateCode?: string
+
+  /** Gate CLI JSON severity, when available. */
   readonly severity?: string
+
+  /** Whether the gate CLI marked the operation retryable. */
   readonly retryable?: boolean
+
+  /** Human-readable recovery hint from the gate CLI. */
   readonly hint?: string
+
+  /** Structured recovery actions from the gate CLI. */
   readonly nextActions: GateErrorDetails['nextActions']
+
+  /** Process exit code, when a subprocess exited normally. */
   readonly exitCode?: number
+
+  /** Process signal, when a subprocess was terminated by signal. */
   readonly signal?: NodeJS.Signals
+
+  /** Captured stdout, usually only when output was piped. */
   readonly stdout?: string
+
+  /** Captured stderr, usually only when output was piped or JSON error parsing ran. */
   readonly stderr?: string
 
+  /** Create a gate Node API error from structured details. */
   constructor(details: GateErrorDetails) {
     super(details.message, details.cause === undefined ? undefined : { cause: details.cause })
     this.name = 'GateError'
@@ -41,10 +73,44 @@ export class GateError extends Error {
   }
 }
 
+/**
+ * {@link GateError} narrowed to a specific stable code.
+ *
+ * @public
+ */
 export type GateErrorWithCode<Code extends GateErrorCode> = GateError & {
   readonly code: Code
 }
 
+/**
+ * Test whether an unknown value is a {@link GateError}.
+ *
+ * @remarks
+ * Pass a code to narrow the result to {@link GateErrorWithCode}. The check also
+ * accepts error-like objects with `name: "GateError"` and a known code, which
+ * keeps narrowing useful across package copies or process boundaries.
+ *
+ * @param error - Value caught from `try`/`catch`.
+ * @param code - Optional stable Node API error code to match.
+ *
+ * @example
+ * ```ts
+ * import { createGateClient, isGateError } from '@jinyongp/gate'
+ *
+ * const gate = createGateClient()
+ *
+ * try {
+ *   await gate.service('web')
+ * } catch (error) {
+ *   if (isGateError(error, 'GATE_DNS_REQUIRED')) {
+ *     console.error(error.hint)
+ *   }
+ *   throw error
+ * }
+ * ```
+ *
+ * @public
+ */
 export function isGateError(error: unknown): error is GateError
 export function isGateError<Code extends GateErrorCode>(
   error: unknown,
