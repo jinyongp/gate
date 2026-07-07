@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { GateError } from './errors.js'
@@ -337,20 +337,37 @@ async function resolveDeclarationConfigPath(
 
 async function findUpFile(fileName: string, start: string): Promise<string | undefined> {
   let current = resolve(start)
+  const home = homedir()
 
   while (true) {
     const candidate = resolve(current, fileName)
-    try {
-      await access(candidate)
+    if (await isFile(candidate)) {
       return candidate
-    } catch {
-      // Keep walking upward.
+    }
+    if (current === home || (await isDirectory(resolve(current, '.git')))) {
+      return undefined
     }
     const parent = dirname(current)
     if (parent === current) {
       return undefined
     }
     current = parent
+  }
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
   }
 }
 

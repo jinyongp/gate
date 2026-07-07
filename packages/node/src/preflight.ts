@@ -1,4 +1,5 @@
-import { access, readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { dirname, parse, resolve } from 'node:path'
 import type { GateCommandOptions, GateDNSMode } from './types.js'
 import {
@@ -105,19 +106,33 @@ async function resolveConfigPath(options: GateCommandOptions): Promise<string> {
 async function findUp(fileName: string, start: string): Promise<string | undefined> {
   let current = resolve(start)
   const { root } = parse(current)
+  const home = homedir()
 
   while (true) {
     const candidate = resolve(current, fileName)
-    try {
-      await access(candidate)
+    if (await isFile(candidate)) {
       return candidate
-    } catch {
-      // Keep walking upward.
     }
-    if (current === root) {
+    if (current === home || (await isDirectory(resolve(current, '.git'))) || current === root) {
       return undefined
     }
     current = dirname(current)
+  }
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile()
+  } catch {
+    return false
+  }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
   }
 }
 

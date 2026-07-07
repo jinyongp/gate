@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { expect, test } from 'vitest'
 import { createGateClient, GateError, isGateError, resolveGateBinary } from './index.js'
+import { serviceEnvDeclarations } from './config.js'
 import { parseProjectConfig, resolveServiceDomain } from './preflight.js'
 
 test('resolveGateBinary prefers explicit bin, env, then package', () => {
@@ -265,6 +266,50 @@ route_env = "PUBLIC_API_URL"
 
   expect(env.API_URL).toBe('http://127.0.0.1:4313')
   expect(env.PUBLIC_API_URL).toBe('https://api.demo.localhost')
+})
+
+test('file-backed env declaration discovery skips non-file gate config', async () => {
+  const dir = await tempDir()
+  const nested = join(dir, 'app')
+  await mkdir(join(nested, 'gate.toml'), { recursive: true })
+  await writeFile(
+    join(dir, 'gate.toml'),
+    `[project]
+name = "demo"
+
+[services.api]
+env = "API_URL"
+route_env = "PUBLIC_API_URL"
+`,
+  )
+
+  const declarations = await serviceEnvDeclarations(undefined, { cwd: nested })
+
+  expect(declarations.get('api')).toEqual({
+    env: ['API_URL'],
+    routeEnv: ['PUBLIC_API_URL'],
+  })
+})
+
+test('file-backed env declaration discovery stops at git boundary', async () => {
+  const dir = await tempDir()
+  const nested = join(dir, 'repo', 'app')
+  await mkdir(join(dir, 'repo', '.git'), { recursive: true })
+  await mkdir(nested, { recursive: true })
+  await writeFile(
+    join(dir, 'gate.toml'),
+    `[project]
+name = "demo"
+
+[services.api]
+env = "API_URL"
+route_env = "PUBLIC_API_URL"
+`,
+  )
+
+  const declarations = await serviceEnvDeclarations(undefined, { cwd: nested })
+
+  expect(declarations.size).toBe(0)
 })
 
 test('client env project-only scope without config returns registry-derived values', async () => {
@@ -778,6 +823,39 @@ test('default DNS preflight discovers parent gate config', async () => {
   const client = createGateClient({ bin: gate, cwd: nested })
 
   await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('default DNS preflight skips non-file gate config while walking upward', async () => {
+  const dir = await tempDir()
+  const nested = join(dir, 'app')
+  await mkdir(join(nested, 'gate.toml'), { recursive: true })
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  await writeFile(
+    join(dir, 'gate.toml'),
+    `[project]\nname = "demo"\nbase = "demo.test"\n\n[services.web]\n`,
+  )
+  const client = createGateClient({ bin: gate, cwd: nested })
+
+  await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('default DNS preflight stops at git boundary like gate config discovery', async () => {
+  const dir = await tempDir()
+  const nested = join(dir, 'repo', 'app')
+  await mkdir(join(dir, 'repo', '.git'), { recursive: true })
+  await mkdir(nested, { recursive: true })
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  await writeFile(
+    join(dir, 'gate.toml'),
+    `[project]\nname = "demo"\nbase = "demo.test"\n\n[services.web]\n`,
+  )
+  const client = createGateClient({ bin: gate, cwd: nested })
+
+  await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_COMMAND_FAILED' })
   await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
 })
 
