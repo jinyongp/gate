@@ -289,6 +289,20 @@ func TestGetCertificateRejectsEmptySNI(t *testing.T) {
 	}
 }
 
+func TestGetCertificateRejectsInvalidSNI(t *testing.T) {
+	ca, _ := loadCA(t)
+	for _, name := range []string{"bad..localhost", "-bad.localhost", "bad_.localhost"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: name}); err == nil {
+				t.Fatal("expected error for invalid SNI")
+			}
+		})
+	}
+	if len(ca.cache) != 0 {
+		t.Fatalf("invalid SNI created cached leaves: %+v", ca.cache)
+	}
+}
+
 func TestGetCertificateConcurrent(t *testing.T) {
 	ca, _ := loadCA(t)
 	var wg sync.WaitGroup

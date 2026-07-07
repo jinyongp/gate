@@ -165,6 +165,27 @@ func TestUnknownHostIs404(t *testing.T) {
 	}
 }
 
+func TestRouteCertificateRequiresActiveRoute(t *testing.T) {
+	calls := 0
+	s := New(func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		calls++
+		return &tls.Certificate{}, nil
+	}, alwaysLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: "127.0.0.1:4310"}})
+	if _, err := s.routeCertificate(&tls.ClientHelloInfo{ServerName: "ghost.localhost"}); err == nil {
+		t.Fatal("expected unknown SNI to fail")
+	}
+	if calls != 0 {
+		t.Fatalf("certificate provider called for unknown SNI")
+	}
+	if _, err := s.routeCertificate(&tls.ClientHelloInfo{ServerName: "App.Localhost."}); err != nil {
+		t.Fatalf("routeCertificate for active route: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("certificate provider calls = %d, want 1", calls)
+	}
+}
+
 func TestDeadUpstreamIs502(t *testing.T) {
 	s := New(nil, neverLive)
 	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: "127.0.0.1:1"}})

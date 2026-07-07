@@ -102,6 +102,20 @@ func (s *Server) lookup(host string) *Route {
 	return (*m)[canonicalDomain(host)]
 }
 
+func (s *Server) routeCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	name := canonicalDomain(hello.ServerName)
+	if name == "" {
+		return nil, errors.New("proxy: missing SNI server name")
+	}
+	if s.lookup(name) == nil {
+		return nil, fmt.Errorf("proxy: no active route for SNI %q", name)
+	}
+	if s.getCert == nil {
+		return nil, errors.New("proxy: certificate provider not configured")
+	}
+	return s.getCert(hello)
+}
+
 // RouteCount returns the number of active routes.
 func (s *Server) RouteCount() int {
 	m := s.routes.Load()

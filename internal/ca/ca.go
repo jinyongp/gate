@@ -122,6 +122,9 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 		return nil, errors.New("ca: missing SNI server name")
 	}
 	name = canonicalDomain(name)
+	if err := validateDomain(name); err != nil {
+		return nil, err
+	}
 	c.mu.RLock()
 	if cert, ok := c.cache[name]; ok {
 		c.mu.RUnlock()
@@ -174,6 +177,34 @@ func (c *CA) issueLeaf(domain string) (*tls.Certificate, error) {
 
 func canonicalDomain(domain string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+}
+
+func validateDomain(domain string) error {
+	if domain == "" || len(domain) > 253 {
+		return fmt.Errorf("ca: invalid SNI server name %q", domain)
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if !validDomainLabel(label) {
+			return fmt.Errorf("ca: invalid SNI server name %q", domain)
+		}
+	}
+	return nil
+}
+
+func validDomainLabel(label string) bool {
+	if label == "" || len(label) > 63 {
+		return false
+	}
+	for i, r := range label {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
+		if !valid {
+			return false
+		}
+		if (i == 0 || i == len(label)-1) && r == '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *CA) generate() error {

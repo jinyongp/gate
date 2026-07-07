@@ -24,7 +24,7 @@ func (s *Server) RunReady(ctx context.Context, httpsAddr, httpAddr string, ready
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig: &tls.Config{
 			MinVersion:     tls.VersionTLS12,
-			GetCertificate: s.getCert,
+			GetCertificate: s.routeCertificate,
 		},
 	}
 	httpSrv := &http.Server{
