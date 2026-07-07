@@ -15,6 +15,7 @@ import (
 
 	"gate/internal/daemon"
 	"gate/internal/dns"
+	"gate/internal/expose"
 	"gate/internal/listener"
 	"gate/internal/port"
 	"gate/internal/proxy"
@@ -671,6 +672,99 @@ func TestUpDownReloadRunningDaemon(t *testing.T) {
 	}
 	if srv.RouteCount() != 0 {
 		t.Fatalf("down route count = %d, want 0", srv.RouteCount())
+	}
+}
+
+func TestUpAppliesExposureRecordsWhenReloadingDaemon(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{
+			Service: "web", Domain: "web.localhost", Port: 4400, DNS: "localhost", Standalone: true,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "web", Provider: expose.ProviderLAN,
+		PublicURL: "https://web.local", Target: "web.localhost", AuthEnabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ref := defaultListenerRef()
+	applyExposeSession(ref.String(), []proxy.Route{{Domain: "web.localhost"}}, "web.localhost", "user:pass")
+	srv := proxy.New(nil, nil)
+	stop, err := daemon.ServeAdmin(context.Background(), ref.socketPath(), srv)
+	if err != nil {
+		t.Fatalf("ServeAdmin: %v", err)
+	}
+	defer stop()
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"-g", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	routes := srv.Routes()
+	if !routeExposed(routes, "web.localhost", "user:pass") {
+		t.Fatalf("base route not exposed with auth: %+v", routes)
+	}
+	if !routeExposed(routes, "web.local", "user:pass") {
+		t.Fatalf("LAN alias not exposed with auth: %+v", routes)
+	}
+}
+
+func TestUpRestoresRegistryWhenExposureStoreReadFailsBeforeReload(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{
+			Service: "web", Domain: "web.localhost", Port: 4400, DNS: "localhost", Standalone: true,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	exposurePath := exposureStore().Path
+	if err := os.MkdirAll(filepath.Dir(exposurePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exposurePath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := proxy.New(nil, nil)
+	stop, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), srv)
+	if err != nil {
+		t.Fatalf("ServeAdmin: %v", err)
+	}
+	defer stop()
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"-g", "--json"}, &out, &errb); code != ExitError {
+		t.Fatalf("Up exit = %d, want exposure-store failure", code)
+	}
+	if !strings.Contains(errb.String(), "expose_store") || strings.Contains(errb.String(), "rollback_failed") {
+		t.Fatalf("stderr = %q, want expose_store without rollback_failed", errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := reg.Services[registry.Key("", "web")]; res.Active {
+		t.Fatalf("reservation active after rollback: %+v", res)
+	}
+	if srv.RouteCount() != 0 {
+		t.Fatalf("routes mutated before exposure-store failure: %+v", srv.Routes())
 	}
 }
 
