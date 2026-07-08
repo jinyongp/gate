@@ -200,6 +200,111 @@ test('client isolatedRoot relocates gate subprocess state and inline config cach
   expect(paths[0]).toContain(join(root, 'cache', 'node', 'inline-config'))
 })
 
+test('client rejects isolatedRoot with daemon true before invoking gate', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir, isolatedRoot: '.gate-agent' })
+
+  await expect(client.up({ daemon: true } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+    message: expect.stringContaining('isolatedRoot cannot be combined with daemon: true'),
+  })
+
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client allows isolatedRoot with daemon false', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir, isolatedRoot: '.gate-agent' })
+
+  await client.up({ daemon: false })
+
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/up --json/)
+  expect(calls).not.toMatch(/--daemon/)
+})
+
+test('client rejects per-call isolatedRoot with daemon true before invoking gate', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(
+    client.up({ isolatedRoot: '.gate-agent', daemon: true } as any),
+  ).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+    message: expect.stringContaining('isolatedRoot cannot be combined with daemon: true'),
+  })
+
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client rejects isolatedRoot daemon true even when route activation is skipped', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir, isolatedRoot: '.gate-agent' })
+
+  await expect(client.service('web', { up: false, daemon: true } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+  })
+  await expect(client.ready('web', { up: false, daemon: true } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+  })
+
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client rejects isolatedRoot daemon true on inspection-only methods', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir, isolatedRoot: '.gate-agent' })
+
+  await expect(client.ls({ daemon: true } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+  })
+  await expect(client.port('web', { daemon: true } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+  })
+  await expect(client.down({ daemon: true } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+  })
+
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client rejects isolatedRoot daemon true before running from a ready descriptor', async () => {
+  const dir = await tempDir()
+  const child = await fakeChild(dir, 'process.exit(0)')
+  const client = createGateClient({ cwd: dir, isolatedRoot: '.gate-agent' })
+
+  await expect(
+    client.run(
+      {
+        service: {
+          project: 'demo',
+          service: 'web',
+          domain: 'web.demo.localhost',
+          port: 4312,
+          url: 'https://web.demo.localhost',
+          loopbackUrl: 'http://127.0.0.1:4312',
+          route: 'active',
+          upstream: 'down',
+        },
+        env: { PORT: '4312' },
+        diagnostics: [],
+      },
+      [child],
+      { daemon: true } as any,
+    ),
+  ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+})
+
 test('client env returns inline declared loopback and route env values', async () => {
   const dir = await tempDir()
   const gate = await fakeGate(dir, join(dir, 'args.log'), {

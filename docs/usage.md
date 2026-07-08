@@ -383,6 +383,14 @@ and `XDG_DATA_HOME`. Existing XDG variables still work when
 Use isolated state for temporary agent inspection, tests, and sandboxed setup
 checks. Use the user's normal gate state for real dev app launches that should
 share the user's registry, trusted certificate material, and listener daemon.
+Isolated state does not isolate kernel listener ports such as HTTPS `:443` and
+HTTP `:80`. Node API calls with `isolatedRoot` reject `daemon: true`; pass
+`daemon: false` or omit it. For isolated daemon tests, use the CLI with explicit
+non-default listener addresses:
+
+```bash
+gate --isolated-root .gate-agent daemon start --https-addr 127.0.0.1:18443 --http-addr 127.0.0.1:18080
+```
 
 ## Node
 
@@ -485,6 +493,9 @@ activates the selected scope before reading service metadata, but it does not
 start the daemon or edit `/etc/hosts`. Use `service(name, { up: false })`,
 `ls()`, or `port()` when you only want to inspect existing state. Custom domains
 must opt into hosts-file DNS or declare preconfigured DNS through options.
+When `isolatedRoot` is set on the client or a per-call option, `daemon: true`
+is invalid because isolated state cannot isolate the shared listener ports.
+`daemon: false` remains valid.
 
 Common `GateError` codes:
 

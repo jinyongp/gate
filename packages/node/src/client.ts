@@ -9,6 +9,7 @@ import type {
   GateClient,
   GateClientOptions,
   GateCommandOptions,
+  GateClientCallOptions,
   GateRunEnv,
   GateRunOptions,
   GateRunReady,
@@ -81,7 +82,11 @@ interface GateEnvJSON extends GateService {
  *
  * @public
  */
-export function createGateClient(defaults: GateClientOptions = {}): GateClient {
+export function createGateClient(): GateClient<false>
+export function createGateClient<const Defaults extends GateClientOptions>(
+  defaults: Defaults,
+): GateClient<Defaults extends { isolatedRoot: string } ? true : false>
+export function createGateClient(defaults: GateClientOptions = {}): GateClient<boolean> {
   const withDefaults = <T extends GateCommandOptions>(options?: T): T & GateCommandOptions =>
     ({
       ...defaults,
@@ -91,6 +96,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
   const up = async (options?: GateUpOptions): Promise<GateUpResult> => {
     const merged = withDefaults(options)
+    assertDaemonAllowed(merged, [resultCommand(merged), 'up'])
     await assertScopeDNSAllowed(merged)
     const scope = await prepareScope(merged.scope, merged)
     const args = ['up', '--json', ...scope.args, ...dnsArgs(merged.dns)]
@@ -107,6 +113,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
   const ls = async (options?: GateCommandOptions): Promise<GateService[]> => {
     const merged = withDefaults(options)
+    assertDaemonAllowed(merged, [resultCommand(merged), 'ls'])
     const scope = await prepareScope(merged.scope, merged)
     const args = ['ls', '--json', ...scope.args]
     const result = await runGate(args, merged)
@@ -123,6 +130,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
     options?: GateServiceOptions,
   ): Promise<GateReadyResult> => {
     const merged = withDefaults(options)
+    assertDaemonAllowed(merged, [resultCommand(merged), 'env', name])
     const serviceOptions = { ...merged, dns: merged.dns ?? 'localhost' }
     if (merged.up ?? true) {
       await assertDNSAllowed(name, serviceOptions)
@@ -149,8 +157,12 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
   return {
     up,
 
-    async service(name: string, options?: GateServiceOptions): Promise<GateService> {
+    async service(
+      name: string,
+      options?: GateClientCallOptions<GateServiceOptions, boolean>,
+    ): Promise<GateService> {
       const merged = withDefaults(options)
+      assertDaemonAllowed(merged, [resultCommand(merged), 'service', name])
       return (await resolveServiceSet(name, merged, up, ls)).selected
     },
 
@@ -161,10 +173,11 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
     async run(
       serviceOrReady: string | GateRunReady,
       command: readonly string[],
-      options?: GateRunOptions,
+      options?: GateClientCallOptions<GateRunOptions, boolean>,
     ): Promise<GateRunResult> {
       validateCommand(command)
       const merged = withDefaults(options)
+      assertDaemonAllowed(merged, [resultCommand(merged), 'run'])
       const ready =
         typeof serviceOrReady === 'string'
           ? await readyForService(serviceOrReady, merged)
@@ -174,6 +187,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
     async port(service: string, options?: GateCommandOptions): Promise<number> {
       const merged = withDefaults(options)
+      assertDaemonAllowed(merged, [resultCommand(merged), 'port', service])
       const scope = await prepareScope(merged.scope, merged)
       const args = ['port', '--json', ...scope.args, service]
       const result = await runGate(args, merged)
@@ -184,6 +198,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient {
 
     async down(options?: GateCommandOptions): Promise<void> {
       const merged = withDefaults(options)
+      assertDaemonAllowed(merged, [resultCommand(merged), 'down'])
       const scope = await prepareScope(merged.scope, merged)
       const args = ['down', '--json', ...scope.args]
       await runGate(args, merged)
@@ -203,6 +218,20 @@ function enrichUpService(
 
 function resultCommand(options: GateCommandOptions): string {
   return options.bin ?? options.env?.GATE_BIN ?? 'gate'
+}
+
+function assertDaemonAllowed(
+  options: GateCommandOptions & { daemon?: boolean },
+  command: string[],
+): void {
+  if (options.isolatedRoot && options.daemon === true) {
+    throw new GateError({
+      code: 'GATE_INVALID_OPTIONS',
+      message:
+        'isolatedRoot cannot be combined with daemon: true; use normal gate state for real dev launches, or use the CLI with explicit non-default listener addresses for isolated daemon tests',
+      command,
+    })
+  }
 }
 
 async function resolveServiceSet(

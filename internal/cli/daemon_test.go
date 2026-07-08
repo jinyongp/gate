@@ -591,6 +591,7 @@ func TestIsGateDaemonArgsMatchesServeWithFlags(t *testing.T) {
 		"gate __serve --socket /tmp/gate.sock",
 		"/usr/local/bin/gate __serve --socket /tmp/gate.sock --https-addr :443",
 		"/tmp/build/gate __serve --http-addr :80",
+		"/tmp/Gate Dev/gate __serve --socket /tmp/gate.sock",
 	}
 	for _, args := range cases {
 		if !isGateDaemonArgs(args) {
@@ -602,6 +603,169 @@ func TestIsGateDaemonArgsMatchesServeWithFlags(t *testing.T) {
 	}
 	if isGateDaemonArgs("python /tmp/gate __serve --socket /tmp/gate.sock") {
 		t.Fatal("non-gate executable mentioning gate __serve matched")
+	}
+}
+
+func TestGateDaemonSocketPathParsesSocketForms(t *testing.T) {
+	if got := gateDaemonSocketPath("gate __serve --socket /tmp/gate.sock --https-addr :443"); got != "/tmp/gate.sock" {
+		t.Fatalf("space socket path = %q", got)
+	}
+	if got := gateDaemonSocketPath("gate __serve --socket=/tmp/gate.sock --https-addr :443"); got != "/tmp/gate.sock" {
+		t.Fatalf("equals socket path = %q", got)
+	}
+	if got := gateDaemonSocketPath("gate __serve --socket /tmp/gate state/listener.sock --https-addr :443"); got != "/tmp/gate state/listener.sock" {
+		t.Fatalf("socket path with spaces = %q", got)
+	}
+}
+
+func TestDaemonStartConflictMessageIncludesCrossStateGateDaemonHint(t *testing.T) {
+	isolate(t)
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() { tcpListenOwnersForPort = oldOwners })
+	tcpListenOwnersForPort = func(port string) []tcpListenOwner {
+		if port != "443" {
+			return nil
+		}
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	msg := daemonStartConflictMessage(
+		"listen tcp :443: bind: address already in use",
+		listener.DefaultPair(),
+		defaultListenerRef(),
+	)
+
+	for _, want := range []string{
+		"another gate daemon is already listening on TCP :443 (pid 80029)",
+		"owner socket: /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock",
+		"current socket: " + defaultListenerRef().socketPath(),
+		"XDG_CONFIG_HOME=/tmp/ssg/xdg/config gate daemon stop",
+		"kill 80029",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("conflict message missing %q in:\n%s", want, msg)
+		}
+	}
+}
+
+func TestDaemonStartConflictMessageIgnoresCurrentStateDaemon(t *testing.T) {
+	isolate(t)
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() { tcpListenOwnersForPort = oldOwners })
+	current := defaultListenerRef()
+	tcpListenOwnersForPort = func(string) []tcpListenOwner {
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket " + current.socketPath() + " --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	msg := daemonStartConflictMessage(
+		"listen tcp :443: bind: address already in use",
+		listener.DefaultPair(),
+		current,
+	)
+	if strings.Contains(msg, "another gate daemon") {
+		t.Fatalf("current-state daemon should not produce cross-state hint:\n%s", msg)
+	}
+}
+
+func TestDaemonStartConflictMessageIgnoresGateDaemonWithoutSocket(t *testing.T) {
+	isolate(t)
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() { tcpListenOwnersForPort = oldOwners })
+	tcpListenOwnersForPort = func(string) []tcpListenOwner {
+		return []tcpListenOwner{{PID: 80029, Args: "gate __serve --https-addr :443 --http-addr :80"}}
+	}
+
+	msg := daemonStartConflictMessage(
+		"listen tcp :443: bind: address already in use",
+		listener.DefaultPair(),
+		defaultListenerRef(),
+	)
+	if strings.Contains(msg, "another gate daemon") {
+		t.Fatalf("daemon without socket should not produce cross-state hint:\n%s", msg)
+	}
+}
+
+func TestDaemonStartConflictMessageUsesFailedBindPort(t *testing.T) {
+	isolate(t)
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() { tcpListenOwnersForPort = oldOwners })
+	tcpListenOwnersForPort = func(port string) []tcpListenOwner {
+		if port != "80" {
+			return nil
+		}
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	msg := daemonStartConflictMessage(
+		"listen tcp :443: bind: address already in use",
+		listener.DefaultPair(),
+		defaultListenerRef(),
+	)
+	if strings.Contains(msg, "another gate daemon") {
+		t.Fatalf("conflict on :443 should not report gate owner from :80:\n%s", msg)
+	}
+
+	msg = daemonStartConflictMessage(
+		"listen tcp :80: bind: address already in use",
+		listener.DefaultPair(),
+		defaultListenerRef(),
+	)
+	if !strings.Contains(msg, "another gate daemon is already listening on TCP :80") {
+		t.Fatalf("conflict on :80 missing matching gate owner:\n%s", msg)
+	}
+}
+
+func TestDaemonStartConflictMessageIgnoresSameConfigRootDifferentListener(t *testing.T) {
+	isolate(t)
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() { tcpListenOwnersForPort = oldOwners })
+	current := defaultListenerRef()
+	configHome := configHomeForDaemonSocket(current.socketPath())
+	ownerSocket := filepath.Join(configHome, "gate", "daemons", "listener-https-18443-http-18080.sock")
+	tcpListenOwnersForPort = func(string) []tcpListenOwner {
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket " + ownerSocket + " --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	msg := daemonStartConflictMessage(
+		"listen tcp :443: bind: address already in use",
+		listener.DefaultPair(),
+		current,
+	)
+	if strings.Contains(msg, "another gate daemon") {
+		t.Fatalf("same config root should not produce cross-state hint:\n%s", msg)
+	}
+}
+
+func TestNoDaemonRunningNoteReportsCrossStateGateDaemon(t *testing.T) {
+	isolate(t)
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() { tcpListenOwnersForPort = oldOwners })
+	tcpListenOwnersForPort = func(port string) []tcpListenOwner {
+		if port != "443" {
+			return nil
+		}
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	got := noDaemonRunningNote(listener.DefaultPair(), defaultListenerRef())
+	if !strings.Contains(got, "no daemon reachable in current gate state") ||
+		!strings.Contains(got, "another gate daemon is already listening") {
+		t.Fatalf("cross-state note missing hint:\n%s", got)
 	}
 }
 
@@ -635,6 +799,9 @@ func TestDaemonStartHelperProcess(t *testing.T) {
 	switch os.Getenv("GATE_TEST_DAEMON_START_HELPER") {
 	case "1":
 		fmt.Fprintln(os.Stderr, "gate: listen tcp :443: bind: permission denied")
+		os.Exit(1)
+	case "addr-in-use":
+		fmt.Fprintln(os.Stderr, "gate: listen tcp :443: bind: address already in use")
 		os.Exit(1)
 	case "serve-admin":
 		socketPath := os.Getenv("GATE_TEST_DAEMON_SOCKET")

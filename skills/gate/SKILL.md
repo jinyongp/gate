@@ -103,6 +103,10 @@ use `createGateClient({ isolatedRoot: '.gate-agent' })`.
 Use isolated state for temporary inspection, tests, and sandboxed setup checks.
 Use normal gate state for real dev app launches that should share the user's
 registry, trusted certificate material, and listener daemon.
+`isolatedRoot` does not isolate kernel listener ports such as HTTPS `:443` and
+HTTP `:80`. Node API calls with `isolatedRoot` reject `daemon: true`; pass
+`daemon: false` or omit it. For isolated daemon tests, use the CLI with explicit
+non-default listener addresses.
 
 `service(name)` defaults to `{ up: true, dns: 'localhost', daemon: false }`. It
 can reserve/activate routes, but it does not start the daemon unless

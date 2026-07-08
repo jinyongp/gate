@@ -117,6 +117,10 @@ state, data, and cache directories.
 Use isolated state for temporary agent inspection, tests, and sandboxed setup
 checks. Use normal gate state for real dev app launches that should share the
 user's registry, trusted certificate material, and listener daemon.
+`isolatedRoot` does not isolate kernel listener ports such as HTTPS `:443` and
+HTTP `:80`. The Node API rejects `isolatedRoot` combined with `daemon: true`;
+pass `daemon: false` or omit it. Use the CLI with explicit non-default listener
+addresses for isolated daemon tests.
 
 Use `env()` when another runner owns process spawning:
 

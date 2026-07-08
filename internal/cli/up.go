@@ -144,7 +144,7 @@ func Up(args []string, stdout, stderr io.Writer) int {
 	if reloaded {
 		printSuccess(stdout, fmt.Sprintf("proxy reloaded · %d routes active", len(routes)))
 	} else {
-		printInfo(stderr, "note: no daemon running; start it with `gate daemon start`")
+		printInfo(stderr, noDaemonRunningNote(pair, listenerRefFor(pair)))
 	}
 	return ExitOK
 }
@@ -267,9 +267,17 @@ func upExistingScope(sel registryScopeSelection, dnsMode string, startDaemon boo
 	if reloaded {
 		printSuccess(stdout, fmt.Sprintf("proxy reloaded · %d routes active", len(routes)))
 	} else {
-		printInfo(stderr, "note: no daemon running; start it with `gate daemon start`")
+		printInfo(stderr, noDaemonRunningNote(pair, listenerRefFor(pair)))
 	}
 	return ExitOK
+}
+
+func noDaemonRunningNote(pair listener.Pair, ref listenerDaemonRef) string {
+	hint := gateDaemonConflictHint(pair, ref)
+	if hint == "" {
+		return "note: no daemon running; start it with `gate daemon start`"
+	}
+	return "note: no daemon reachable in current gate state\n" + hint
 }
 
 func rollbackCurrentProjectUp(previous []projectReservation, createdKeys []string, ensured []registry.Reservation, refs []listenerDaemonRef, stderr io.Writer, jsonOut bool) error {
@@ -358,6 +366,7 @@ func reloadUpRoutes(ref listenerDaemonRef, routes []proxy.Route, startDaemon boo
 			result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), pair.HTTPSAddr, pair.HTTPAddr), client, ref)
 			if result.Code != ExitOK {
 				activity.Stop()
+				result.Message = daemonStartConflictMessage(result.Message, pair, ref)
 				return false, "", false, fail(stderr, jsonOut, result.Code, "daemon_start", result.Message)
 			}
 			activity.Complete()

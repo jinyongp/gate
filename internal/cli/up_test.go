@@ -847,6 +847,100 @@ func TestUpDaemonSpawnsScopedDaemonAndWritesState(t *testing.T) {
 	_ = stopDaemonProcess(daemonClientForRef(ref), st.PID, 2*time.Second)
 }
 
+func TestUpDaemonStartConflictIncludesCrossStateGateDaemonHint(t *testing.T) {
+	setupUpProject(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	oldNewDaemonServeCommand := newDaemonServeCommand
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() {
+		newDaemonServeCommand = oldNewDaemonServeCommand
+		tcpListenOwnersForPort = oldOwners
+	})
+	newDaemonServeCommand = func(_, _, _, _ string) *exec.Cmd {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: test launches this same test binary as a helper process.
+		cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+		cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=addr-in-use")
+		return cmd
+	}
+	tcpListenOwnersForPort = func(port string) []tcpListenOwner {
+		if port != "443" {
+			return nil
+		}
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--daemon"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("Up exit = %d, want conflict; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	got := errb.String()
+	if !strings.Contains(got, "another gate daemon is already listening on TCP :443") ||
+		!strings.Contains(got, "owner socket: /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock") {
+		t.Fatalf("up conflict missing cross-state hint:\n%s", got)
+	}
+}
+
+func TestUpDaemonStartJSONConflictIncludesCrossStateGateDaemonHint(t *testing.T) {
+	setupUpProject(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	oldNewDaemonServeCommand := newDaemonServeCommand
+	oldOwners := tcpListenOwnersForPort
+	t.Cleanup(func() {
+		newDaemonServeCommand = oldNewDaemonServeCommand
+		tcpListenOwnersForPort = oldOwners
+	})
+	newDaemonServeCommand = func(_, _, _, _ string) *exec.Cmd {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: test launches this same test binary as a helper process.
+		cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+		cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=addr-in-use")
+		return cmd
+	}
+	tcpListenOwnersForPort = func(port string) []tcpListenOwner {
+		if port != "443" {
+			return nil
+		}
+		return []tcpListenOwner{{
+			PID:  80029,
+			Args: "gate __serve --socket /tmp/ssg/xdg/config/gate/daemons/listener-https-443-http-80.sock --https-addr :443 --http-addr :80",
+		}}
+	}
+
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--daemon", "--json"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("Up exit = %d, want conflict; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	var env errEnvelope
+	if err := json.Unmarshal(errb.Bytes(), &env); err != nil {
+		t.Fatalf("error json: %v\n%s", err, errb.String())
+	}
+	if !strings.Contains(env.Error.Message, "another gate daemon is already listening on TCP :443") {
+		t.Fatalf("json error missing cross-state hint:\n%+v", env.Error)
+	}
+}
+
 func TestUpDaemonCleansUpSpawnedDaemonWhenReloadFails(t *testing.T) {
 	setupUpProject(t)
 	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")

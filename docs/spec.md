@@ -239,6 +239,10 @@ set, gate resolves config, state, data, daemon socket, registry, and CA paths
 below that root instead of the user's normal state locations. This is an
 explicit sandbox/test mode; default CLI and Node API behavior must continue to
 share normal user gate state unless callers opt in.
+Isolation affects state paths only; it does not isolate OS listener ports. Node
+API callers with isolated state must not request daemon startup via
+`daemon: true`. CLI daemon tests that use isolated state must choose explicit
+non-default listener addresses.
 
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |

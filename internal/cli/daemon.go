@@ -252,6 +252,7 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	activity.Stop()
+	result.Message = daemonStartConflictMessage(result.Message, pair, ref)
 	return fail(stderr, false, result.Code, "start", result.Message)
 }
 
@@ -289,6 +290,7 @@ func daemonRestart(args []string, stdout, stderr io.Writer) int {
 	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), pair.HTTPSAddr, pair.HTTPAddr), client, ref)
 	if result.Code != ExitOK {
 		activity.Stop()
+		result.Message = daemonStartConflictMessage(result.Message, pair, ref)
 		return fail(stderr, false, result.Code, "restart", result.Message)
 	}
 	activity.Complete()
@@ -622,6 +624,187 @@ func daemonStartExitCode(msg string) int {
 	return ExitError
 }
 
+type tcpListenOwner struct {
+	PID  int
+	Args string
+}
+
+var tcpListenOwnersForPort = func(port string) []tcpListenOwner {
+	if strings.TrimSpace(port) == "" {
+		return nil
+	}
+	//nolint:gosec // G204: fixed executable and fixed flags; port is data used as lsof's filter value.
+	out, err := exec.Command("lsof", "-nP", "-iTCP:"+port, "-sTCP:LISTEN").Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(out), "\n")
+	var owners []tcpListenOwner
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		args, err := processArgsForPID(pid)
+		if err != nil {
+			continue
+		}
+		owners = append(owners, tcpListenOwner{PID: pid, Args: args})
+	}
+	return owners
+}
+
+func daemonStartConflictMessage(msg string, pair listener.Pair, ref listenerDaemonRef) string {
+	if !strings.Contains(msg, "address already in use") {
+		return msg
+	}
+	ports := listenerPorts(pair)
+	if failedPort := failedListenPortFromMessage(msg); failedPort != "" {
+		ports = []string{failedPort}
+	}
+	hint := gateDaemonConflictHintForPorts(ports, ref)
+	if hint == "" {
+		return msg
+	}
+	return msg + "\n" + hint
+}
+
+func gateDaemonConflictHint(pair listener.Pair, currentRef listenerDaemonRef) string {
+	return gateDaemonConflictHintForPorts(listenerPorts(pair), currentRef)
+}
+
+func gateDaemonConflictHintForPorts(ports []string, currentRef listenerDaemonRef) string {
+	currentSocket := currentRef.socketPath()
+	currentConfigHome := configHomeForDaemonSocket(currentSocket)
+	for _, port := range ports {
+		for _, owner := range tcpListenOwnersForPort(port) {
+			if !isGateDaemonArgs(owner.Args) {
+				continue
+			}
+			socket := gateDaemonSocketPath(owner.Args)
+			if socket == "" || socket == currentSocket {
+				continue
+			}
+			if currentConfigHome != "" && configHomeForDaemonSocket(socket) == currentConfigHome {
+				continue
+			}
+			lines := []string{
+				fmt.Sprintf("hint: another gate daemon is already listening on TCP :%s (pid %d)", port, owner.PID),
+			}
+			lines = append(lines,
+				"hint: owner socket: "+socket,
+				"hint: current socket: "+currentSocket,
+			)
+			lines = append(lines, "hint: "+gateDaemonStopHint(owner.PID, socket))
+			return strings.Join(lines, "\n")
+		}
+	}
+	return ""
+}
+
+func failedListenPortFromMessage(msg string) string {
+	beforeBind, _, ok := strings.Cut(msg, ": bind")
+	if !ok {
+		return ""
+	}
+	index := strings.LastIndex(beforeBind, "listen tcp ")
+	if index == -1 {
+		return ""
+	}
+	addr := strings.TrimSpace(beforeBind[index+len("listen tcp "):])
+	if addr == "" {
+		return ""
+	}
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return strings.TrimSpace(port)
+	}
+	if strings.HasPrefix(addr, ":") {
+		return strings.TrimSpace(strings.TrimPrefix(addr, ":"))
+	}
+	return ""
+}
+
+func listenerPorts(pair listener.Pair) []string {
+	var ports []string
+	for _, addr := range []string{pair.HTTPSAddr, pair.HTTPAddr} {
+		port := listenPort(addr)
+		if port == "" || stringInSlice(port, ports) {
+			continue
+		}
+		ports = append(ports, port)
+	}
+	return ports
+}
+
+func stringInSlice(value string, values []string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func gateDaemonSocketPath(args string) string {
+	for _, marker := range []string{" --socket=", " --socket "} {
+		if socket := socketPathAfterMarker(" "+args, marker); socket != "" {
+			return socket
+		}
+	}
+	if strings.HasPrefix(args, "--socket=") {
+		return socketPathBeforeNextFlag(strings.TrimPrefix(args, "--socket="))
+	}
+	if strings.HasPrefix(args, "--socket ") {
+		return socketPathBeforeNextFlag(strings.TrimPrefix(args, "--socket "))
+	}
+	return ""
+}
+
+func socketPathAfterMarker(args, marker string) string {
+	index := strings.Index(args, marker)
+	if index == -1 {
+		return ""
+	}
+	return socketPathBeforeNextFlag(args[index+len(marker):])
+}
+
+func socketPathBeforeNextFlag(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if index := strings.Index(value, " --"); index != -1 {
+		value = value[:index]
+	}
+	return strings.TrimSpace(value)
+}
+
+func gateDaemonStopHint(pid int, socket string) string {
+	if configHome := configHomeForDaemonSocket(socket); configHome != "" {
+		return fmt.Sprintf("stop it with `XDG_CONFIG_HOME=%s gate daemon stop` or `kill %d`", shellQuote(configHome), pid)
+	}
+	return fmt.Sprintf("stop it with `kill %d`", pid)
+}
+
+func configHomeForDaemonSocket(socket string) string {
+	if socket == "" {
+		return ""
+	}
+	dir := filepath.Dir(socket)
+	if filepath.Base(dir) != "daemons" {
+		return ""
+	}
+	gateDir := filepath.Dir(dir)
+	if filepath.Base(gateDir) != "gate" {
+		return ""
+	}
+	return filepath.Dir(gateDir)
+}
+
 func isGateDaemonPID(pid int) bool {
 	args, err := processArgsForPID(pid)
 	if err != nil {
@@ -640,6 +823,13 @@ var processArgsForPID = func(pid int) (string, error) {
 }
 
 func isGateDaemonArgs(args string) bool {
+	if prefix, _, ok := strings.Cut(args, " __serve"); ok {
+		exe := strings.TrimSpace(prefix)
+		if exe == "gate" {
+			return true
+		}
+		return filepath.IsAbs(exe) && filepath.Base(exe) == "gate"
+	}
 	fields := strings.Fields(args)
 	if len(fields) < 2 {
 		return false

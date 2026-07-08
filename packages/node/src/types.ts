@@ -199,6 +199,36 @@ export interface GateCommandOptions extends GateClientOptions {
   scope?: GateScope
 }
 
+type GateNormalCallOptions<Options extends GateCommandOptions> = Omit<Options, 'isolatedRoot'> & {
+  isolatedRoot?: undefined
+}
+
+type GateIsolatedRootOption<IsolatedDefault extends boolean> = IsolatedDefault extends true
+  ? { isolatedRoot?: string }
+  : { isolatedRoot: string }
+
+type GateIsolatedCallOptions<
+  Options extends GateCommandOptions,
+  IsolatedDefault extends boolean,
+> = Options extends { daemon?: boolean }
+  ? Omit<Options, 'isolatedRoot' | 'daemon'> &
+      GateIsolatedRootOption<IsolatedDefault> & {
+        daemon?: false
+      }
+  : Omit<Options, 'isolatedRoot'> & GateIsolatedRootOption<IsolatedDefault>
+
+/**
+ * Method option shape for normal and isolated clients.
+ *
+ * @public
+ */
+export type GateClientCallOptions<
+  Options extends GateCommandOptions,
+  Isolated extends boolean,
+> = Isolated extends true
+  ? GateIsolatedCallOptions<Options, true>
+  : GateNormalCallOptions<Options> | GateIsolatedCallOptions<Options, false>
+
 /**
  * Selected service descriptor returned by gate.
  *
@@ -319,11 +349,11 @@ export interface GateServiceOptions extends GateUpOptions {
  *
  * @public
  */
-export interface GateClient {
+export interface GateClient<Isolated extends boolean = false> {
   /**
    * Reserve project or global routes, optionally starting/reloading the daemon.
    */
-  up(options?: GateUpOptions): Promise<GateUpResult>
+  up(options?: GateClientCallOptions<GateUpOptions, Isolated>): Promise<GateUpResult>
 
   /**
    * Resolve one service descriptor.
@@ -332,7 +362,10 @@ export interface GateClient {
    * By default this may call `gate up --json` first, because
    * {@link GateServiceOptions.up} defaults to `true`.
    */
-  service(name: string, options?: GateServiceOptions): Promise<GateService>
+  service(
+    name: string,
+    options?: GateClientCallOptions<GateServiceOptions, Isolated>,
+  ): Promise<GateService>
 
   /**
    * Return the environment variables gate would inject for a service process.
@@ -341,7 +374,10 @@ export interface GateClient {
    * This includes `PORT`, peer `GATE_<SERVICE>_*` values, and service-declared
    * `env` / `routeEnv` values from the selected config.
    */
-  env(service: string, options?: GateServiceOptions): Promise<GateRunEnv>
+  env(
+    service: string,
+    options?: GateClientCallOptions<GateServiceOptions, Isolated>,
+  ): Promise<GateRunEnv>
 
   /**
    * Resolve service, environment, daemon readiness, and diagnostics as one
@@ -351,7 +387,10 @@ export interface GateClient {
    * Use this when another runner needs to inspect route/env readiness before it
    * starts a child process.
    */
-  ready(service: string, options?: GateServiceOptions): Promise<GateReadyResult>
+  ready(
+    service: string,
+    options?: GateClientCallOptions<GateServiceOptions, Isolated>,
+  ): Promise<GateReadyResult>
 
   /**
    * Resolve readiness, then spawn a child command with gate environment
@@ -362,7 +401,11 @@ export interface GateClient {
    * child exits non-zero or terminates by signal. Captured stdout/stderr are
    * attached only when `stdio: "pipe"` is used.
    */
-  run(service: string, command: readonly string[], options?: GateRunOptions): Promise<GateRunResult>
+  run(
+    service: string,
+    command: readonly string[],
+    options?: GateClientCallOptions<GateRunOptions, Isolated>,
+  ): Promise<GateRunResult>
 
   /**
    * Spawn a child command from an existing readiness snapshot.
@@ -374,17 +417,20 @@ export interface GateClient {
   run(
     ready: GateRunReady,
     command: readonly string[],
-    options?: GateRunOptions,
+    options?: GateClientCallOptions<GateRunOptions, Isolated>,
   ): Promise<GateRunResult>
 
   /** Return the reserved port for a service. */
-  port(service: string, options?: GateCommandOptions): Promise<number>
+  port(
+    service: string,
+    options?: GateClientCallOptions<GateCommandOptions, Isolated>,
+  ): Promise<number>
 
   /** List service descriptors visible in the selected scope. */
-  ls(options?: GateCommandOptions): Promise<GateService[]>
+  ls(options?: GateClientCallOptions<GateCommandOptions, Isolated>): Promise<GateService[]>
 
   /** Deactivate routes in the selected scope while preserving reservations. */
-  down(options?: GateCommandOptions): Promise<void>
+  down(options?: GateClientCallOptions<GateCommandOptions, Isolated>): Promise<void>
 }
 
 /**

@@ -5,6 +5,7 @@ export { resolveGateBinary } from './binary.js'
 export type { BinaryResolutionOptions } from './binary.js'
 export type {
   GateClient,
+  GateClientCallOptions,
   GateClientOptions,
   GateCommandOptions,
   GateDaemonReadiness,
