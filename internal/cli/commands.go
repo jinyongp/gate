@@ -9,13 +9,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 
 	"gate/internal/config"
+	"gate/internal/daemon"
 	"gate/internal/dns"
+	"gate/internal/fsutil"
 	"gate/internal/listener"
 	"gate/internal/port"
 	"gate/internal/proxy"
@@ -27,14 +30,16 @@ import (
 
 // service is one row of `gate ls` output.
 type service struct {
-	Project    string `json:"project"`
-	Service    string `json:"service"`
-	Domain     string `json:"domain"`
-	Port       int    `json:"port"`
-	DNS        string `json:"dns,omitempty"`
-	Route      string `json:"route"`
-	Upstream   string `json:"upstream"`
-	Standalone bool   `json:"standalone,omitempty"`
+	Project     string `json:"project,omitempty"`
+	Service     string `json:"service"`
+	Domain      string `json:"domain"`
+	Port        int    `json:"port"`
+	DNS         string `json:"dns,omitempty"`
+	Route       string `json:"route"`
+	Upstream    string `json:"upstream"`
+	Standalone  bool   `json:"standalone,omitempty"`
+	URL         string `json:"url"`
+	LoopbackURL string `json:"loopbackUrl"`
 }
 
 type projectReservation struct {
@@ -43,7 +48,7 @@ type projectReservation struct {
 }
 
 type portRow struct {
-	Project    string `json:"project"`
+	Project    string `json:"project,omitempty"`
 	Service    string `json:"service"`
 	Domain     string `json:"domain"`
 	Port       int    `json:"port"`
@@ -100,6 +105,7 @@ var (
 	setListenerRoutesFunc = setListenerRoutes
 	stdinIsTTYFunc        = stdinIsTTY
 	routeHintEnabledFunc  = routeHintEnabled
+	listenerStatusFunc    = func(ref listenerDaemonRef) (daemon.Status, error) { return daemonClientForRef(ref).Status() }
 )
 
 func liveness(p int) string {
@@ -124,13 +130,40 @@ func displayDomainURL(domain string) string {
 	return "https://" + domain
 }
 
-func displayRouteURL(res registry.Reservation) string {
+type listenerRouteInfo struct {
+	running   bool
+	httpsAddr string
+	httpAddr  string
+}
+
+type routeURLResolver struct {
+	listeners map[string]listenerRouteInfo
+}
+
+func newRouteURLResolver() *routeURLResolver {
+	return &routeURLResolver{listeners: map[string]listenerRouteInfo{}}
+}
+
+func (r *routeURLResolver) listenerInfo(res registry.Reservation) listenerRouteInfo {
 	ref := listenerRefFor(res.ListenerPair())
-	st, err := daemonClientForRef(ref).Status()
-	if err != nil || !daemonStatusMatchesListener(st, ref.Pair) {
+	if cached, ok := r.listeners[ref.String()]; ok {
+		return cached
+	}
+	info := listenerRouteInfo{}
+	st, err := listenerStatusFunc(ref)
+	if err == nil && daemonStatusMatchesListener(st, ref.Pair) {
+		info = listenerRouteInfo{running: true, httpsAddr: st.HTTPSAddr, httpAddr: st.HTTPAddr}
+	}
+	r.listeners[ref.String()] = info
+	return info
+}
+
+func (r *routeURLResolver) URL(res registry.Reservation) string {
+	info := r.listenerInfo(res)
+	if !info.running {
 		return displayDomainURL(res.Domain)
 	}
-	return proxyURL(res.Domain, st.HTTPSAddr)
+	return proxyURL(res.Domain, info.httpsAddr)
 }
 
 func routeHintEnabled(w io.Writer) bool {
@@ -167,7 +200,7 @@ func Ls(args []string, stdout, stderr io.Writer) int {
 	scopeFlags := defineDaemonScopeFlags(fs, true)
 	route := fs.String("route", "", "filter by route: active|inactive")
 	upstream := fs.String("upstream", "", "filter by upstream: live|down")
-	if handled, code := parseFlags(fs, "ls", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "ls", args, stdout, stderr); handled {
 		return code
 	}
 	sel, err := registryScopeFromFlags(scopeFlags, true)
@@ -187,6 +220,7 @@ func Ls(args []string, stdout, stderr io.Writer) int {
 	}
 
 	rows := make([]service, 0, len(reg.Services))
+	urlResolver := newRouteURLResolver()
 	for _, k := range reg.Keys() {
 		res := reg.Services[k]
 		if !reservationMatchesScope(res, sel) {
@@ -203,6 +237,7 @@ func Ls(args []string, stdout, stderr io.Writer) int {
 		rows = append(rows, service{
 			Project: res.Project, Service: res.Service, Domain: res.Domain,
 			Port: res.Port, DNS: res.DNS, Route: rowRoute, Upstream: rowUpstream, Standalone: res.Standalone,
+			URL: urlResolver.URL(res), LoopbackURL: loopbackURL(res.Port),
 		})
 	}
 
@@ -352,10 +387,6 @@ func Add(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "add", args, stdout, stderr); handled {
 		return code
 	}
-	sel, err := registryScopeFromFlags(scopeFlags, false)
-	if err != nil {
-		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
-	}
 	rest := fs.Args()
 	if len(rest) != 2 {
 		return usageFail(stderr, *jsonOut, "add")
@@ -378,7 +409,15 @@ func Add(args []string, stdout, stderr io.Writer) int {
 	if err != nil || p < 1 || p > 65535 {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_port", "port must be 1-65535")
 	}
-
+	unlock, code := acquireStateMutation(stderr, *jsonOut)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
+	sel, err := registryScopeFromFlags(scopeFlags, false)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
+	}
 	if sel.Scope.Kind == daemonScopeGlobal {
 		if host != "" {
 			return fail(stderr, *jsonOut, ExitUsage, "bad_service", "--host requires a project base")
@@ -395,10 +434,22 @@ func Add(args []string, stdout, stderr io.Writer) int {
 	project := sel.CurrentProject
 	path := sel.CurrentProjectPath
 	if project == nil {
-		project, path, err = projectConfigForName(sel.Scope.Name)
+		_, path, err = projectConfigForName(sel.Scope.Name)
 		if err != nil {
 			return fail(stderr, *jsonOut, ExitError, "project", err.Error())
 		}
+	}
+	configUnlock, err := config.LockFile(path)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitError, "config_lock", err.Error())
+	}
+	defer configUnlock()
+	project, err = config.Load(path)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitError, "config", err.Error())
+	}
+	if sel.Scope.Kind == daemonScopeProject && project.Name != sel.Scope.Name {
+		return fail(stderr, *jsonOut, ExitConflict, "project_changed", fmt.Sprintf("config %s now belongs to project %q", path, project.Name))
 	}
 	svc := config.Service{Domain: domain, Host: host, Port: p, TLS: config.TLSInternal}
 	resolvedDomain, err := resolveConfigServiceDomain(project, name, svc)
@@ -416,11 +467,23 @@ func Add(args []string, stdout, stderr io.Writer) int {
 	}
 	previous, hadPrevious := reg.Get(key)
 	if hadPrevious {
+		if config.CanonicalDomain(previous.Domain) != config.CanonicalDomain(res.Domain) {
+			if err := ensureReservationsNotExposed([]registry.Reservation{previous}); err != nil {
+				if code, ok := exposureGuardFailure(stderr, *jsonOut, err); ok {
+					return code
+				}
+				return fail(stderr, *jsonOut, ExitError, "exposure_guard", err.Error())
+			}
+		}
 		res.Active = previous.Active
-		res.DNS = previous.DNS
 		res.SetListenerPair(previous.ListenerPair())
+		if config.CanonicalDomain(previous.Domain) == config.CanonicalDomain(res.Domain) {
+			res.DNS = previous.DNS
+		} else {
+			res.DNS = dns.ModeFor(res.Domain, "")
+		}
 		if res.Active && res.DNS == "" {
-			res.DNS = dns.ModeFor(domain, "")
+			res.DNS = dns.ModeFor(res.Domain, "")
 		}
 	}
 	if err := registryStore().ReadReserve(res); err != nil {
@@ -457,7 +520,7 @@ func Add(args []string, stdout, stderr io.Writer) int {
 			reloadRefs = appendListenerRef(reloadRefs, listenerRefFor(previous.ListenerPair()))
 		}
 		if err := ensureDomainDNS(res.Domain, res.DNS, stderr, *jsonOut); err != nil {
-			rollbackErr := restoreProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, stderr, *jsonOut)
+			rollbackErr := rollbackProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, []registry.Reservation{res}, stderr, *jsonOut)
 			if rollbackErr != nil {
 				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "service add failed and rollback failed: "+rollbackErr.Error())
 			}
@@ -466,28 +529,16 @@ func Add(args []string, stdout, stderr io.Writer) int {
 			}
 			return fail(stderr, *jsonOut, ExitError, "dns_failed", err.Error())
 		}
-		regAfter, rerr := registryStore().Read()
-		if rerr != nil {
-			rollbackErr := restoreProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, stderr, *jsonOut)
-			rollbackErr = errors.Join(rollbackErr, removeDomainDNS(res.Domain, res.DNS, stderr, *jsonOut))
-			if rollbackErr != nil {
-				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "service add failed and rollback failed: "+rollbackErr.Error())
-			}
-			return fail(stderr, *jsonOut, ExitError, "registry_error", rerr.Error())
-		}
-		_ = regAfter
 		if code := reloadListenerRoutes(reloadRefs, stderr, *jsonOut); code != ExitOK {
-			rollbackErr := restoreProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, stderr, *jsonOut)
-			rollbackErr = errors.Join(rollbackErr, removeDomainDNS(res.Domain, res.DNS, stderr, *jsonOut))
+			rollbackErr := rollbackProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, []registry.Reservation{res}, stderr, *jsonOut)
 			if rollbackErr != nil {
 				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "service add failed and rollback failed: "+rollbackErr.Error())
 			}
 			return code
 		}
-		if hadPrevious && config.CanonicalDomain(previous.Domain) != config.CanonicalDomain(res.Domain) {
-			if err := removeDomainDNS(previous.Domain, previous.DNS, stderr, *jsonOut); err != nil {
-				rollbackErr := restoreProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, stderr, *jsonOut)
-				rollbackErr = errors.Join(rollbackErr, removeDomainDNS(res.Domain, res.DNS, stderr, *jsonOut))
+		if hadPrevious {
+			if err := removeStaleReservationDNS([]registry.Reservation{previous}, stderr, *jsonOut); err != nil {
+				rollbackErr := rollbackProjectAdd(path, originalConfig, originalInfo.Mode().Perm(), key, previous, hadPrevious, reloadRefs, []registry.Reservation{res}, stderr, *jsonOut)
 				if rollbackErr != nil {
 					return fail(stderr, *jsonOut, ExitError, "rollback_failed", "DNS cleanup failed and rollback failed: "+rollbackErr.Error())
 				}
@@ -527,20 +578,27 @@ func resolveConfigServiceDomain(project *config.Project, name string, svc config
 
 func addStandalone(res registry.Reservation, stdout, stderr io.Writer, jsonOut bool) int {
 	key := registry.Key(res.Project, res.Service)
-	if err := ensureDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
-		if os.IsPermission(err) || errors.Is(err, os.ErrPermission) {
-			return fail(stderr, jsonOut, ExitPerm, "permission", err.Error())
-		}
-		return fail(stderr, jsonOut, ExitError, "dns_failed", err.Error())
-	}
-
 	reg, err := registryStore().Read()
 	if err != nil {
 		return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
 	}
 	previous, hadPrevious := reg.Get(key)
 	if hadPrevious {
+		sameDomain := config.CanonicalDomain(previous.Domain) == config.CanonicalDomain(res.Domain)
+		if !sameDomain {
+			if err := ensureReservationsNotExposed([]registry.Reservation{previous}); err != nil {
+				if code, ok := exposureGuardFailure(stderr, jsonOut, err); ok {
+					return code
+				}
+				return fail(stderr, jsonOut, ExitError, "exposure_guard", err.Error())
+			}
+		} else {
+			res.DNS = previous.DNS
+		}
 		res.SetListenerPair(previous.ListenerPair())
+	}
+	if err := registryStore().ReadReserve(res); err != nil {
+		return addError(stderr, jsonOut, err)
 	}
 	reloadRefs := []listenerDaemonRef{listenerRefFor(res.ListenerPair())}
 	if hadPrevious {
@@ -553,22 +611,27 @@ func addStandalone(res registry.Reservation, stdout, stderr io.Writer, jsonOut b
 		return nil
 	})
 	if err != nil {
-		if !hadPrevious {
-			_ = removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut)
-		}
 		return addError(stderr, jsonOut, err)
 	}
+	if err := ensureDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
+		rollbackErr := rollbackStandaloneAddDNS(key, previous, hadPrevious, reloadRefs, []registry.Reservation{res}, stderr, jsonOut)
+		if rollbackErr != nil {
+			return fail(stderr, jsonOut, ExitError, "rollback_failed", "service add failed and rollback failed: "+rollbackErr.Error())
+		}
+		if os.IsPermission(err) || errors.Is(err, os.ErrPermission) {
+			return fail(stderr, jsonOut, ExitPerm, "permission", err.Error())
+		}
+		return fail(stderr, jsonOut, ExitError, "dns_failed", err.Error())
+	}
 	if code := reloadListenerRoutes(reloadRefs, stderr, jsonOut); code != ExitOK {
-		_ = rollbackStandaloneAdd(key, previous, hadPrevious, reloadRefs, stderr, jsonOut)
-		if !hadPrevious {
-			_ = removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut)
+		if rollbackErr := rollbackStandaloneAddDNS(key, previous, hadPrevious, reloadRefs, []registry.Reservation{res}, stderr, jsonOut); rollbackErr != nil {
+			return fail(stderr, jsonOut, ExitError, "rollback_failed", "service add failed and rollback failed: "+rollbackErr.Error())
 		}
 		return code
 	}
-	if hadPrevious && config.CanonicalDomain(previous.Domain) != config.CanonicalDomain(res.Domain) {
-		if err := removeDomainDNS(previous.Domain, previous.DNS, stderr, jsonOut); err != nil {
-			rollbackErr := rollbackStandaloneAdd(key, previous, true, reloadRefs, stderr, jsonOut)
-			rollbackErr = errors.Join(rollbackErr, removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut))
+	if hadPrevious {
+		if err := removeStaleReservationDNS([]registry.Reservation{previous}, stderr, jsonOut); err != nil {
+			rollbackErr := rollbackStandaloneAddDNS(key, previous, true, reloadRefs, []registry.Reservation{res}, stderr, jsonOut)
 			if rollbackErr != nil {
 				return fail(stderr, jsonOut, ExitError, "rollback_failed", "DNS cleanup failed and rollback failed: "+rollbackErr.Error())
 			}
@@ -593,18 +656,24 @@ func Rm(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "rm", args, stdout, stderr); handled {
 		return code
 	}
-	sel, err := registryScopeFromFlags(scopeFlags, false)
-	if err != nil {
-		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
-	}
 	rest := fs.Args()
 	if len(rest) != 1 {
 		return usageFail(stderr, *jsonOut, "rm")
 	}
-	name := strings.TrimSpace(rest[0])
-	if err := validateRegistryName(name, "service"); err != nil {
-		return fail(stderr, *jsonOut, ExitUsage, "bad_service", err.Error())
+	name := rest[0]
+	if strings.TrimSpace(name) == "" {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_service", "service is required")
 	}
+	unlock, code := acquireStateMutation(stderr, *jsonOut)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
+	sel, err := registryScopeFromFlags(scopeFlags, false)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
+	}
+	preserveLegacyProjectSelector(&sel, scopeFlags)
 
 	if sel.Scope.Kind == daemonScopeProject && sel.CurrentProjectSelected {
 		return rmCurrentProjectService(sel, name, stdout, stderr, *jsonOut)
@@ -617,6 +686,18 @@ func rmCurrentProjectService(sel registryScopeSelection, name string, stdout, st
 	path := sel.CurrentProjectPath
 	if project == nil || path == "" {
 		return fail(stderr, jsonOut, ExitError, "no_project", "current project is required")
+	}
+	configUnlock, err := config.LockFile(path)
+	if err != nil {
+		return fail(stderr, jsonOut, ExitError, "config_lock", err.Error())
+	}
+	defer configUnlock()
+	project, err = config.Load(path)
+	if err != nil {
+		return fail(stderr, jsonOut, ExitError, "config", err.Error())
+	}
+	if project.Name != sel.Scope.Name {
+		return fail(stderr, jsonOut, ExitConflict, "project_changed", fmt.Sprintf("config %s now belongs to project %q", path, project.Name))
 	}
 	if _, ok := project.Services[name]; !ok {
 		return fail(stderr, jsonOut, ExitError, "no_service", fmt.Sprintf("no service %q in project", name))
@@ -636,6 +717,16 @@ func rmCurrentProjectService(sel registryScopeSelection, name string, stdout, st
 	}
 	key := registry.Key(project.Name, name)
 	removedRes, hadReservation := reg.Get(key)
+	owner := registry.Reservation{Project: project.Name, Service: name}
+	if hadReservation {
+		owner = removedRes
+	}
+	if err := ensureReservationsNotExposed([]registry.Reservation{owner}); err != nil {
+		if code, ok := exposureGuardFailure(stderr, jsonOut, err); ok {
+			return code
+		}
+		return fail(stderr, jsonOut, ExitError, "exposure_guard", err.Error())
+	}
 	reloadRefs := []listenerDaemonRef{defaultListenerRef()}
 	if hadReservation {
 		reloadRefs = []listenerDaemonRef{listenerRefFor(removedRes.ListenerPair())}
@@ -692,6 +783,12 @@ func rmScopedReservation(sel registryScopeSelection, name string, stdout, stderr
 	if !found || !reservationMatchesScope(removedRes, sel) {
 		return fail(stderr, jsonOut, ExitError, "not_found", fmt.Sprintf("no reservation for %q", name))
 	}
+	if err := ensureReservationsNotExposed([]registry.Reservation{removedRes}); err != nil {
+		if code, ok := exposureGuardFailure(stderr, jsonOut, err); ok {
+			return code
+		}
+		return fail(stderr, jsonOut, ExitError, "exposure_guard", err.Error())
+	}
 	scope := sel.Scope
 	reloadRefs := []listenerDaemonRef{listenerRefFor(removedRes.ListenerPair())}
 	err = registryStore().Update(func(r *registry.Registry) error {
@@ -702,7 +799,9 @@ func rmScopedReservation(sel registryScopeSelection, name string, stdout, stderr
 		return fail(stderr, jsonOut, ExitError, "registry_error", err.Error())
 	}
 	if code := reloadListenerRoutes(reloadRefs, stderr, jsonOut); code != ExitOK {
-		_ = restoreReservations([]projectReservation{{Key: key, Reservation: removedRes}}, scope, stderr, jsonOut)
+		if rollbackErr := restoreReservations([]projectReservation{{Key: key, Reservation: removedRes}}, scope, stderr, jsonOut); rollbackErr != nil {
+			return fail(stderr, jsonOut, ExitError, "rollback_failed", "removal failed and rollback failed: "+rollbackErr.Error())
+		}
 		return code
 	}
 	if err := removeDomainDNS(removedRes.Domain, removedRes.DNS, stderr, jsonOut); err != nil {
@@ -729,8 +828,11 @@ func rmScopedReservation(sel registryScopeSelection, name string, stdout, stderr
 func removeReservationsDNS(removed []projectReservation, scope daemonScope, stderr io.Writer, jsonOut bool) int {
 	for i, item := range removed {
 		res := item.Reservation
+		if !res.Active {
+			continue
+		}
 		if err := removeDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
-			rollbackErr := restoreProjectDNS(removed[:i], stderr, jsonOut)
+			rollbackErr := restoreProjectDNS(removed[:i+1], stderr, jsonOut)
 			rollbackErr = errors.Join(rollbackErr, restoreProjectReservations(removed, scope, stderr, jsonOut))
 			if rollbackErr != nil {
 				return fail(stderr, jsonOut, ExitError, "rollback_failed", "DNS removal failed and rollback failed: "+rollbackErr.Error())
@@ -748,6 +850,9 @@ func restoreProjectDNS(removed []projectReservation, stderr io.Writer, jsonOut b
 	var errs []error
 	for _, item := range removed {
 		res := item.Reservation
+		if !res.Active {
+			continue
+		}
 		if err := ensureDomainDNS(res.Domain, res.DNS, stderr, jsonOut); err != nil {
 			errs = append(errs, fmt.Errorf("restore DNS %s: %w", res.Domain, err))
 		}
@@ -794,8 +899,30 @@ func restoreProjectAdd(path string, originalConfig []byte, mode os.FileMode, key
 }
 
 func restoreProjectConfig(path string, originalConfig []byte, mode os.FileMode) error {
-	//nolint:gosec // G703: path is the already-discovered project gate.toml being restored after rollback.
-	return os.WriteFile(path, originalConfig, mode)
+	target, err := config.ResolveFileTarget(path)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(target, originalConfig, mode)
+}
+
+func rollbackProjectAdd(path string, originalConfig []byte, mode os.FileMode, key string, previous registry.Reservation, hadPrevious bool, refs []listenerDaemonRef, attemptedDNS []registry.Reservation, stderr io.Writer, jsonOut bool) error {
+	rollbackErr := restoreProjectAdd(path, originalConfig, mode, key, previous, hadPrevious, refs, stderr, jsonOut)
+	restored := previousReservation(previous, hadPrevious)
+	return errors.Join(rollbackErr, reconcileRollbackDNS(attemptedDNS, restored, stderr, jsonOut))
+}
+
+func rollbackStandaloneAddDNS(key string, previous registry.Reservation, hadPrevious bool, refs []listenerDaemonRef, attemptedDNS []registry.Reservation, stderr io.Writer, jsonOut bool) error {
+	rollbackErr := rollbackStandaloneAdd(key, previous, hadPrevious, refs, stderr, jsonOut)
+	restored := previousReservation(previous, hadPrevious)
+	return errors.Join(rollbackErr, reconcileRollbackDNS(attemptedDNS, restored, stderr, jsonOut))
+}
+
+func previousReservation(previous registry.Reservation, ok bool) []projectReservation {
+	if !ok {
+		return nil
+	}
+	return []projectReservation{{Key: registry.Key(previous.Project, previous.Service), Reservation: previous}}
 }
 
 func rollbackStandaloneAdd(key string, previous registry.Reservation, hadPrevious bool, refs []listenerDaemonRef, stderr io.Writer, jsonOut bool) error {
@@ -839,6 +966,10 @@ func restoreReservations(removed []projectReservation, scope daemonScope, stderr
 
 func reloadListenerRoutes(refs []listenerDaemonRef, stderr io.Writer, jsonOut bool) int {
 	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "reloading routes"); err != nil {
+		var aliasConflict *exposureAliasConflictError
+		if errors.As(err, &aliasConflict) {
+			return fail(stderr, jsonOut, ExitConflict, "domain_conflict", aliasConflict.Error())
+		}
 		return fail(stderr, jsonOut, ExitError, "reload_failed", err.Error())
 	}
 	return ExitOK
@@ -865,16 +996,29 @@ func setListenerRoutesForRefsWithActivity(refs []listenerDaemonRef, stderr io.Wr
 }
 
 func setListenerRoutesForRef(ref listenerDaemonRef) error {
-	reg, err := registryStore().Read()
-	if err != nil {
+	_, err := setListenerRoutesForRefTracked(ref)
+	return err
+}
+
+func validateListenerRoutesForRef(ref listenerDaemonRef) error {
+	return registryStore().View(func(reg *registry.Registry) error {
+		_, err := applyExposureRecords(ref.String(), activeRoutesForListener(reg, ref.Pair))
 		return err
-	}
-	routes := activeRoutesForListener(reg, ref.Pair)
-	routes, err = applyExposureRecords(ref.String(), routes)
-	if err != nil {
-		return err
-	}
-	return setListenerRoutesFunc(ref, routes)
+	})
+}
+
+func setListenerRoutesForRefTracked(ref listenerDaemonRef) (bool, error) {
+	attempted := false
+	err := registryStore().View(func(reg *registry.Registry) error {
+		routes := activeRoutesForListener(reg, ref.Pair)
+		routes, err := applyExposureRecords(ref.String(), routes)
+		if err != nil {
+			return err
+		}
+		attempted = true
+		return setListenerRoutesFunc(ref, routes)
+	})
+	return attempted, err
 }
 
 func setListenerRoutes(ref listenerDaemonRef, routes []proxy.Route) error {
@@ -904,6 +1048,9 @@ func removeDomainDNS(domain, mode string, stderr io.Writer, jsonOut bool) error 
 }
 
 func runDomainDNS(provider dns.Provider, domain string, stderr io.Writer, jsonOut bool, label string, fn func(string) error) error {
+	if hosts, ok := provider.(dns.Hosts); ok && hosts.Path == "/etc/hosts" && os.Getenv("GATE_ISOLATED_ROOT") != "" {
+		return errors.New("isolated gate state cannot mutate the shared system hosts file; use a .localhost domain or run without GATE_ISOLATED_ROOT")
+	}
 	if !dnsActivityAllowed(provider) {
 		return fn(domain)
 	}
@@ -946,24 +1093,45 @@ func Clear(args []string, stdout, stderr io.Writer) int {
 	yes := fs.Bool("yes", false, "skip confirmation")
 	fs.BoolVar(yes, "y", false, "skip confirmation")
 	scopeFlags := defineDaemonScopeFlags(fs, false)
-	if handled, code := parseFlags(fs, "clear", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "clear", args, stdout, stderr); handled {
 		return code
 	}
 	sel, err := registryScopeFromFlags(scopeFlags, false)
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
 	}
+	preserveLegacyProjectSelector(&sel, scopeFlags)
 	reg, err := registryStore().Read()
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
 	}
 	removed := reservationsForScope(reg, sel)
+	confirmedRemoved := append([]projectReservation(nil), removed...)
 	scope := sel.Scope
-	reloadRefs := listenerRefsForReservations(removed)
 	if !*yes {
 		if code := confirmClear(sel, len(removed), stdout, stderr, *jsonOut); code != ExitOK {
 			return code
 		}
+	}
+	unlock, code := acquireStateMutation(stderr, *jsonOut)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
+	reg, err = registryStore().Read()
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
+	}
+	removed = reservationsForScope(reg, sel)
+	reloadRefs := listenerRefsForReservations(removed)
+	if !reflect.DeepEqual(confirmedRemoved, removed) {
+		return fail(stderr, *jsonOut, ExitConflict, "state_changed", "reservations changed while clear was waiting; review and retry")
+	}
+	if err := ensureReservationsNotExposed(reservationsFromProjectReservations(removed)); err != nil {
+		if code, ok := exposureGuardFailure(stderr, *jsonOut, err); ok {
+			return code
+		}
+		return fail(stderr, *jsonOut, ExitError, "exposure_guard", err.Error())
 	}
 
 	err = registryStore().Update(func(r *registry.Registry) error {
@@ -1017,6 +1185,20 @@ func clearScopeLabel(scope daemonScope) string {
 	return "global reservations"
 }
 
+func preserveLegacyProjectSelector(sel *registryScopeSelection, flags daemonScopeFlags) {
+	if flags.project == nil || !flags.project.set || flags.config != nil && flags.config.set {
+		return
+	}
+	raw := flags.project.value
+	if raw == strings.TrimSpace(raw) {
+		return
+	}
+	sel.Scope = daemonScope{Kind: daemonScopeProject, Name: raw}
+	sel.CurrentProject = nil
+	sel.CurrentProjectPath = ""
+	sel.CurrentProjectSelected = false
+}
+
 func stdinIsTTY() bool {
 	info, err := os.Stdin.Stat()
 	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
@@ -1026,16 +1208,42 @@ func stdinIsTTY() bool {
 func Prune(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "emit JSON")
-	if handled, code := parseFlags(fs, "prune", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "prune", args, stdout, stderr); handled {
 		return code
 	}
+	unlock, code := acquireStateMutation(stderr, *jsonOut)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
 	var removed []registry.Reservation
 	err := registryStore().Update(func(r *registry.Registry) error {
-		removed = r.Prune(fileExists)
-		return nil
+		var err error
+		removed, err = r.Prune(configFileExists)
+		if err != nil {
+			return err
+		}
+		return ensureReservationsNotExposed(removed)
 	})
 	if err != nil {
+		if code, ok := exposureGuardFailure(stderr, *jsonOut, err); ok {
+			return code
+		}
 		return fail(stderr, *jsonOut, ExitError, "registry_error", err.Error())
+	}
+	items := make([]projectReservation, 0, len(removed))
+	for _, res := range removed {
+		items = append(items, projectReservation{Key: registry.Key(res.Project, res.Service), Reservation: res})
+	}
+	refs := listenerRefsForReservations(items)
+	if code := reloadListenerRoutes(refs, stderr, *jsonOut); code != ExitOK {
+		if rollbackErr := restoreReservations(items, daemonScope{}, stderr, *jsonOut); rollbackErr != nil {
+			return fail(stderr, *jsonOut, ExitError, "rollback_failed", "prune failed and rollback failed: "+rollbackErr.Error())
+		}
+		return code
+	}
+	if code := removeReservationsDNS(items, daemonScope{}, stderr, *jsonOut); code != ExitOK {
+		return code
 	}
 	if *jsonOut {
 		out := make([]map[string]any, 0, len(removed))
@@ -1191,19 +1399,20 @@ func buildRunDescriptor(name string, sel registryScopeSelection) (runDescriptor,
 	if lerr != nil {
 		return runDescriptor{}, lerr
 	}
-	env, err := runEnvMapForScope(sel)
+	urlResolver := newRouteURLResolver()
+	env, err := runEnvMapForScope(sel, urlResolver)
 	if err != nil {
 		return runDescriptor{}, &reservationLookupError{Exit: ExitError, Code: "run_env", Message: err.Error()}
 	}
 	env["PORT"] = strconv.Itoa(res.Port)
-	daemonStatus, diagnostics := runDescriptorDaemonStatus(res)
+	daemonStatus, diagnostics := runDescriptorDaemonStatus(res, urlResolver)
 	return runDescriptor{
 		Service:     res.Service,
 		Project:     res.Project,
 		Standalone:  res.Standalone,
 		Domain:      res.Domain,
 		Port:        res.Port,
-		URL:         displayRouteURL(res),
+		URL:         urlResolver.URL(res),
 		LoopbackURL: loopbackURL(res.Port),
 		Route:       routeStatus(res),
 		Upstream:    upstreamStatus(res),
@@ -1214,7 +1423,7 @@ func buildRunDescriptor(name string, sel registryScopeSelection) (runDescriptor,
 	}, nil
 }
 
-func runDescriptorDaemonStatus(res registry.Reservation) (runDaemonStatus, []runDiagnostic) {
+func runDescriptorDaemonStatus(res registry.Reservation, resolver *routeURLResolver) (runDaemonStatus, []runDiagnostic) {
 	ref := listenerRefFor(res.ListenerPair())
 	out := runDaemonStatus{
 		Required:  res.Active,
@@ -1223,14 +1432,14 @@ func runDescriptorDaemonStatus(res registry.Reservation) (runDaemonStatus, []run
 		HTTPAddr:  ref.Pair.HTTPAddr,
 	}
 	diagnostics := []runDiagnostic{}
-	st, err := daemonClientForRef(ref).Status()
-	if err == nil && daemonStatusMatchesListener(st, ref.Pair) {
+	info := resolver.listenerInfo(res)
+	if info.running {
 		out.Running = true
-		if st.HTTPSAddr != "" {
-			out.HTTPSAddr = st.HTTPSAddr
+		if info.httpsAddr != "" {
+			out.HTTPSAddr = info.httpsAddr
 		}
-		if st.HTTPAddr != "" {
-			out.HTTPAddr = st.HTTPAddr
+		if info.httpAddr != "" {
+			out.HTTPAddr = info.httpAddr
 		}
 		return out, diagnostics
 	}
@@ -1309,7 +1518,7 @@ func shellUnsafeRune(r rune) bool {
 	return true
 }
 
-func runEnvMapForScope(sel registryScopeSelection) (map[string]string, error) {
+func runEnvMapForScope(sel registryScopeSelection, urlResolver *routeURLResolver) (map[string]string, error) {
 	reg, err := registryStore().Read()
 	if err != nil {
 		return nil, err
@@ -1332,7 +1541,7 @@ func runEnvMapForScope(sel registryScopeSelection) (map[string]string, error) {
 		loopbackURL := loopbackURL(res.Port)
 		env["GATE_"+key+"_PORT"] = strconv.Itoa(res.Port)
 		env["GATE_"+key+"_URL"] = loopbackURL
-		env["GATE_"+key+"_ROUTE_URL"] = displayRouteURL(res)
+		env["GATE_"+key+"_ROUTE_URL"] = urlResolver.URL(res)
 		resByService[res.Service] = res
 	}
 	project, hasProject, err := projectForRunEnv(sel, reservations)
@@ -1352,7 +1561,7 @@ func runEnvMapForScope(sel registryScopeSelection) (map[string]string, error) {
 			for _, envName := range svc.Env {
 				env[envName] = loopbackURL
 			}
-			routeURL := displayRouteURL(res)
+			routeURL := urlResolver.URL(res)
 			for _, envName := range svc.RouteEnv {
 				env[envName] = routeURL
 			}
@@ -1418,7 +1627,13 @@ func indexOf(ss []string, want string) int {
 	return -1
 }
 
-func fileExists(p string) bool {
+func configFileExists(p string) (bool, error) {
 	info, err := os.Stat(p)
-	return err == nil && info.Mode().IsRegular()
+	if err == nil {
+		return info.Mode().IsRegular(), nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }

@@ -26,6 +26,10 @@ func WriteAtomic(path string, data []byte, perm os.FileMode) (err error) {
 		_ = tmp.Close()
 		return err
 	}
+	if err = os.Chmod(tmpName, perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err = tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
@@ -33,8 +37,16 @@ func WriteAtomic(path string, data []byte, perm os.FileMode) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	if err = os.Chmod(tmpName, perm); err != nil {
+	dirFile, err := os.Open(dir)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	defer func() { _ = dirFile.Close() }()
+	if err = os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	// Rename is the commit point. A directory fsync failure cannot be rolled
+	// back safely, so do not report the already-visible write as uncommitted.
+	_ = dirFile.Sync()
+	return nil
 }

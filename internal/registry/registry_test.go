@@ -75,7 +75,10 @@ func TestPrune(t *testing.T) {
 	_ = r.Reserve(Reservation{Project: "dead", Service: "web", Domain: "b", Port: 4301, ConfigPath: "/gone"})
 	_ = r.Reserve(Reservation{Project: "", Service: "c", Domain: "c", Port: 4302}) // standalone, no ConfigPath
 
-	removed := r.Prune(func(p string) bool { return p == "/exists" })
+	removed, err := r.Prune(func(p string) (bool, error) { return p == "/exists", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(removed) != 1 || removed[0].Project != "dead" {
 		t.Fatalf("Prune removed = %+v", removed)
 	}
@@ -87,6 +90,22 @@ func TestPrune(t *testing.T) {
 	}
 	if _, ok := r.Get("/c"); !ok {
 		t.Fatal("standalone reservation wrongly pruned")
+	}
+}
+
+func TestPruneCheckErrorLeavesRegistryUntouched(t *testing.T) {
+	r := New()
+	reservation := Reservation{Project: "demo", Service: "web", Domain: "web.localhost", Port: 4300, ConfigPath: "/denied"}
+	if err := r.Reserve(reservation); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("stat denied")
+	removed, err := r.Prune(func(string) (bool, error) { return false, wantErr })
+	if !errors.Is(err, wantErr) || len(removed) != 0 {
+		t.Fatalf("Prune = %+v, %v", removed, err)
+	}
+	if got, ok := r.Get(Key("demo", "web")); !ok || got != reservation {
+		t.Fatalf("reservation changed: %+v, %v", got, ok)
 	}
 }
 

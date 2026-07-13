@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -142,6 +143,50 @@ func TestHostsRejectsSymlink(t *testing.T) {
 	h := Hosts{Path: link}
 	if err := h.Ensure("x.example.com"); err == nil {
 		t.Fatal("expected symlink to be refused")
+	}
+}
+
+func TestHostsRejectsSymlinkedLockPath(t *testing.T) {
+	dir := t.TempDir()
+	h := Hosts{Path: filepath.Join(dir, "hosts")}
+	if err := os.WriteFile(h.Path, []byte("127.0.0.1 localhost\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, h.lockPath()); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := h.Ensure("x.example.com"); err == nil {
+		t.Fatal("expected symlinked lock path to be refused")
+	}
+	b, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "keep\n" {
+		t.Fatalf("lock symlink target changed: %q", b)
+	}
+}
+
+func TestHostsLockNormalizesModeDespiteUmask(t *testing.T) {
+	dir := t.TempDir()
+	h := Hosts{Path: filepath.Join(dir, "hosts")}
+	oldUmask := syscall.Umask(0o077)
+	defer syscall.Umask(oldUmask)
+	unlock, err := h.lock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	info, err := os.Stat(h.lockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("lock mode = %o, want 644", got)
 	}
 }
 

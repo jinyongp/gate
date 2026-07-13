@@ -44,12 +44,28 @@ func (s *Store) Update(fn func(*Registry) error) error {
 
 // Read returns a snapshot of the registry under a shared lock.
 func (s *Store) Read() (*Registry, error) {
+	var snapshot *Registry
+	err := s.View(func(reg *Registry) error {
+		snapshot = reg
+		return nil
+	})
+	return snapshot, err
+}
+
+// View runs fn with a consistent registry snapshot while holding a shared
+// lock. Callers that derive and publish daemon routes use this to prevent a
+// concurrent writer from committing between the read and route replacement.
+func (s *Store) View(fn func(*Registry) error) error {
 	unlock, err := s.lock(unix.LOCK_SH)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer unlock()
-	return s.read()
+	reg, err := s.read()
+	if err != nil {
+		return err
+	}
+	return fn(reg)
 }
 
 // UpdateRaw runs fn under an exclusive lock with the raw registry file bytes,

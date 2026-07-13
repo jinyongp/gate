@@ -1,12 +1,13 @@
 // Package expose abstracts how a local route is reached from beyond the host:
-// only this machine (local), the LAN (mDNS), or a public URL (cloudflared,
-// tailscale). Providers are pluggable behind a common interface.
+// only this machine (local), the LAN through caller-managed DNS, or a public
+// URL (cloudflared, tailscale). Providers are pluggable behind a common interface.
 package expose
 
 import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -25,8 +26,12 @@ type Opts struct {
 	Auth string
 	// TargetURL, when set, is the provider-facing upstream URL.
 	TargetURL string
+	// PublicURL is the listener-aware URL reported by local and LAN providers.
+	PublicURL string
 	// ServePort, when set, is the provider-facing HTTPS listener port.
 	ServePort int
+	// OnStarted persists provider ownership as soon as external state exists.
+	OnStarted func(Result) error
 }
 
 const (
@@ -74,12 +79,15 @@ func For(name string) (Provider, error) {
 type Local struct{}
 
 // Expose returns the local HTTPS URL.
-func (Local) Expose(_ context.Context, domain string, _ Opts) (Result, error) {
+func (Local) Expose(_ context.Context, domain string, opts Opts) (Result, error) {
+	if opts.PublicURL != "" {
+		return Result{URL: opts.PublicURL}, nil
+	}
 	return Result{URL: "https://" + domain}, nil
 }
 
 func (Local) Status(_ context.Context, record Record) (string, error) {
-	return localStatus(record.Target), nil
+	return localStatus(record), nil
 }
 
 func (Local) Stop(_ context.Context, _ Record, _ StopOpts) error {
@@ -89,20 +97,23 @@ func (Local) Stop(_ context.Context, _ Record, _ StopOpts) error {
 // Close is a no-op.
 func (Local) Close() error { return nil }
 
-// LAN advertises over mDNS, which requires a ".local" domain.
+// LAN exposes a caller-resolved ".local" alias on a LAN-reachable listener.
 type LAN struct{}
 
-// Expose validates the mDNS constraint and returns the LAN URL. Other devices
+// Expose validates the .local constraint and returns the LAN URL. Other devices
 // must install the gate root CA (gate ca export) to trust it.
-func (LAN) Expose(_ context.Context, domain string, _ Opts) (Result, error) {
+func (LAN) Expose(_ context.Context, domain string, opts Opts) (Result, error) {
 	if !strings.HasSuffix(domain, ".local") {
 		return Result{}, fmt.Errorf("expose: lan requires a .local domain, got %q", domain)
+	}
+	if opts.PublicURL != "" {
+		return Result{URL: opts.PublicURL}, nil
 	}
 	return Result{URL: "https://" + domain}, nil
 }
 
 func (LAN) Status(_ context.Context, record Record) (string, error) {
-	return localStatus(record.Target), nil
+	return localStatus(record), nil
 }
 
 func (LAN) Stop(_ context.Context, _ Record, _ StopOpts) error {
@@ -112,12 +123,16 @@ func (LAN) Stop(_ context.Context, _ Record, _ StopOpts) error {
 // Close is a no-op.
 func (LAN) Close() error { return nil }
 
-func localStatus(domain string) string {
-	host := strings.TrimSpace(domain)
+func localStatus(record Record) string {
+	host := strings.TrimSpace(record.Target)
 	if host == "" {
 		return StatusDown
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, "443"), 150*time.Millisecond)
+	port := "443"
+	if parsed, err := url.Parse(record.PublicURL); err == nil && parsed.Port() != "" {
+		port = parsed.Port()
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 150*time.Millisecond)
 	if err != nil {
 		return StatusDown
 	}

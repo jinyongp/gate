@@ -159,6 +159,17 @@ env = "API_URL"
 route_env = "PUBLIC_API_URL"
 ```
 
+Project names must be non-empty, cannot contain `/` or control/line-separator
+characters, and cannot have leading or trailing whitespace. Service names must
+match `[A-Za-z0-9_][A-Za-z0-9_-]*`; `ls` and `stop` are reserved service names.
+An underscore in a service name is converted to a hyphen when gate derives the
+default DNS host label. `PORT` and `GATE_*` are reserved and cannot be declared
+through `env` or `route_env`. Configs
+created by older development builds with other service names must rename those
+tables before current gate commands can load them. Remove any old registry-only
+name with `gate rm -g <old-name>` or `gate rm -p <project> <old-name>`; use
+`gate clear` for a whole legacy scope.
+
 Bring the project up and start the daemon:
 
 ```bash
@@ -374,6 +385,7 @@ state below:
 <root>/xdg/config/gate
 <root>/xdg/state/gate
 <root>/xdg/data/gate
+<root>/run
 ```
 
 `GATE_ISOLATED_ROOT` takes precedence over `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
@@ -391,6 +403,11 @@ non-default listener addresses:
 ```bash
 gate --isolated-root .gate-agent daemon start --https-addr 127.0.0.1:18443 --http-addr 127.0.0.1:18080
 ```
+
+Isolated state cannot safely reference-count the machine-wide `/etc/hosts`
+block, so gate refuses system-hosts mutation while `GATE_ISOLATED_ROOT` is set.
+Use `.localhost`, preconfigure DNS outside gate, or run the intentional hosts
+operation without isolated mode.
 
 ## Node
 
@@ -579,6 +596,10 @@ gate ls --route active
 gate ls --upstream down
 ```
 
+In JSON output, every service includes `url` and `loopbackUrl`. `url` includes
+the active daemon's non-default HTTPS port when gate can verify that listener;
+`loopbackUrl` always targets the reserved upstream port on `127.0.0.1`.
+
 Port-focused view for the current project:
 
 ```bash
@@ -676,6 +697,11 @@ service block. Without `-y`, `gate clear` prompts in an interactive terminal and
 refuses to run in JSON or non-interactive contexts. Single-service `gate rm`
 does not prompt.
 
+For registry entries created by older development builds, quoted exact names
+remain removable even when they violate current creation grammar, including
+surrounding whitespace: `gate rm -p ' old-project ' 'old.service'` or
+`gate clear -p ' old-project ' -y`.
+
 Prune stale reservations whose owning project config file no longer exists:
 
 ```bash
@@ -683,7 +709,20 @@ gate prune
 ```
 
 Global reservations are not pruned by `gate prune` because they have no
-owning config file.
+owning config file. Pruning reloads each affected listener and removes managed
+DNS for active stale routes. Inactive reservations do not trigger DNS changes.
+If config inspection, route reload, or DNS cleanup fails, gate restores the
+registry and reconciles route/DNS state before returning an error. Managed
+`/etc/hosts` cleanup can require administrator approval.
+
+Current-project `gate up` also performs conservative implicit cleanup before
+allocating ports. Missing, unexposed project reservations are pruned; exposed
+reservations and paths that cannot be inspected are preserved. Use explicit
+`gate prune` when inspection errors should be reported instead of skipped.
+
+An active exposure blocks `down`, `rm`, `clear`, `prune`, and any `up`/`add`
+change that would alter its domain or listener. Run the exact `gate expose stop`
+command shown in the error, then retry. Unrelated reservations remain usable.
 
 ## Daemon
 
@@ -859,6 +898,10 @@ Limitations:
   DNS/hosts files. It validates the domain and marks the running gate route as
   exposed.
 - Devices must be on a network path that can reach the development machine.
+- The HTTPS listener must not be loopback-only. The default `:443` listener is
+  reachable on host interfaces; a daemon started with `127.0.0.1:<port>` must be
+  restarted on `:<port>` or a LAN interface address before LAN exposure.
+- Non-default listener ports are included in the LAN URL.
 - Browser trust still depends on installing the gate root CA on each client
   device.
 
@@ -927,10 +970,18 @@ gate expose web --via cloudflared --auth user:pass
 ```
 
 The auth secret is session-scoped. `exposures.json` records only that auth is
-enabled, not the password. If a later route reload reports the auth secret as
-missing, run `gate expose web --via cloudflared --auth user:pass` again.
+enabled, not the password. After a new gate process loses that secret, route
+reload omits the protected origin instead of publishing it without auth.
+`gate expose ls` reports `auth_status: "missing"`; run
+`gate expose web --via cloudflared --auth user:pass` again to restore access.
 
-The command starts a quick tunnel to `https://<service-domain>` and prints a
+gate requires the selected listener daemon to be running. For authenticated
+exposure, it installs the guarded route before starting `cloudflared`; a
+provider or persistence failure restores the previous route and exposure
+state.
+
+The command starts a quick tunnel to the active listener URL (including a
+non-default HTTPS port) and prints a
 `trycloudflare.com` URL:
 
 ```text
@@ -988,13 +1039,18 @@ Prerequisites:
 - Start gate routes first with `gate up -d`.
 - Start the dev server, usually with `gate run <service> -- ...`.
 
+gate requires the selected listener daemon to be running. The provider targets
+gate through loopback, so enabling Tailscale does not make the gate listener
+directly reachable from other non-loopback clients.
+
 Limitations:
 
 - Access is limited to devices allowed by the tailnet and ACLs.
 - The current implementation uses `tailscale serve --bg`.
-- `tailscale serve reset` affects the machine's Serve configuration.
-- gate allows one Tailscale exposure at a time because Tailscale Serve reset is
-  machine-wide.
+- gate allows one gate-managed Tailscale exposure at a time and assigns it a
+  dedicated non-443 HTTPS port. Stop uses `tailscale serve --https=<port> off`,
+  so unrelated Tailscale Serve ports are preserved; gate never resets the
+  machine-wide Serve configuration.
 
 ```bash
 gate expose web --via tailscale
@@ -1026,11 +1082,11 @@ Stop the exposure with gate:
 gate expose stop web --via tailscale
 ```
 
-For safety, gate only resets Tailscale Serve by default when the exposure record
-matches a command gate created. If the record is stale or ownership is unclear,
-pass `--force` to reset Tailscale Serve anyway and forget the record.
-Because Tailscale Serve reset is machine-wide, stopping a Tailscale exposure
-also forgets other Tailscale exposure records if stale records are present.
+For safety, gate queries `tailscale serve status --json` and disables the
+recorded HTTPS port only when its current root handler exactly matches the
+target gate created. If ownership is unclear, gate preserves the record and
+handler; `--force` explicitly disables only that recorded HTTPS port. Other
+Tailscale Serve ports and handlers are not reset.
 
 ### Expose Command Reference
 
@@ -1199,6 +1255,17 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/uninstal
 > to leave trust store entries in place. Homebrew-managed symlinks are skipped,
 > so the script does not remove the Homebrew package itself.
 
+The built-in uninstaller blocks routes and stops persisted external exposures,
+then stops every known daemon before deleting state. Any stop failure aborts
+file deletion. With `GATE_ISOLATED_ROOT`, uninstall never edits the shared
+`/etc/hosts` block.
+
+If local CA data still exists and the `gate` binary is gone, standalone
+uninstall stops before deleting that CA because it cannot verify trust-store
+cleanup. Reinstall gate or provide a trusted `GATE_BIN` first, then rerun; use
+`--keep-trust` only when intentionally retaining the trust-store entry after
+local gate files are removed.
+
 Legacy single-daemon cleanup, for pre-scoped development builds:
 
 ```bash
@@ -1213,4 +1280,4 @@ gate doctor --fix
 | 1    | error                                   |
 | 2    | usage error                             |
 | 3    | permission required                     |
-| 4    | port, domain, or daemon-listen conflict |
+| 4    | state, ownership, exposure, port, domain, or listener conflict |

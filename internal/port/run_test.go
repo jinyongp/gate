@@ -23,6 +23,13 @@ func TestExecPropagatesExitCode(t *testing.T) {
 	}
 }
 
+func TestExecMapsSignalExitCode(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := Exec(1, nil, "sh", []string{"-c", "kill -TERM $$"}, nil, &out, &errb); code != 143 {
+		t.Fatalf("exit = %d, want 143", code)
+	}
+}
+
 func TestExecMissingBinary(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := Exec(1, nil, "gate-no-such-binary-xyz", nil, nil, &out, &errb)

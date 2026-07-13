@@ -87,14 +87,26 @@ func installPlatform(filename string, cert *x509.Certificate) error {
 		return fmt.Errorf("unsupported trust settings version: %v", plistRoot["trustVersion"])
 	}
 
-	trustList := plistRoot["trustList"].(map[string]interface{})
-	rootSubjectASN1, _ := asn1.Marshal(cert.Subject.ToRDNSequence())
+	trustList, ok := plistRoot["trustList"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid trust settings: trustList has type %T", plistRoot["trustList"])
+	}
+	rootSubjectASN1, err := asn1.Marshal(cert.Subject.ToRDNSequence())
+	if err != nil {
+		return wrapError(err, "failed to encode certificate subject")
+	}
 	for key := range trustList {
-		entry := trustList[key].(map[string]interface{})
+		entry, ok := trustList[key].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid trust settings entry %q: type %T", key, trustList[key])
+		}
 		if _, ok := entry["issuerName"]; !ok {
 			continue
 		}
-		issuerName := entry["issuerName"].([]byte)
+		issuerName, ok := entry["issuerName"].([]byte)
+		if !ok {
+			return fmt.Errorf("invalid trust settings entry %q: issuerName has type %T", key, entry["issuerName"])
+		}
 		if !bytes.Equal(rootSubjectASN1, issuerName) {
 			continue
 		}
@@ -140,7 +152,6 @@ func uninstallPlatform(filename string, _ *x509.Certificate) error {
 
 func isRemoveTrustedCertNotFound(out []byte) bool {
 	s := strings.ToLower(string(out))
-	return strings.Contains(s, "could not be found") ||
-		strings.Contains(s, "unable to find") ||
-		strings.Contains(s, "not found")
+	return strings.Contains(s, "specified item could not be found in the keychain") ||
+		(strings.Contains(s, "certificate") && strings.Contains(s, "could not be found in the keychain"))
 }

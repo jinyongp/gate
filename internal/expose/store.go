@@ -3,6 +3,7 @@ package expose
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,7 +24,9 @@ type Record struct {
 	Provider    string `json:"provider"`
 	PublicURL   string `json:"public_url"`
 	Target      string `json:"target"`
+	OriginURL   string `json:"origin_url,omitempty"`
 	AuthEnabled bool   `json:"auth_enabled,omitempty"`
+	Pending     string `json:"pending,omitempty"`
 	ServePort   int    `json:"serve_port,omitempty"`
 	PID         int    `json:"pid,omitempty"`
 	Command     string `json:"command,omitempty"`
@@ -141,11 +144,25 @@ func (s Store) read() ([]Record, error) {
 	if err := json.Unmarshal(b, &data); err != nil {
 		return nil, err
 	}
+	if data.Version > StoreVersion {
+		return nil, fmt.Errorf("exposure store schema version %d is newer than supported version %d", data.Version, StoreVersion)
+	}
 	sortRecords(data.Records)
 	return data.Records, nil
 }
 
 func (s Store) write(records []Record) error {
+	if b, err := os.ReadFile(s.Path); err == nil {
+		var current fileData
+		if err := json.Unmarshal(b, &current); err != nil {
+			return err
+		}
+		if current.Version > StoreVersion {
+			return fmt.Errorf("exposure store schema version %d is newer than supported version %d", current.Version, StoreVersion)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	sortRecords(records)
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return err

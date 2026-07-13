@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,7 +14,10 @@ import (
 	"strings"
 
 	"gate/internal/ca"
+	"gate/internal/config"
 	"gate/internal/dns"
+	"gate/internal/expose"
+	"gate/internal/fsutil"
 	"gate/internal/paths"
 	"gate/internal/ui"
 )
@@ -21,6 +25,8 @@ import (
 var (
 	uninstallExecutablePathFunc = executablePath
 	uninstallRunHomebrewFunc    = runHomebrewUninstall
+	uninstallStopExposuresFunc  = stopAllKnownExposures
+	uninstallStopDaemonsFunc    = stopAllKnownDaemons
 	uninstallHostsPath          = "/etc/hosts"
 	uninstallSystemBinPaths     = []string{"/usr/local/bin/gate"}
 )
@@ -40,6 +46,14 @@ func Uninstall(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() != 0 {
 		return usageFail(stderr, false, "uninstall")
 	}
+	restoreIsolatedRoot, err := normalizeUninstallIsolatedRoot()
+	if err != nil {
+		return fail(stderr, false, ExitUsage, "bad_isolated_root", err.Error())
+	}
+	defer restoreIsolatedRoot()
+	if binDir := strings.TrimSpace(os.Getenv("GATE_BIN_DIR")); binDir != "" && !filepath.IsAbs(binDir) {
+		return fail(stderr, false, ExitUsage, "bad_bin_dir", "GATE_BIN_DIR must be an absolute path")
+	}
 
 	targets := collectUninstallTargets()
 	actions := collectUninstallActions(*keepTrust, !*keepBrew && isCurrentHomebrewGate())
@@ -54,6 +68,12 @@ func Uninstall(args []string, stdout, stderr io.Writer) int {
 			return ExitOK
 		}
 	}
+	unlock, code := acquireStateMutation(stderr, false)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
+	targets = collectUninstallTargets()
 
 	failed := false
 	permissionFailed := false
@@ -83,9 +103,25 @@ func Uninstall(args []string, stdout, stderr io.Writer) int {
 		case uninstallStepNoop:
 		}
 	}
+	exposureResult := uninstallStopExposuresFunc(stdout, stderr)
+	recordStep(exposureResult)
+	if exposureResult == uninstallStepFailed || exposureResult == uninstallStepPermission {
+		printError(stderr, "gate uninstall stopped before deleting files because an exposure could not be stopped.")
+		return ExitError
+	}
+	stopResult := uninstallStopDaemonsFunc(stdout, stderr)
+	recordStep(stopResult)
+	if stopResult == uninstallStepFailed || stopResult == uninstallStepPermission {
+		printError(stderr, "gate uninstall stopped before deleting files because a daemon could not be stopped.")
+		if stopResult == uninstallStepPermission {
+			return ExitPerm
+		}
+		return ExitError
+	}
 	recordStep(cleanupPathBlocks(stdout, stderr))
-	recordStep(cleanupHostsBlock(stdout, stderr))
-	recordStep(stopAllKnownDaemons(stdout, stderr))
+	if os.Getenv("GATE_ISOLATED_ROOT") == "" {
+		recordStep(cleanupHostsBlock(stdout, stderr))
+	}
 	if len(targets) > 0 {
 		if removeTargets(targets, stdout, stderr) {
 			found = true
@@ -144,6 +180,7 @@ func collectUninstallTargets() []string {
 	add(paths.ConfigDir())
 	add(paths.DataDir())
 	add(paths.StateDir())
+	add(paths.RuntimeDir())
 	if binDir := os.Getenv("GATE_BIN_DIR"); binDir != "" {
 		add(filepath.Join(binDir, "gate"))
 	}
@@ -328,9 +365,66 @@ func stopAllKnownDaemons(stdout, stderr io.Writer) uninstallStep {
 	return result
 }
 
+func stopAllKnownExposures(stdout, stderr io.Writer) uninstallStep {
+	records, err := exposureStore().Read()
+	if err != nil {
+		printError(stderr, "failed to list exposures: "+err.Error())
+		return uninstallStepFailed
+	}
+	if len(records) == 0 {
+		return uninstallStepNoop
+	}
+	blocked := map[string]bool{}
+	for _, record := range records {
+		blocked[config.CanonicalDomain(record.Target)] = true
+		if alias := exposurePublicHost(record); alias != "" {
+			blocked[config.CanonicalDomain(alias)] = true
+		}
+	}
+	if err := reloadExposureRecordsTransitionBlocked(records, records, blocked, stderr, false); err != nil {
+		printError(stderr, "failed to block exposure routes: "+err.Error())
+		return uninstallStepFailed
+	}
+	for _, record := range records {
+		provider, err := exposeProviderFor(record.Provider)
+		if err != nil {
+			_ = reloadExposureRecordsTransition(records, records, stderr, false)
+			printError(stderr, "failed to load exposure provider: "+err.Error())
+			return uninstallStepFailed
+		}
+		status, statusErr := provider.Status(context.Background(), record)
+		if statusErr != nil {
+			_ = provider.Close()
+			_ = reloadExposureRecordsTransition(records, records, stderr, false)
+			printError(stderr, fmt.Sprintf("failed to verify %s exposure for %s: %v", record.Provider, record.Service, statusErr))
+			return uninstallStepFailed
+		}
+		if status != expose.StatusDown {
+			err = provider.Stop(context.Background(), record, expose.StopOpts{})
+		}
+		_ = provider.Close()
+		if err != nil {
+			_ = reloadExposureRecordsTransition(records, records, stderr, false)
+			printError(stderr, fmt.Sprintf("failed to stop %s exposure for %s: %v", record.Provider, record.Service, err))
+			return uninstallStepFailed
+		}
+	}
+	if err := exposureStore().Write(nil); err != nil {
+		printError(stderr, "failed to clear exposure state: "+err.Error())
+		return uninstallStepFailed
+	}
+	printUninstallStep(stdout, "stopped active exposures")
+	return uninstallStepChanged
+}
+
 func removeTargets(targets []string, stdout, stderr io.Writer) bool {
 	ok := true
 	for _, target := range targets {
+		if err := validateUninstallTarget(target); err != nil {
+			printError(stderr, fmt.Sprintf("refusing unsafe uninstall target %s: %v", target, err))
+			ok = false
+			continue
+		}
 		if _, err := os.Lstat(target); err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -347,6 +441,71 @@ func removeTargets(targets []string, stdout, stderr io.Writer) bool {
 		printUninstallStep(stdout, "removed "+target)
 	}
 	return ok
+}
+
+func normalizeUninstallIsolatedRoot() (func(), error) {
+	raw := os.Getenv("GATE_ISOLATED_ROOT")
+	if raw == "" {
+		return func() {}, nil
+	}
+	canonical, err := paths.ValidateIsolatedRoot(raw)
+	if err != nil {
+		return nil, err
+	}
+	if canonical == raw {
+		return func() {}, nil
+	}
+	if err := os.Setenv("GATE_ISOLATED_ROOT", canonical); err != nil {
+		return nil, err
+	}
+	return func() { _ = os.Setenv("GATE_ISOLATED_ROOT", raw) }, nil
+}
+
+func validateUninstallTarget(target string) error {
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return err
+	}
+	abs = filepath.Clean(abs)
+	canonicalTarget := abs
+	if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		canonicalTarget = filepath.Clean(resolved)
+	}
+	volumeRoot := filepath.Clean(filepath.VolumeName(abs) + string(filepath.Separator))
+	if abs == volumeRoot || canonicalTarget == volumeRoot {
+		return errors.New("filesystem root is never gate-owned")
+	}
+	if rawRoot := os.Getenv("GATE_ISOLATED_ROOT"); rawRoot != "" {
+		rawRootAbs, absErr := filepath.Abs(rawRoot)
+		if absErr != nil {
+			return absErr
+		}
+		if abs == filepath.Clean(rawRootAbs) {
+			return errors.New("isolated root itself is never a removable target")
+		}
+		root, err := paths.ValidateIsolatedRoot(rawRoot)
+		if err != nil {
+			return err
+		}
+		if canonicalTarget == root {
+			return errors.New("isolated root itself is never a removable target")
+		}
+		for _, statePath := range []string{paths.ConfigDir(), paths.DataDir(), paths.StateDir(), paths.RuntimeDir()} {
+			stateAbs, err := filepath.Abs(statePath)
+			if err != nil {
+				return err
+			}
+			if canonicalTarget != filepath.Clean(stateAbs) {
+				continue
+			}
+			rel, err := filepath.Rel(root, canonicalTarget)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return errors.New("isolated state target is not a strict descendant of its root")
+			}
+			return nil
+		}
+	}
+	return nil
 }
 
 func gateShellStartupFiles() []string {
@@ -381,11 +540,18 @@ func removeMarkedBlock(path, begin, end string) (bool, error) {
 	if err != nil || !changed {
 		return changed, err
 	}
-	info, err := os.Stat(path)
+	writePath, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return false, err
 	}
-	return true, os.WriteFile(path, next, info.Mode().Perm())
+	info, err := os.Stat(writePath)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("shell startup target is not a regular file: %s", writePath)
+	}
+	return true, fsutil.WriteAtomic(writePath, next, info.Mode().Perm())
 }
 
 func removeMarkedBlockBytes(path, begin, end string) (bool, []byte, error) {

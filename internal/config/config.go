@@ -5,11 +5,13 @@ package config
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -81,7 +83,8 @@ func Load(path string) (*Project, error) {
 
 func parse(path string, b []byte) (*Project, error) {
 	var f file
-	if err := toml.Unmarshal(b, &f); err != nil {
+	decoder := toml.NewDecoder(bytes.NewReader(b)).DisallowUnknownFields()
+	if err := decoder.Decode(&f); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	env, err := loadEnvFiles(filepath.Dir(path), f.Project.EnvFiles)
@@ -144,7 +147,13 @@ func parse(path string, b []byte) (*Project, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
-	for name, svc := range p.Services {
+	serviceNames := make([]string, 0, len(p.Services))
+	for name := range p.Services {
+		serviceNames = append(serviceNames, name)
+	}
+	sort.Strings(serviceNames)
+	for _, name := range serviceNames {
+		svc := p.Services[name]
 		domain, err := p.ServiceDomain(name)
 		if err != nil {
 			return nil, err
@@ -407,7 +416,7 @@ func (p *Project) ServiceDomain(name string) (string, error) {
 	}
 	host := svc.Host
 	if host == "" {
-		host = CanonicalHost(name)
+		host = CanonicalHost(strings.ReplaceAll(name, "_", "-"))
 	}
 	if host == "." {
 		if err := ValidateDomain(base); err != nil {
@@ -443,8 +452,15 @@ func EnvServiceKey(name string) string {
 
 // Validate checks the project for structural and semantic errors.
 func (p *Project) Validate() error {
-	if strings.TrimSpace(p.Name) == "" {
+	trimmedName := strings.TrimSpace(p.Name)
+	if trimmedName == "" {
 		return errors.New("project name must not be empty")
+	}
+	if p.Name != trimmedName {
+		return errors.New("project name must not have leading or trailing whitespace")
+	}
+	if strings.IndexFunc(p.Name, func(r rune) bool { return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' }) >= 0 {
+		return errors.New("project name must not contain control or line-breaking characters")
 	}
 	if strings.Contains(p.Name, "/") {
 		return errors.New("project name must not contain /")
@@ -456,15 +472,15 @@ func (p *Project) Validate() error {
 	}
 	envPublishers := map[string]envPublisher{}
 	envServiceKeys := map[string]string{}
-	for name, svc := range p.Services {
-		if strings.TrimSpace(name) == "" {
-			return errors.New("service name must not be empty")
-		}
-		if IsReservedServiceName(name) {
-			return fmt.Errorf("service %q: reserved service name", name)
-		}
-		if strings.Contains(name, "/") {
-			return fmt.Errorf("service %q: name must not contain /", name)
+	serviceNames := make([]string, 0, len(p.Services))
+	for name := range p.Services {
+		serviceNames = append(serviceNames, name)
+	}
+	sort.Strings(serviceNames)
+	for _, name := range serviceNames {
+		svc := p.Services[name]
+		if err := ValidateServiceName(name); err != nil {
+			return err
 		}
 		if svc.Domain != "" && svc.Host != "" {
 			return fmt.Errorf("service %q: host and domain are mutually exclusive", name)
@@ -514,6 +530,9 @@ func publishEnvName(publishers map[string]envPublisher, serviceName, field, envN
 	if strings.HasPrefix(envName, "GATE_") {
 		return fmt.Errorf("service %q: %s name %q uses reserved GATE_ prefix", serviceName, field, envName)
 	}
+	if envName == "PORT" {
+		return fmt.Errorf("service %q: %s name %q is reserved by gate", serviceName, field, envName)
+	}
 	if prev, ok := publishers[envName]; ok {
 		if prev.service == serviceName {
 			return fmt.Errorf("service %q publishes env %q from both %s and %s", serviceName, envName, prev.field, field)
@@ -538,7 +557,7 @@ func Discover(start string) (string, error) {
 		if isFile(candidate) {
 			return candidate, nil
 		}
-		if isDir(filepath.Join(dir, ".git")) || dir == home {
+		if pathExists(filepath.Join(dir, ".git")) || dir == home {
 			return "", ErrNotFound
 		}
 		parent := filepath.Dir(dir)
@@ -554,7 +573,7 @@ func isFile(p string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func isDir(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && info.IsDir()
+func pathExists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }

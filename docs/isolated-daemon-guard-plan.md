@@ -61,21 +61,21 @@ diagnose when another gate state root already owns the default listener ports.
 
 ## Work Items
 
-- [ ] Refine Node API types for isolated clients and per-call isolated options.
-- [ ] Add Node API runtime guard for effective `isolatedRoot` plus provided
+- [x] Refine Node API types for isolated clients and per-call isolated options.
+- [x] Add Node API runtime guard for effective `isolatedRoot` plus provided
       `daemon: true`.
-- [ ] Add Node API tests for compile-time and runtime daemon-start rejection and
+- [x] Add Node API tests for compile-time and runtime daemon-start rejection and
       `daemon: false` allowance.
-- [ ] Add CLI helpers to detect TCP listener owners and identify `gate __serve`
+- [x] Add CLI helpers to detect TCP listener owners and identify `gate __serve`
       socket paths.
-- [ ] Add CLI daemon-start conflict diagnostics for cross-state-root gate
+- [x] Add CLI daemon-start conflict diagnostics for cross-state-root gate
       daemons.
-- [ ] Add `gate up` note diagnostics when the current state root has no
+- [x] Add `gate up` note diagnostics when the current state root has no
       reachable daemon but the listener port is owned by another gate daemon.
-- [ ] Update docs and skill text for the isolated daemon boundary.
-- [ ] Run targeted validation, then full project validation if targeted checks
+- [x] Update docs and skill text for the isolated daemon boundary.
+- [x] Run targeted validation, then full project validation if targeted checks
       pass.
-- [ ] Run review-loop after implementation and validation before closeout.
+- [x] Run review-loop after implementation and validation before closeout.
 
 ## Implementation Notes
 

@@ -179,6 +179,12 @@ local routing.
 | `base` | string | empty | Base domain used to derive service domains as `<service>.<base>`. |
 | `env_files` | string array | empty | Dotenv files used only for environment interpolation in project/service fields. |
 
+Project names must be non-empty, must not contain `/`, and must not have leading
+or trailing whitespace, because `/` separates the project and service
+components of registry keys. Service names must match
+`[A-Za-z0-9_][A-Za-z0-9_-]*`; `ls` and `stop` are reserved because they are exposure
+subcommands.
+
 `env_files` entries are resolved relative to the selected project config file.
 Missing files are ignored. Process environment values win over dotenv values,
 and earlier dotenv files win over later ones.
@@ -242,7 +248,9 @@ share normal user gate state unless callers opt in.
 Isolation affects state paths only; it does not isolate OS listener ports. Node
 API callers with isolated state must not request daemon startup via
 `daemon: true`. CLI daemon tests that use isolated state must choose explicit
-non-default listener addresses.
+non-default listener addresses. Isolated mode must not mutate the shared system
+hosts file; custom-domain tests must provide their own DNS or leave isolated
+mode before explicitly selecting hosts-file DNS.
 
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |
@@ -253,11 +261,18 @@ non-default listener addresses.
 | CA material | gate | PEM files | Root key is private local state and must not be copied. Export only the root certificate. |
 | Logs | gate / OS service manager | text or JSONL | Runtime and access logs are separate from command data output. |
 
+All cross-resource state mutations are serialized by a private, stable lock
+keyed by the canonical config root. The lock lives outside that root so
+uninstall or cleanup cannot replace its inode mid-operation. Project config
+read/modify/write operations also use a canonical target-file lock shared
+across isolated roots and symlink aliases. When both are needed, gate acquires
+the state lock before the config lock.
+
 Registry schema:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "services": {
     "myapp/web": {
       "project": "myapp",
@@ -267,7 +282,11 @@ Registry schema:
       "tls": "internal",
       "dns": "localhost",
       "active": true,
-      "config_path": "/repo/gate.toml"
+      "config_path": "/repo/gate.toml",
+      "listener": {
+        "https_addr": "127.0.0.1:9443",
+        "http_addr": "127.0.0.1:9080"
+      }
     },
     "/web": {
       "service": "web",
@@ -280,6 +299,10 @@ Registry schema:
   }
 }
 ```
+
+The optional `listener` object is omitted for the default `:443`/`:80`
+listener pair. Readers reject newer schema versions rather than rewriting data
+they do not understand.
 
 ---
 
@@ -522,7 +545,7 @@ flowchart LR
 | `local` | Same machine | active route | No external exposure. |
 | `lan` | Same network | derived or overridden `.local` domain, reachable machine, trusted CA on clients | gate validates and marks the route exposed; it does not configure other devices' DNS. |
 | `cloudflared` | Public temporary URL | `cloudflared` in `PATH` | Requires authenticated exposure or an explicit unauthenticated opt-out; quick tunnel URL is temporary. |
-| `tailscale` | Tailnet | logged-in `tailscale` in `PATH` | Uses one Tailscale Serve exposure on a non-443 HTTPS port pointed at the gate route; stop resets Serve when the record is gate-owned or force removal is requested. |
+| `tailscale` | Tailnet | logged-in `tailscale` in `PATH` | Uses one Tailscale Serve exposure on a non-443 HTTPS port pointed at the active gate listener; stop verifies the exact current handler and disables only that port. |
 
 Exposure activation targets one scoped active route. Without an explicit global
 or project selector, it uses an explicit config path when provided, then the
@@ -535,8 +558,22 @@ is reused, a primary domain ending in `.localhost` is converted to `.local`,
 and all other primary domains append `.local`. A LAN exposure may override the
 derived alias with an explicit `.local` domain.
 
-Security rule: exposing a route is the only way non-loopback clients can pass
-the proxy's loopback guard.
+Security rule: LAN exposure is the only provider that marks the gate route as
+reachable by non-loopback clients. Cloudflared and Tailscale keep their gate
+origin on loopback and expose it through the provider process instead. External
+providers require the listener daemon to be running. When basic auth is used,
+gate installs the authenticated route before starting the provider so the
+external endpoint is never published before its guard is active.
+
+Exposure activation is transactional across the session secret, persisted
+record, and listener route table. A provider or persistence failure restores
+the previous local state.
+
+An active exposure pins its reservation and route identity. Commands that
+would deactivate, remove, prune, rename, change the domain, or move that route
+to another listener must fail until the matching exposure is stopped. Provider
+shutdown removes the reachable origin route before stopping the provider and
+restores ordinary local routing only after teardown succeeds.
 
 Exposure records persist whether auth was enabled, but never persist the
 `user:pass` secret. Auth secrets are session-scoped and must be supplied again

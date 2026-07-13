@@ -344,6 +344,23 @@ func parseFlags(fs *flag.FlagSet, name string, argv []string, stdout, stderr io.
 	return false, 0
 }
 
+// parseNoArgFlags parses flags and rejects any remaining positional operand.
+// Commands that mutate a default target use this so typos cannot silently act
+// on that target.
+func parseNoArgFlags(fs *flag.FlagSet, name string, argv []string, stdout, stderr io.Writer) (handled bool, code int) {
+	if handled, code := parseFlags(fs, name, argv, stdout, stderr); handled {
+		return true, code
+	}
+	if fs.NArg() == 0 {
+		return false, 0
+	}
+	jsonOut := false
+	if jsonFlag := fs.Lookup("json"); jsonFlag != nil {
+		jsonOut = jsonFlag.Value.String() == "true"
+	}
+	return true, usageFail(stderr, jsonOut, name)
+}
+
 func argvHasJSONFlag(fs *flag.FlagSet, argv []string) bool {
 	if fs.Lookup("json") == nil {
 		return false

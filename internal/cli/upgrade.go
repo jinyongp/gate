@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,9 +22,9 @@ import (
 )
 
 const (
-	upgradeScriptURL = "https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh"
-	githubLatestAPI  = "https://api.github.com/repos/jinyongp/gate/releases/latest"
-	defaultUserAgent = "gate-upgrade"
+	upgradeScriptURLTemplate = "https://raw.githubusercontent.com/jinyongp/gate/%s/scripts/install.sh"
+	githubLatestAPI          = "https://api.github.com/repos/jinyongp/gate/releases/latest"
+	defaultUserAgent         = "gate-upgrade"
 )
 
 var currentVersion = "dev"
@@ -69,15 +70,17 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 	latestTag, err := latestReleaseTag(ctx)
 	if err != nil {
 		activity.Stop()
-		printUpgradeWarning(stderr, "unable to check latest version: "+err.Error())
-	} else {
-		activity.Complete()
+		return fail(stderr, false, ExitError, "upgrade_check", "unable to check latest version: "+err.Error())
 	}
+	activity.Complete()
 
 	if latestTag != "" {
 		if current := normalizedVersion(currentVersion); current != "" && current != "dev" {
 			if normalizedVersion(latestTag) == current {
 				return completeUpToDate(stdout, currentVersion)
+			}
+			if stableReleaseTag("v"+current) && compareVersions(current, normalizedVersion(latestTag)) > 0 {
+				return fail(stderr, false, ExitConflict, "downgrade", fmt.Sprintf("latest release %s is older than current version %s; refusing to downgrade", latestTag, currentVersion))
 			}
 		}
 	} else {
@@ -109,7 +112,7 @@ func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVe
 		return verifyUpgradedVersion(ctx, expectedVersion)
 	}
 
-	scriptPath, err := prepareUpgradeScript(ctx, stderr)
+	scriptPath, err := prepareUpgradeScript(ctx, stderr, expectedVersion)
 	if err != nil {
 		return err
 	}
@@ -117,18 +120,20 @@ func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVe
 		_ = os.Remove(scriptPath)
 	}()
 
-	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommand(ctx, scriptPath, upgradeExecutablePathFunc())); err != nil {
+	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommand(ctx, scriptPath, upgradeExecutablePathFunc(), expectedVersion)); err != nil {
 		return err
 	}
 	return verifyUpgradedVersion(ctx, expectedVersion)
 }
 
-func upgradeInstallScriptCommand(ctx context.Context, scriptPath, currentExecutable string) *exec.Cmd {
+func upgradeInstallScriptCommand(ctx context.Context, scriptPath, currentExecutable, expectedVersion string) *exec.Cmd {
 	//nolint:gosec // G204: executing trusted, repo-fixed upgrade script.
 	cmd := exec.CommandContext(ctx, "sh", scriptPath)
+	cmd.Env = os.Environ()
 	if dir := filepath.Dir(strings.TrimSpace(currentExecutable)); dir != "." && dir != "" {
-		cmd.Env = append(os.Environ(), "GATE_BIN_DIR="+dir)
+		cmd.Env = append(cmd.Env, "GATE_BIN_DIR="+dir)
 	}
+	cmd.Env = append(cmd.Env, "GATE_VERSION="+expectedVersion)
 	return cmd
 }
 
@@ -181,7 +186,7 @@ func upgradeCommandError(action string, err error, output string) error {
 	return fmt.Errorf("%s: %w\n%s", action, err, output)
 }
 
-func prepareUpgradeScript(ctx context.Context, stderr io.Writer) (string, error) {
+func prepareUpgradeScript(ctx context.Context, stderr io.Writer, expectedVersion string) (string, error) {
 	activity := startActivity(stderr, false, "downloading installer")
 	completed := false
 	defer func() {
@@ -192,7 +197,11 @@ func prepareUpgradeScript(ctx context.Context, stderr io.Writer) (string, error)
 		}
 	}()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upgradeScriptURL, nil)
+	if !stableReleaseTag(expectedVersion) {
+		return "", fmt.Errorf("invalid upgrade release tag %q", expectedVersion)
+	}
+	scriptURL := fmt.Sprintf(upgradeScriptURLTemplate, expectedVersion)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scriptURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -255,9 +264,17 @@ func daemonStatusesBeforeUpgrade() []daemon.Status {
 }
 
 func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status) int {
-	for _, st := range daemonsBefore {
-		if nextCode := restartDaemonAfterUpgradeFunc(st, stdout, stderr); nextCode != ExitOK {
-			printUpgradeDaemonRestartWarning(stderr, "daemon restart after upgrade failed")
+	if len(daemonsBefore) > 0 {
+		unlock, err := lockStateMutation()
+		if err != nil {
+			printUpgradeDaemonRestartWarning(stderr, "failed to lock gate state for daemon restart: "+err.Error())
+		} else {
+			for _, st := range daemonsBefore {
+				if nextCode := restartDaemonAfterUpgradeFunc(st, stdout, stderr); nextCode != ExitOK {
+					printUpgradeDaemonRestartWarning(stderr, "daemon restart after upgrade failed")
+				}
+			}
+			unlock()
 		}
 	}
 	printUpgradeStatus(stdout, "upgrade complete")
@@ -363,10 +380,6 @@ func printUpgradeCancelled(stdout io.Writer) {
 	printCancelled(stdout, "upgrade")
 }
 
-func printUpgradeWarning(stderr io.Writer, msg string) {
-	printWarning(stderr, msg)
-}
-
 // confirmUpgrade asks the user to confirm the upgrade on stdin. An empty line
 // (just Enter) accepts; EOF / no input declines so non-interactive callers that
 // forgot -y don't silently upgrade.
@@ -449,6 +462,9 @@ func latestReleaseTag(ctx context.Context) (string, error) {
 	if release.TagName == "" {
 		return "", fmt.Errorf("latest release has empty tag_name")
 	}
+	if !stableReleaseTag(release.TagName) {
+		return "", fmt.Errorf("latest release has invalid stable tag %q", release.TagName)
+	}
 	return release.TagName, nil
 }
 
@@ -456,4 +472,35 @@ func normalizedVersion(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimPrefix(strings.ToLower(v), "v")
 	return v
+}
+
+func stableReleaseTag(v string) bool {
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".")
+	if len(parts) != 3 || !strings.HasPrefix(strings.TrimSpace(v), "v") {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func compareVersions(left, right string) int {
+	lp, rp := strings.Split(left, "."), strings.Split(right, ".")
+	for i := 0; i < 3; i++ {
+		li, _ := strconv.Atoi(lp[i])
+		ri, _ := strconv.Atoi(rp[i])
+		if li < ri {
+			return -1
+		}
+		if li > ri {
+			return 1
+		}
+	}
+	return 0
 }

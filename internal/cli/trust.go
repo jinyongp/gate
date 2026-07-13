@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -40,9 +41,14 @@ type exposeSessionRoute struct {
 // Trust installs the root CA into the OS and browser trust stores.
 func Trust(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("trust", flag.ContinueOnError)
-	if handled, code := parseFlags(fs, "trust", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "trust", args, stdout, stderr); handled {
 		return code
 	}
+	unlock, code := acquireStateMutation(stderr, false)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
 	activity := startActivity(stderr, false, "preparing trust store")
 	authority, err := ca.Load(paths.DataDir())
 	if err != nil {
@@ -64,9 +70,14 @@ func Trust(args []string, stdout, stderr io.Writer) int {
 // Untrust removes the root CA from the OS and browser trust stores.
 func Untrust(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("untrust", flag.ContinueOnError)
-	if handled, code := parseFlags(fs, "untrust", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "untrust", args, stdout, stderr); handled {
 		return code
 	}
+	unlock, code := acquireStateMutation(stderr, false)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
 	activity := startActivity(stderr, false, "preparing trust store")
 	authority, err := ca.LoadCertificate(paths.DataDir())
 	if errors.Is(err, ca.ErrNotFound) {
@@ -103,7 +114,7 @@ func Ca(args []string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("ca export", flag.ContinueOnError)
 	out := fs.String("out", "gate-root.crt", "output path")
-	if handled, code := parseFlags(fs, "ca export", args[1:], stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "ca export", args[1:], stdout, stderr); handled {
 		return code
 	}
 	authority, err := ca.Load(paths.DataDir())
@@ -139,13 +150,23 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "expose", args, stdout, stderr); handled {
 		return code
 	}
-	sel, err := registryScopeFromFlags(scopeFlags, false)
-	if err != nil {
-		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
-	}
 	rest := fs.Args()
 	if len(rest) != 1 {
 		return usageFail(stderr, *jsonOut, "expose")
+	}
+	providerName := normalizeExposeProvider(*via)
+	routeAuth, err := exposeRouteAuth(providerName, *auth, *noAuth)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_auth", err.Error())
+	}
+	unlock, code := acquireStateMutation(stderr, *jsonOut)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
+	sel, err := registryScopeFromFlags(scopeFlags, false)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
 	}
 	svc := rest[0]
 	res, lerr := lookupScopedReservation(svc, sel)
@@ -154,11 +175,6 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	}
 	if !res.Active {
 		return fail(stderr, *jsonOut, ExitError, "not_active", fmt.Sprintf("reservation %q is not active; run gate up first", svc))
-	}
-	providerName := normalizeExposeProvider(*via)
-	routeAuth, err := exposeRouteAuth(providerName, *auth, *noAuth)
-	if err != nil {
-		return fail(stderr, *jsonOut, ExitUsage, "bad_auth", err.Error())
 	}
 	exposeDomain, err := exposeDomainForProvider(providerName, res.Domain, *domain)
 	if err != nil {
@@ -186,7 +202,91 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_provider", err.Error())
 	}
-	if routeAuth == "" && providerName != expose.ProviderLocal {
+	previousRecords, err := exposureStore().Read()
+	if err != nil {
+		_ = provider.Close()
+		return fail(stderr, *jsonOut, ExitError, "expose_store", err.Error())
+	}
+	client := daemonClientForRef(ref)
+	external := externalExposureProvider(providerName)
+	listenerStatus, listenerStatusErr := client.Status()
+	if external && listenerStatusErr != nil {
+		_ = provider.Close()
+		return fail(stderr, *jsonOut, ExitError, "daemon_not_running", "listener daemon is not running; run gate up -d first")
+	}
+	httpsAddr := ref.Pair.HTTPSAddr
+	if listenerStatusErr == nil && listenerStatus.HTTPSAddr != "" {
+		httpsAddr = listenerStatus.HTTPSAddr
+	}
+	if providerName == expose.ProviderLAN && !lanListenerReachable(httpsAddr) {
+		_ = provider.Close()
+		return fail(stderr, *jsonOut, ExitConflict, "listener_not_reachable", "LAN exposure requires a non-loopback HTTPS listener; restart the daemon with --https-addr :443 or a LAN address")
+	}
+	originURL := proxyURL(res.Domain, httpsAddr)
+	publicURL := proxyURL(exposeDomain, httpsAddr)
+	if external {
+		for _, existing := range previousRecords {
+			if !expose.SameKey(existing, expose.Record{Scope: exposureScope(res), Project: res.Project, Service: res.Service, Provider: providerName}) {
+				continue
+			}
+			if existing.Pending != "" {
+				_ = provider.Close()
+				return fail(stderr, *jsonOut, ExitConflict, "exposure_pending", fmt.Sprintf("exposure has an incomplete %s transition; run %s, then retry", existing.Pending, exposureStopCommand(existing)))
+			}
+			status, statusErr := provider.Status(context.Background(), existing)
+			if statusErr != nil {
+				_ = provider.Close()
+				return fail(stderr, *jsonOut, ExitError, "provider", statusErr.Error())
+			}
+			if status != expose.StatusDown {
+				if providerName == expose.ProviderLAN && config.CanonicalDomain(exposurePublicHost(existing)) != config.CanonicalDomain(exposeDomain) {
+					_ = provider.Close()
+					return fail(stderr, *jsonOut, ExitConflict, "already_exposed", "existing LAN exposure uses a different domain; stop it before changing --domain")
+				}
+				return refreshExistingExposure(provider, existing, previousRecords, res, ref, routeAuth, svc, stdout, stderr, *jsonOut)
+			}
+			break
+		}
+	}
+	provisional := expose.Record{
+		Scope:       exposureScope(res),
+		Project:     res.Project,
+		Service:     res.Service,
+		Provider:    providerName,
+		PublicURL:   publicURL,
+		Target:      res.Domain,
+		OriginURL:   originURL,
+		AuthEnabled: routeAuth != "",
+		ServePort:   servePort,
+	}
+	txn := exposureTransaction{
+		ref:             ref,
+		previousRecords: previousRecords,
+		stderr:          stderr,
+		jsonOut:         *jsonOut,
+	}
+	if external {
+		provisional.Pending = "start"
+		if err := exposureStore().Upsert(provisional); err != nil {
+			_ = provider.Close()
+			return fail(stderr, *jsonOut, ExitError, "expose_store", err.Error())
+		}
+		txn.storeChanged = true
+		txn.previousSession = snapshotExposeSession(ref.String())
+		txn.sessionChanged = true
+		applyExposeSession(ref.String(), nil, res.Domain, routeAuth)
+		txn.routesChanged = true
+		preRecords := upsertExposureRecord(previousRecords, provisional)
+		if err := reloadExposureRoutesForRef(ref, preRecords, true, stderr, *jsonOut, "applying exposure policy"); err != nil {
+			if rollbackErr := txn.rollback(); rollbackErr != nil {
+				_ = provider.Close()
+				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
+			}
+			_ = provider.Close()
+			return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
+		}
+	}
+	if routeAuth == "" && providerName != expose.ProviderLocal && !*jsonOut {
 		printWarning(stderr, "exposing without --auth; anyone with the URL can reach your dev server")
 	}
 	var activity activityHandle
@@ -195,8 +295,18 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	}
 	result, err := provider.Expose(context.Background(), exposeDomain, expose.Opts{
 		Auth:      routeAuth,
-		TargetURL: exposeTargetURL(providerName, exposeDomain),
+		TargetURL: exposeTargetURL(providerName, originURL),
+		PublicURL: publicURL,
 		ServePort: servePort,
+		OnStarted: func(started expose.Result) error {
+			if !external {
+				return nil
+			}
+			owned := provisional
+			owned.PID = started.PID
+			owned.Command = started.Command
+			return exposureStore().Upsert(owned)
+		},
 	})
 	if activity != nil {
 		if err != nil {
@@ -206,61 +316,36 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if err != nil {
+		cleanupExposureProvider(provider, provisional)
+		if rollbackErr := txn.rollback(); rollbackErr != nil {
+			return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
+		}
 		return fail(stderr, *jsonOut, ExitError, "expose_failed", err.Error())
 	}
 
-	// External providers lift the loopback guard and can apply optional auth,
-	// then the listener daemon is hot-reloaded. Auth is session-scoped: it lives
-	// in the in-memory route table, not the persisted registry.
-	record := expose.Record{
-		Scope:       exposureScope(res),
-		Project:     res.Project,
-		Service:     res.Service,
-		Provider:    providerName,
-		PublicURL:   result.URL,
-		Target:      res.Domain,
-		AuthEnabled: routeAuth != "",
-		ServePort:   servePort,
-		PID:         result.PID,
-		Command:     result.Command,
-	}
+	record := provisional
+	record.Pending = ""
+	record.PublicURL = result.URL
+	record.PID = result.PID
+	record.Command = result.Command
 	if err := exposureStore().Upsert(record); err != nil {
 		cleanupExposureProvider(provider, record)
+		if rollbackErr := txn.rollback(); rollbackErr != nil {
+			return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
+		}
 		return fail(stderr, *jsonOut, ExitError, "expose_store", err.Error())
 	}
-	client := daemonClientForRef(ref)
+	txn.storeChanged = true
 	if client.IsRunning() {
-		reg, rerr := registryStore().Read()
-		if rerr != nil {
+		txn.routesChanged = true
+		finalRecords := upsertExposureRecord(previousRecords, record)
+		if err := reloadExposureRoutesForRef(ref, finalRecords, external, stderr, *jsonOut, "reloading routes"); err != nil {
 			cleanupExposureProvider(provider, record)
-			if rollbackErr := removeExposureRecordFromStore(record); rollbackErr != nil {
+			if rollbackErr := txn.rollback(); rollbackErr != nil {
 				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
 			}
-			return fail(stderr, *jsonOut, ExitError, "registry", rerr.Error())
+			return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
 		}
-		routes := activeRoutesForListener(reg, ref.Pair)
-		if externalExposureProvider(providerName) {
-			applyExposeSession(ref.String(), routes, res.Domain, routeAuth)
-		}
-		routes, err = applyExposureRecords(ref.String(), routes)
-		if err != nil {
-			cleanupExposureProvider(provider, record)
-			if rollbackErr := removeExposureRecordFromStore(record); rollbackErr != nil {
-				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
-			}
-			return fail(stderr, *jsonOut, ExitError, "expose_store", err.Error())
-		}
-		activity := startActivity(stderr, *jsonOut, "reloading routes")
-		serr := setListenerRoutesFunc(ref, routes)
-		if serr != nil {
-			activity.Stop()
-			cleanupExposureProvider(provider, record)
-			if rollbackErr := removeExposureRecordFromStore(record); rollbackErr != nil {
-				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
-			}
-			return fail(stderr, *jsonOut, ExitError, "reload_failed", serr.Error())
-		}
-		activity.Complete()
 	}
 
 	if *jsonOut {
@@ -294,12 +379,16 @@ func exposeLs(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "emit JSON")
 	via := fs.String("via", "", "filter provider")
 	scopeFlags := defineDaemonScopeFlags(fs, true)
-	if handled, code := parseFlags(fs, "expose ls", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "expose ls", args, stdout, stderr); handled {
 		return code
 	}
 	sel, err := registryScopeFromFlags(scopeFlags, true)
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
+	}
+	preserveLegacyProjectSelector(&sel, scopeFlags)
+	if *via != "" && !validExposeProvider(*via) {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_provider", fmt.Sprintf("unknown provider %q", *via))
 	}
 	records, err := exposureStore().Read()
 	if err != nil {
@@ -407,12 +496,21 @@ func exposeStop(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "expose stop", args, stdout, stderr); handled {
 		return code
 	}
+	if len(fs.Args()) != 1 {
+		return usageFail(stderr, *jsonOut, "expose stop")
+	}
+	unlock, code := acquireStateMutation(stderr, *jsonOut)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
 	sel, err := registryScopeFromFlags(scopeFlags, false)
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitUsage, "bad_scope", err.Error())
 	}
-	if len(fs.Args()) != 1 {
-		return usageFail(stderr, *jsonOut, "expose stop")
+	preserveLegacyProjectSelector(&sel, scopeFlags)
+	if *via != "" && !validExposeProvider(*via) {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_provider", fmt.Sprintf("unknown provider %q", *via))
 	}
 	service := fs.Args()[0]
 	records, err := exposureStore().Read()
@@ -440,24 +538,40 @@ func exposeStop(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, *jsonOut, ExitError, "provider", err.Error())
 	}
 	status, _ := provider.Status(context.Background(), record)
-	skipProviderStop := status == expose.StatusDown && *force
+	skipProviderStop := status == expose.StatusDown && (*force || record.Pending != "")
 	nextRecords := removeExposureRecordsAffectedByStop(records, record)
-	if err := reloadExposureRecordsWith(nextRecords, stderr, *jsonOut); err != nil {
-		return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
-	}
-	if err := exposureStore().Write(nextRecords); err != nil {
-		if rollbackErr := reloadExposureRecordsWith(records, stderr, *jsonOut); rollbackErr != nil {
-			return fail(stderr, *jsonOut, ExitError, "rollback_failed", "stop failed and rollback failed: "+rollbackErr.Error())
+	pendingRecords := append([]expose.Record(nil), records...)
+	for i := range pendingRecords {
+		if expose.SameKey(pendingRecords[i], record) {
+			pendingRecords[i].Pending = "stop"
 		}
+	}
+	if err := exposureStore().Write(pendingRecords); err != nil {
 		return fail(stderr, *jsonOut, ExitError, "expose_store", err.Error())
+	}
+	// Remove every route reachable by the provider before asking it to stop.
+	// This keeps a slow or failing provider shutdown fail-closed.
+	if err := reloadExposureRecordsTransitionBlocked(records, records, exposureStopBlockedDomains(records, record), stderr, *jsonOut); err != nil {
+		_ = exposureStore().Write(records)
+		return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
 	}
 	if !skipProviderStop {
 		if err := provider.Stop(context.Background(), record, expose.StopOpts{Force: *force}); err != nil {
-			if rollbackErr := restoreExposureRecords(records, stderr, *jsonOut); rollbackErr != nil {
-				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "stop failed and rollback failed: "+rollbackErr.Error())
+			storeErr := exposureStore().Write(records)
+			if rollbackErr := reloadExposureRecordsTransition(records, records, stderr, *jsonOut); rollbackErr != nil {
+				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "provider stop failed and route rollback failed: "+rollbackErr.Error())
+			}
+			if storeErr != nil {
+				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "provider stop failed and exposure state rollback failed: "+storeErr.Error())
 			}
 			return fail(stderr, *jsonOut, ExitError, "stop_failed", err.Error())
 		}
+	}
+	if err := exposureStore().Write(nextRecords); err != nil {
+		return fail(stderr, *jsonOut, ExitError, "expose_store", err.Error())
+	}
+	if err := reloadExposureRecordsTransition(records, nextRecords, stderr, *jsonOut); err != nil {
+		return fail(stderr, *jsonOut, ExitError, "reload_failed", err.Error())
 	}
 	if *jsonOut {
 		return writeJSON(stdout, map[string]any{"removed": true, "service": service, "provider": record.Provider})
@@ -514,11 +628,34 @@ func exposeDomainForProvider(via, primary, override string) (string, error) {
 	return primary, nil
 }
 
-func exposeTargetURL(via, domain string) string {
-	if via != expose.ProviderTailscale {
+func exposeTargetURL(via, originURL string) string {
+	switch via {
+	case expose.ProviderCloudflared:
+		return originURL
+	case expose.ProviderTailscale:
+		return strings.Replace(originURL, "https://", "https+insecure://", 1)
+	default:
 		return ""
 	}
-	return "https+insecure://" + domain
+}
+
+func lanListenerReachable(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return true
+	}
+	if zone := strings.LastIndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || (!ip.IsLoopback() && !ip.IsUnspecified())
 }
 
 func exposeServePort(via string, res registry.Reservation) (int, error) {
@@ -614,6 +751,15 @@ func normalizeExposeProvider(via string) string {
 	return via
 }
 
+func validExposeProvider(via string) bool {
+	switch via {
+	case expose.ProviderLocal, expose.ProviderLAN, expose.ProviderCloudflared, expose.ProviderTailscale:
+		return true
+	default:
+		return false
+	}
+}
+
 func externalExposureProvider(via string) bool {
 	switch via {
 	case expose.ProviderLAN, expose.ProviderCloudflared, expose.ProviderTailscale:
@@ -623,21 +769,142 @@ func externalExposureProvider(via string) bool {
 	}
 }
 
-func cleanupExposureProvider(provider expose.Provider, record expose.Record) {
-	_ = provider.Stop(context.Background(), record, expose.StopOpts{Force: true})
-	_ = provider.Close()
+type exposureTransaction struct {
+	ref             listenerDaemonRef
+	previousRecords []expose.Record
+	previousSession map[string]exposeSessionRoute
+	sessionChanged  bool
+	routesChanged   bool
+	storeChanged    bool
+	stderr          io.Writer
+	jsonOut         bool
 }
 
-func removeExposureRecordFromStore(record expose.Record) error {
-	_, err := exposureStore().Delete(record)
+func refreshExistingExposure(provider expose.Provider, existing expose.Record, previousRecords []expose.Record, res registry.Reservation, ref listenerDaemonRef, routeAuth, service string, stdout, stderr io.Writer, jsonOut bool) int {
+	defer func() { _ = provider.Close() }()
+	if existing.Target != res.Domain {
+		return fail(stderr, jsonOut, ExitConflict, "already_exposed", "existing exposure targets a different route; stop it before exposing again")
+	}
+	updated := existing
+	updated.AuthEnabled = routeAuth != ""
+	if routeAuth == "" && existing.Provider != expose.ProviderLocal && !jsonOut {
+		printWarning(stderr, "exposing without --auth; anyone with the URL can reach your dev server")
+	}
+	txn := exposureTransaction{
+		ref:             ref,
+		previousRecords: previousRecords,
+		previousSession: snapshotExposeSession(ref.String()),
+		sessionChanged:  true,
+		routesChanged:   true,
+		stderr:          stderr,
+		jsonOut:         jsonOut,
+	}
+	applyExposeSession(ref.String(), nil, res.Domain, routeAuth)
+	nextRecords := upsertExposureRecord(previousRecords, updated)
+	if err := reloadExposureRoutesForRef(ref, nextRecords, true, stderr, jsonOut, "refreshing exposure policy"); err != nil {
+		if rollbackErr := txn.rollback(); rollbackErr != nil {
+			return fail(stderr, jsonOut, ExitError, "rollback_failed", "expose refresh failed and rollback failed: "+rollbackErr.Error())
+		}
+		return fail(stderr, jsonOut, ExitError, "reload_failed", err.Error())
+	}
+	if err := exposureStore().Upsert(updated); err != nil {
+		if rollbackErr := txn.rollback(); rollbackErr != nil {
+			return fail(stderr, jsonOut, ExitError, "rollback_failed", "expose refresh failed and rollback failed: "+rollbackErr.Error())
+		}
+		return fail(stderr, jsonOut, ExitError, "expose_store", err.Error())
+	}
+	if jsonOut {
+		out := map[string]any{"service": service, "provider": existing.Provider, "public_url": existing.PublicURL, "target": res.Domain, "refreshed": true}
+		if res.Project != "" {
+			out["project"] = res.Project
+		} else {
+			out["global"] = true
+		}
+		return writeJSON(stdout, out)
+	}
+	printSuccess(stdout, fmt.Sprintf("%s exposure refreshed via %s", displayReservationOwner(res), existing.Provider))
+	printKV(stdout, existing.PublicURL, res.Domain)
+	return ExitOK
+}
+
+func (t exposureTransaction) rollback() error {
+	var errs []error
+	if t.storeChanged {
+		if err := exposureStore().Write(t.previousRecords); err != nil {
+			errs = append(errs, fmt.Errorf("restore exposure store: %w", err))
+		}
+	}
+	if t.sessionChanged {
+		restoreExposeSession(t.ref.String(), t.previousSession)
+	}
+	if t.routesChanged {
+		if err := reloadExposureRoutesForRef(t.ref, t.previousRecords, false, t.stderr, t.jsonOut, "restoring routes"); err != nil {
+			errs = append(errs, fmt.Errorf("restore routes: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func reloadExposureRoutesForRef(ref listenerDaemonRef, records []expose.Record, requireRunning bool, stderr io.Writer, jsonOut bool, label string) error {
+	if requireRunning && !daemonClientForRef(ref).IsRunning() {
+		return errors.New("listener daemon stopped before exposure policy was applied")
+	}
+	activity := startActivity(stderr, jsonOut, label)
+	err := registryStore().View(func(reg *registry.Registry) error {
+		routes := activeRoutesForListener(reg, ref.Pair)
+		var err error
+		routes, err = applyExposureRecordSet(ref.String(), routes, records)
+		if err != nil {
+			return err
+		}
+		return setListenerRoutesFunc(ref, routes)
+	})
+	if err != nil {
+		activity.Stop()
+	} else {
+		activity.Complete()
+	}
 	return err
 }
 
-func restoreExposureRecords(records []expose.Record, stderr io.Writer, jsonOut bool) error {
-	if err := exposureStore().Write(records); err != nil {
-		return err
+func upsertExposureRecord(records []expose.Record, record expose.Record) []expose.Record {
+	next := append([]expose.Record(nil), records...)
+	for i := range next {
+		if expose.SameKey(next[i], record) {
+			next[i] = record
+			return next
+		}
 	}
-	return reloadExposureRecordsWith(records, stderr, jsonOut)
+	return append(next, record)
+}
+
+func snapshotExposeSession(key string) map[string]exposeSessionRoute {
+	exposeSessionMu.Lock()
+	defer exposeSessionMu.Unlock()
+	snapshot := map[string]exposeSessionRoute{}
+	for domain, session := range exposeSessionRoutes[key] {
+		snapshot[domain] = session
+	}
+	return snapshot
+}
+
+func restoreExposeSession(key string, snapshot map[string]exposeSessionRoute) {
+	exposeSessionMu.Lock()
+	defer exposeSessionMu.Unlock()
+	if len(snapshot) == 0 {
+		delete(exposeSessionRoutes, key)
+		return
+	}
+	restored := make(map[string]exposeSessionRoute, len(snapshot))
+	for domain, session := range snapshot {
+		restored[domain] = session
+	}
+	exposeSessionRoutes[key] = restored
+}
+
+func cleanupExposureProvider(provider expose.Provider, record expose.Record) {
+	_ = provider.Stop(context.Background(), record, expose.StopOpts{Force: true})
+	_ = provider.Close()
 }
 
 func exposureStore() expose.Store {
@@ -661,64 +928,223 @@ func exposureRecordMatchesScope(record expose.Record, sel registryScopeSelection
 	return record.Scope == daemonScopeGlobal && record.Project == ""
 }
 
+type exposureActiveError struct {
+	message string
+}
+
+func (e *exposureActiveError) Error() string { return e.message }
+
+type exposureStoreReadError struct {
+	err error
+}
+
+func (e *exposureStoreReadError) Error() string { return e.err.Error() }
+func (e *exposureStoreReadError) Unwrap() error { return e.err }
+
+type exposureAliasConflictError struct {
+	alias string
+}
+
+func (e *exposureAliasConflictError) Error() string {
+	return fmt.Sprintf("LAN exposure alias %q conflicts with an active route domain; stop the exposure or choose another domain", e.alias)
+}
+
+func exposureGuardFailure(stderr io.Writer, jsonOut bool, err error) (int, bool) {
+	var active *exposureActiveError
+	if errors.As(err, &active) {
+		return fail(stderr, jsonOut, ExitConflict, "exposure_active", active.Error()), true
+	}
+	var storeErr *exposureStoreReadError
+	if errors.As(err, &storeErr) {
+		return fail(stderr, jsonOut, ExitError, "expose_store", storeErr.Error()), true
+	}
+	return ExitOK, false
+}
+
+func ensureReservationsNotExposed(reservations []registry.Reservation) error {
+	records, err := exposureStore().Read()
+	if err != nil {
+		return &exposureStoreReadError{err: err}
+	}
+	for _, res := range reservations {
+		for _, record := range records {
+			if !exposureRecordMatchesReservation(record, res) {
+				continue
+			}
+			return &exposureActiveError{message: fmt.Sprintf("%s is exposed via %s; run %s before changing or removing its route", displayReservationOwner(res), record.Provider, exposureStopCommand(record))}
+		}
+	}
+	return nil
+}
+
+func reservationHasExposure(res registry.Reservation, records []expose.Record) bool {
+	for _, record := range records {
+		if exposureRecordMatchesReservation(record, res) {
+			return true
+		}
+	}
+	return false
+}
+
+func exposureRecordMatchesReservation(record expose.Record, res registry.Reservation) bool {
+	project := ""
+	if record.Scope == daemonScopeProject {
+		project = record.Project
+	}
+	return project == res.Project && record.Service == res.Service
+}
+
+func exposureStopCommand(record expose.Record) string {
+	parts := []string{"gate", "expose", "stop"}
+	if record.Scope == daemonScopeGlobal {
+		parts = append(parts, "-g")
+	} else if record.Project != "" {
+		parts = append(parts, "-p", record.Project)
+	}
+	if strings.HasPrefix(record.Service, "-") {
+		parts = append(parts, "--via", record.Provider, "--", record.Service)
+	} else {
+		parts = append(parts, record.Service, "--via", record.Provider)
+	}
+	return "`" + shellCommand(parts) + "`"
+}
+
 func applyExposureRecords(key string, routes []proxy.Route) ([]proxy.Route, error) {
 	records, err := exposureStore().Read()
 	if err != nil {
 		return nil, err
 	}
-	return applyExposureRecordSet(key, routes, records), nil
+	return applyExposureRecordSet(key, routes, records)
 }
 
-func applyExposureRecordSet(key string, routes []proxy.Route, records []expose.Record) []proxy.Route {
+func applyExposureRecordSet(key string, routes []proxy.Route, records []expose.Record) ([]proxy.Route, error) {
+	baseDomains := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		baseDomains[config.CanonicalDomain(route.Domain)] = true
+	}
+	for _, record := range records {
+		if record.Provider != expose.ProviderLAN || record.Pending != "" {
+			continue
+		}
+		alias := exposurePublicHost(record)
+		if alias != "" && alias != config.CanonicalDomain(record.Target) && baseDomains[alias] {
+			return nil, &exposureAliasConflictError{alias: alias}
+		}
+	}
 	exposeSessionMu.Lock()
 	defer exposeSessionMu.Unlock()
 	sessions := exposeSessionRoutes[key]
-	for i := range routes {
+	next := make([]proxy.Route, 0, len(routes))
+	for _, original := range routes {
+		route := original
+		blocked := false
+		var lanRecords []expose.Record
 		for _, record := range records {
-			if record.Target != routes[i].Domain {
+			if record.Target != route.Domain {
 				continue
+			}
+			if record.Pending == "start" || record.Pending == "stop" {
+				blocked = true
+				break
 			}
 			if record.AuthEnabled {
-				session, ok := sessions[routes[i].Domain]
+				session, ok := sessions[route.Domain]
 				if !ok || session.Auth == "" {
-					continue
+					blocked = true
+					break
 				}
-				routes[i].Auth = session.Auth
+				route.Auth = session.Auth
 			}
-			if !externalExposureProvider(record.Provider) {
-				continue
+			if record.Provider == expose.ProviderLAN && record.Pending == "" {
+				lanRecords = append(lanRecords, record)
 			}
-			routes[i].Exposed = true
-			routes = upsertExposureAlias(routes, routes[i], record)
 		}
-	}
-	return routes
-}
-
-func reloadExposureRecordsWith(records []expose.Record, stderr io.Writer, jsonOut bool) error {
-	reg, err := registryStore().Read()
-	if err != nil {
-		return err
-	}
-	refs := []listenerDaemonRef{defaultListenerRef()}
-	for _, key := range reg.Keys() {
-		refs = appendListenerRef(refs, listenerRefFor(reg.Services[key].ListenerPair()))
-	}
-	for _, ref := range refs {
-		if !daemonClientForRef(ref).IsRunning() {
+		if blocked {
 			continue
 		}
-		routes := activeRoutesForListener(reg, ref.Pair)
-		routes = applyExposureRecordSet(ref.String(), routes, records)
-		activity := startActivity(stderr, jsonOut, "reloading routes")
-		err := setListenerRoutesFunc(ref, routes)
-		if err != nil {
-			activity.Stop()
-			return err
+		if len(lanRecords) > 0 {
+			route.Exposed = true
 		}
-		activity.Complete()
+		next = append(next, route)
+		for _, record := range lanRecords {
+			next = upsertExposureAlias(next, route, record)
+		}
 	}
-	return nil
+	return next, nil
+}
+
+func reloadExposureRecordsTransition(previous, next []expose.Record, stderr io.Writer, jsonOut bool) error {
+	return reloadExposureRecordsTransitionBlocked(previous, next, nil, stderr, jsonOut)
+}
+
+func reloadExposureRecordsTransitionBlocked(previous, next []expose.Record, blocked map[string]bool, stderr io.Writer, jsonOut bool) error {
+	return registryStore().View(func(reg *registry.Registry) error {
+		refs := []listenerDaemonRef{defaultListenerRef()}
+		for _, key := range reg.Keys() {
+			refs = appendListenerRef(refs, listenerRefFor(reg.Services[key].ListenerPair()))
+		}
+		var applied []listenerDaemonRef
+		for _, ref := range refs {
+			if !daemonClientForRef(ref).IsRunning() {
+				continue
+			}
+			routes, err := applyExposureRecordSet(ref.String(), activeRoutesForListener(reg, ref.Pair), next)
+			if err != nil {
+				return err
+			}
+			if len(blocked) > 0 {
+				filtered := routes[:0]
+				for _, route := range routes {
+					if blocked[config.CanonicalDomain(route.Domain)] {
+						continue
+					}
+					filtered = append(filtered, route)
+				}
+				routes = filtered
+			}
+			activity := startActivity(stderr, jsonOut, "reloading routes")
+			if err := setListenerRoutesFunc(ref, routes); err != nil {
+				activity.Stop()
+				var rollbackErrs []error
+				failedOldRoutes, buildErr := applyExposureRecordSet(ref.String(), activeRoutesForListener(reg, ref.Pair), previous)
+				if buildErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("build restore routes for %s: %w", ref.String(), buildErr))
+				} else if rollbackErr := setListenerRoutesFunc(ref, failedOldRoutes); rollbackErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("restore %s: %w", ref.String(), rollbackErr))
+				}
+				for i := len(applied) - 1; i >= 0; i-- {
+					appliedRef := applied[i]
+					oldRoutes, buildErr := applyExposureRecordSet(appliedRef.String(), activeRoutesForListener(reg, appliedRef.Pair), previous)
+					if buildErr != nil {
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("build restore routes for %s: %w", appliedRef.String(), buildErr))
+					} else if rollbackErr := setListenerRoutesFunc(appliedRef, oldRoutes); rollbackErr != nil {
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("restore %s: %w", appliedRef.String(), rollbackErr))
+					}
+				}
+				if rollbackErr := errors.Join(rollbackErrs...); rollbackErr != nil {
+					return errors.Join(err, fmt.Errorf("route rollback failed: %w", rollbackErr))
+				}
+				return err
+			}
+			activity.Complete()
+			applied = append(applied, ref)
+		}
+		return nil
+	})
+}
+
+func exposureStopBlockedDomains(records []expose.Record, match expose.Record) map[string]bool {
+	blocked := map[string]bool{}
+	for _, record := range records {
+		if !expose.SameKey(record, match) {
+			continue
+		}
+		blocked[config.CanonicalDomain(record.Target)] = true
+		if alias := exposurePublicHost(record); alias != "" {
+			blocked[config.CanonicalDomain(alias)] = true
+		}
+	}
+	return blocked
 }
 
 func upsertExposureAlias(routes []proxy.Route, base proxy.Route, record expose.Record) []proxy.Route {
@@ -762,17 +1188,7 @@ func removeExposureRecord(records []expose.Record, match expose.Record) []expose
 }
 
 func removeExposureRecordsAffectedByStop(records []expose.Record, match expose.Record) []expose.Record {
-	if match.Provider != expose.ProviderTailscale {
-		return removeExposureRecord(records, match)
-	}
-	next := make([]expose.Record, 0, len(records))
-	for _, record := range records {
-		if record.Provider == expose.ProviderTailscale {
-			continue
-		}
-		next = append(next, record)
-	}
-	return next
+	return removeExposureRecord(records, match)
 }
 
 func applyExposeSession(key string, routes []proxy.Route, domain, auth string) {
@@ -787,7 +1203,6 @@ func applyExposeSession(key string, routes []proxy.Route, domain, auth string) {
 		if !ok {
 			continue
 		}
-		routes[i].Exposed = true
 		routes[i].Auth = session.Auth
 	}
 }

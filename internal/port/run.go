@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Exec runs name+args as a child process with PORT=port injected into its
@@ -25,6 +26,9 @@ func Exec(port int, extraEnv []string, name string, args []string, stdin io.Read
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
+			if status, ok := ee.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return 128 + int(status.Signal())
+			}
 			return ee.ExitCode()
 		}
 		fmt.Fprintln(stderr, "gate run:", err)

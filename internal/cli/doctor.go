@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -51,6 +52,13 @@ func Doctor(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(fs.Args()) != 0 {
 		return usageFail(stderr, *jsonOut, "doctor")
+	}
+	if *fix {
+		unlock, code := acquireStateMutation(stderr, *jsonOut)
+		if code != ExitOK {
+			return code
+		}
+		defer unlock()
 	}
 
 	var activity activityHandle
@@ -591,7 +599,10 @@ func checkOldScopedDaemonState(fix bool, excludePaths []string) (doctorIssue, bo
 		if strings.HasSuffix(path, ".pid") {
 			client := daemon.NewClient(strings.TrimSuffix(path, ".pid") + ".sock")
 			if pid, err := readPIDFile(path); err == nil && oldScopedDaemonPIDMatchesSocket(client, pid) {
-				_ = stopDaemonProcess(client, pid, 2*time.Second)
+				if err := stopDaemonProcess(client, pid, 2*time.Second); err != nil {
+					issue.Error = err.Error()
+					return issue, true
+				}
 			}
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -662,7 +673,20 @@ func processExists(pid int) bool {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	if err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	state, err := processStateForPID(pid)
+	if err == nil && strings.HasPrefix(strings.TrimSpace(state), "Z") {
+		return false
+	}
+	return true
+}
+
+var processStateForPID = func(pid int) (string, error) {
+	//nolint:gosec // G204: fixed executable and flags; pid is numeric data.
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
+	return string(out), err
 }
 
 func existingFiles(paths ...string) []string {

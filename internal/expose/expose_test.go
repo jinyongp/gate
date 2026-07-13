@@ -52,7 +52,10 @@ func TestLANRequiresDotLocal(t *testing.T) {
 }
 
 func TestCloudflaredStatusAndStopIgnoreStalePID(t *testing.T) {
-	record := Record{PID: os.Getpid(), Target: "web.localhost", Provider: ProviderCloudflared}
+	oldProcessArgs := processArgsForPID
+	t.Cleanup(func() { processArgsForPID = oldProcessArgs })
+	processArgsForPID = func(int) (string, error) { return "go test ./internal/expose", nil }
+	record := Record{PID: os.Getpid(), Target: "web.localhost", Provider: ProviderCloudflared, Command: "cloudflared tunnel --url https://web.localhost"}
 	status, err := (&Cloudflared{}).Status(context.Background(), record)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +84,7 @@ func TestCloudflaredProcessMatchesRequiresTarget(t *testing.T) {
 	processArgsForPID = func(int) (string, error) {
 		return "cloudflared tunnel --url https://web.localhost", nil
 	}
+	record.Command = "cloudflared tunnel --url https://web.localhost"
 	if !cloudflaredProcessMatches(record) {
 		t.Fatal("matching cloudflared target did not match")
 	}
@@ -92,6 +96,20 @@ func TestCloudflaredProcessMatchesRequiresTarget(t *testing.T) {
 	}
 }
 
+func TestCloudflaredStatusPreservesUnverifiableLivePID(t *testing.T) {
+	oldProcessArgs := processArgsForPID
+	t.Cleanup(func() { processArgsForPID = oldProcessArgs })
+	processArgsForPID = func(int) (string, error) { return "", errors.New("ps denied") }
+	record := Record{PID: os.Getpid(), Provider: ProviderCloudflared, Command: "cloudflared tunnel --url https://web.localhost"}
+	status, err := (&Cloudflared{}).Status(context.Background(), record)
+	if err == nil || status != StatusUnverified {
+		t.Fatalf("status = %q, err = %v", status, err)
+	}
+	if err := (&Cloudflared{}).Stop(context.Background(), record, StopOpts{}); err == nil {
+		t.Fatal("Stop forgot an unverifiable live process")
+	}
+}
+
 func TestCloudflaredExposeSucceedsBeforeTimeout(t *testing.T) {
 	oldCommand := cloudflaredCommand
 	oldTimeout := cloudflaredStartupTimeout
@@ -100,17 +118,22 @@ func TestCloudflaredExposeSucceedsBeforeTimeout(t *testing.T) {
 		cloudflaredStartupTimeout = oldTimeout
 	})
 	cloudflaredStartupTimeout = time.Second
-	cloudflaredCommand = func(ctx context.Context, _ string) *exec.Cmd {
+	var targetURL string
+	cloudflaredCommand = func(ctx context.Context, target string) *exec.Cmd {
+		targetURL = target
 		return exec.CommandContext(ctx, "sh", "-c", "echo https://quick.trycloudflare.com >&2; exec sleep 10")
 	}
 
 	provider := &Cloudflared{}
-	result, err := provider.Expose(context.Background(), "web.localhost", Opts{})
+	result, err := provider.Expose(context.Background(), "web.localhost", Opts{TargetURL: "https://web.localhost:9443"})
 	if err != nil {
 		t.Fatalf("Expose: %v", err)
 	}
 	if result.URL != "https://quick.trycloudflare.com" || result.PID == 0 {
 		t.Fatalf("result = %+v", result)
+	}
+	if targetURL != "https://web.localhost:9443" {
+		t.Fatalf("cloudflared target = %q", targetURL)
 	}
 	if err := provider.Close(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("Close: %v", err)
@@ -232,12 +255,19 @@ func TestTailscaleExposeFailsBeforeServeWhenNodeURLMissing(t *testing.T) {
 	}
 }
 
-func TestTailscaleStopResetsOwnedServe(t *testing.T) {
-	oldResetCommand := tailscaleServeResetCommand
-	t.Cleanup(func() { tailscaleServeResetCommand = oldResetCommand })
-	resetCalled := false
-	tailscaleServeResetCommand = func(ctx context.Context) *exec.Cmd {
-		resetCalled = true
+func TestTailscaleStopDisablesOwnedServePort(t *testing.T) {
+	oldOffCommand := tailscaleServeOffCommand
+	oldStatusCommand := tailscaleServeStatusCommand
+	t.Cleanup(func() {
+		tailscaleServeOffCommand = oldOffCommand
+		tailscaleServeStatusCommand = oldStatusCommand
+	})
+	tailscaleServeStatusCommand = func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", `printf '{"Web":{"node.ts.net:10443":{"Handlers":{"/":{"Proxy":"https+insecure://local.stamp.is"}}}}}'`)
+	}
+	offPort := 0
+	tailscaleServeOffCommand = func(ctx context.Context, port int) *exec.Cmd {
+		offPort = port
 		return exec.CommandContext(ctx, "sh", "-c", "true")
 	}
 	record := Record{
@@ -250,17 +280,24 @@ func TestTailscaleStopResetsOwnedServe(t *testing.T) {
 	if err := (Tailscale{}).Stop(context.Background(), record, StopOpts{}); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if !resetCalled {
-		t.Fatal("reset command was not called")
+	if offPort != 10443 {
+		t.Fatalf("off port = %d, want 10443", offPort)
 	}
 }
 
 func TestTailscaleStopRequiresOwnershipOrForce(t *testing.T) {
-	oldResetCommand := tailscaleServeResetCommand
-	t.Cleanup(func() { tailscaleServeResetCommand = oldResetCommand })
-	resetCalled := false
-	tailscaleServeResetCommand = func(ctx context.Context) *exec.Cmd {
-		resetCalled = true
+	oldOffCommand := tailscaleServeOffCommand
+	oldStatusCommand := tailscaleServeStatusCommand
+	t.Cleanup(func() {
+		tailscaleServeOffCommand = oldOffCommand
+		tailscaleServeStatusCommand = oldStatusCommand
+	})
+	tailscaleServeStatusCommand = func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", `printf '{"Web":{}}'`)
+	}
+	offPort := 0
+	tailscaleServeOffCommand = func(ctx context.Context, port int) *exec.Cmd {
+		offPort = port
 		return exec.CommandContext(ctx, "sh", "-c", "true")
 	}
 	record := Record{Provider: ProviderTailscale, Target: "local.stamp.is"}
@@ -269,14 +306,33 @@ func TestTailscaleStopRequiresOwnershipOrForce(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not owned by gate") {
 		t.Fatalf("Stop error = %v", err)
 	}
-	if resetCalled {
-		t.Fatal("reset command called without ownership or force")
+	if offPort != 0 {
+		t.Fatal("off command called without ownership or force")
 	}
 	if err := (Tailscale{}).Stop(context.Background(), record, StopOpts{Force: true}); err != nil {
 		t.Fatalf("Stop --force: %v", err)
 	}
-	if !resetCalled {
-		t.Fatal("reset command was not called with force")
+	if offPort != 443 {
+		t.Fatalf("off port = %d, want default 443", offPort)
+	}
+}
+
+func TestTailscaleOwnershipIncludesCustomOriginPort(t *testing.T) {
+	record := Record{
+		Provider: ProviderTailscale, Target: "web.localhost", OriginURL: "https://web.localhost:9443",
+		ServePort: 10443, Command: "tailscale serve --bg --https=10443 https+insecure://web.localhost:9443",
+	}
+	if !tailscaleRecordOwned(record) {
+		t.Fatalf("custom-port record was not recognized: %+v", record)
+	}
+	oldStatusCommand := tailscaleServeStatusCommand
+	t.Cleanup(func() { tailscaleServeStatusCommand = oldStatusCommand })
+	tailscaleServeStatusCommand = func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c", `printf '{"Web":{"node.ts.net:10443":{"Handlers":{"/":{"Proxy":"https+insecure://web.localhost:9443"}}}}}'`)
+	}
+	status, err := (Tailscale{}).Status(context.Background(), record)
+	if err != nil || status != StatusLive {
+		t.Fatalf("status = %q, err = %v", status, err)
 	}
 }
 
@@ -411,5 +467,27 @@ func TestStoreConcurrentUpsert(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode = %s, want 0600", got)
+	}
+}
+
+func TestStoreRejectsFutureSchemaWithoutOverwrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exposures.json")
+	original := []byte(`{"version":999,"records":[]}` + "\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := Store{Path: path}
+	if _, err := store.Read(); err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("Read error = %v", err)
+	}
+	if err := store.Write(nil); err == nil || !strings.Contains(err.Error(), "newer than supported") {
+		t.Fatalf("Write error = %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("future store changed: %s", after)
 	}
 }

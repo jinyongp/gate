@@ -4,9 +4,15 @@
 package paths
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
+	"syscall"
 )
 
 // appName is the per-tool subdirectory created under every base directory.
@@ -37,6 +43,9 @@ func StateDir() string {
 
 // RuntimeDir returns the directory holding the admin control socket.
 func RuntimeDir() string {
+	if root := isolatedRoot(); root != "" {
+		return filepath.Join(root, "run")
+	}
 	return ConfigDir()
 }
 
@@ -100,10 +109,68 @@ func base(env, def string) string {
 
 func home() string {
 	h, err := os.UserHomeDir()
-	if err != nil {
-		return os.TempDir()
+	if err == nil && h != "" {
+		return h
 	}
-	return h
+	return fallbackHome(os.TempDir(), os.Getuid())
+}
+
+var (
+	fallbackHomeMu    sync.Mutex
+	fallbackHomeCache = map[string]string{}
+)
+
+func fallbackHome(tempDir string, uid int) string {
+	fallbackHomeMu.Lock()
+	defer fallbackHomeMu.Unlock()
+	cacheKey := fmt.Sprintf("%s:%d", tempDir, uid)
+	if cached := fallbackHomeCache[cacheKey]; cached != "" {
+		return cached
+	}
+
+	candidate := filepath.Join(tempDir, fmt.Sprintf("gate-user-%d", uid))
+	if err := os.Mkdir(candidate, 0o700); err == nil || os.IsExist(err) {
+		if secureFallbackDir(candidate, uid) == nil {
+			fallbackHomeCache[cacheKey] = candidate
+			return candidate
+		}
+	}
+
+	if path, err := os.MkdirTemp(tempDir, fmt.Sprintf("gate-user-%d-", uid)); err == nil {
+		//nolint:gosec // G302: private directories require the execute bit for traversal.
+		_ = os.Chmod(path, 0o700)
+		fallbackHomeCache[cacheKey] = path
+		return path
+	}
+
+	// Last-resort path remains unguessable even if the temp directory cannot be
+	// written yet; the first state write will surface the underlying I/O error.
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	path := filepath.Join(tempDir, fmt.Sprintf("gate-user-%d-%s", uid, hex.EncodeToString(nonce[:])))
+	fallbackHomeCache[cacheKey] = path
+	return path
+}
+
+func secureFallbackDir(path string, uid int) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("fallback home is not a directory")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != uid {
+		return fmt.Errorf("fallback home has unexpected owner")
+	}
+	if info.Mode().Perm() != 0o700 {
+		//nolint:gosec // G302: private directories require the execute bit for traversal.
+		if err := os.Chmod(path, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func isolatedRoot() string {
@@ -111,8 +178,80 @@ func isolatedRoot() string {
 	if root == "" {
 		return ""
 	}
-	if abs, err := filepath.Abs(root); err == nil {
-		return abs
+	validated, err := ValidateIsolatedRoot(root)
+	if err == nil {
+		return validated
 	}
-	return filepath.Clean(root)
+	// Command entry points report the validation error. Internal callers still
+	// fail closed instead of deriving paths such as /run from an unsafe root.
+	return filepath.Join(os.TempDir(), fmt.Sprintf("gate-invalid-isolated-root-%d", os.Getpid()))
+}
+
+// ValidateIsolatedRoot canonicalizes an isolated state root and rejects roots
+// that could overlap broad system or user directories during cleanup.
+func ValidateIsolatedRoot(root string) (string, error) {
+	if root == "" {
+		return "", fmt.Errorf("isolated root must not be empty")
+	}
+	if strings.IndexFunc(root, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return "", fmt.Errorf("isolated root must not contain control characters")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := canonicalPath(abs)
+	if err != nil {
+		return "", err
+	}
+	volumeRoot := filepath.Clean(filepath.VolumeName(canonical) + string(filepath.Separator))
+	rel, err := filepath.Rel(volumeRoot, canonical)
+	if err != nil || rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("isolated root is too broad: %s", canonical)
+	}
+	components := strings.FieldsFunc(rel, func(r rune) bool { return r == filepath.Separator })
+	if len(components) < 2 {
+		return "", fmt.Errorf("isolated root must be a dedicated nested directory: %s", canonical)
+	}
+	for _, broad := range []string{os.TempDir(), userHomeDir()} {
+		if broad == "" {
+			continue
+		}
+		resolved, resolveErr := canonicalPath(broad)
+		if resolveErr == nil && canonical == resolved {
+			return "", fmt.Errorf("isolated root must not be a shared directory: %s", canonical)
+		}
+	}
+	return canonical, nil
+}
+
+func canonicalPath(path string) (string, error) {
+	current := filepath.Clean(path)
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Clean(path), nil
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
 }

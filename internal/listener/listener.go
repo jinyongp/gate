@@ -4,9 +4,11 @@ package listener
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -53,6 +55,85 @@ func Normalize(pair Pair) Pair {
 func Equivalent(a, b Pair) bool {
 	na, nb := Normalize(a), Normalize(b)
 	return na.HTTPSAddr == nb.HTTPSAddr && na.HTTPAddr == nb.HTTPAddr
+}
+
+// Validate checks that both bind addresses are syntactically usable TCP
+// endpoints. allowZero permits ephemeral listener ports for callers that can
+// persist the concrete bound address returned by the daemon.
+func Validate(pair Pair, allowZero bool) error {
+	pair = Normalize(pair)
+	for _, item := range []struct {
+		name string
+		addr string
+	}{
+		{name: "HTTPS", addr: pair.HTTPSAddr},
+		{name: "HTTP", addr: pair.HTTPAddr},
+	} {
+		host, port, err := split(item.addr)
+		if err != nil {
+			return fmt.Errorf("invalid %s listener address %q", item.name, item.addr)
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 0 || p > 65535 || (!allowZero && p == 0) {
+			return fmt.Errorf("invalid %s listener port in %q", item.name, item.addr)
+		}
+		if strings.IndexFunc(host, unicode.IsSpace) >= 0 || strings.IndexFunc(host, unicode.IsControl) >= 0 {
+			return fmt.Errorf("invalid %s listener host in %q", item.name, item.addr)
+		}
+		if !validBindHost(host) {
+			return fmt.Errorf("invalid %s listener host in %q", item.name, item.addr)
+		}
+	}
+	_, httpsPort, _ := split(pair.HTTPSAddr)
+	if pair.HTTPSAddr == pair.HTTPAddr && httpsPort != "0" {
+		return fmt.Errorf("HTTPS and HTTP listener addresses must differ")
+	}
+	return nil
+}
+
+func validBindHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return true
+	}
+	ipHost := host
+	if strings.Contains(host, "%") {
+		if strings.Count(host, "%") != 1 {
+			return false
+		}
+		before, zone, _ := strings.Cut(host, "%")
+		ip := net.ParseIP(before)
+		if ip == nil || ip.To4() != nil || zone == "" || !validZone(zone) {
+			return false
+		}
+		return true
+	}
+	if net.ParseIP(ipHost) != nil {
+		return true
+	}
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validZone(zone string) bool {
+	for _, r := range zone {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // KeyFor returns a stable, file-safe key for pair.

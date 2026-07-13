@@ -19,6 +19,7 @@ import (
 
 	"gate/internal/ca"
 	"gate/internal/daemon"
+	"gate/internal/fsutil"
 	"gate/internal/listener"
 	"gate/internal/paths"
 	"gate/internal/proxy"
@@ -29,6 +30,12 @@ var newDaemonServeCommand = func(exe, socketPath, httpsAddr, httpAddr string) *e
 	//nolint:gosec // G204: exe is our own binary path; listen addrs are passed as argv, not a shell.
 	return exec.Command(exe, "__serve", "--socket", socketPath, "--https-addr", httpsAddr, "--http-addr", httpAddr)
 }
+
+var writeDaemonPID = func(path string, pid int) error {
+	return fsutil.WriteAtomic(path, []byte(strconv.Itoa(pid)), 0o600)
+}
+
+var daemonReadyTimeout = 3 * time.Second
 
 const (
 	defaultDaemonHTTPSAddr = ":443"
@@ -69,7 +76,7 @@ func daemonStatus(args []string, stdout, stderr io.Writer) int {
 	jsonOut := fs.Bool("json", false, "emit JSON")
 	all := fs.Bool("all", false, "target all known listener daemons")
 	fs.BoolVar(all, "a", false, "target all known listener daemons")
-	if handled, code := parseFlags(fs, "daemon status", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "daemon status", args, stdout, stderr); handled {
 		return code
 	}
 	refs := []listenerDaemonRef{defaultListenerRef()}
@@ -212,11 +219,19 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
 	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
-	if handled, code := parseFlags(fs, "daemon start", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "daemon start", args, stdout, stderr); handled {
 		return code
 	}
 	httpsSet, httpSet := flagSet(fs, "https-addr"), flagSet(fs, "http-addr")
 	pair := listener.FromFlags(*httpsAddr, *httpAddr)
+	if err := listener.Validate(pair, true); err != nil {
+		return fail(stderr, false, ExitUsage, "bad_listener", err.Error())
+	}
+	unlock, code := acquireStateMutation(stderr, false)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
 	ref := listenerRefFor(pair)
 
 	client := daemonClientForRef(ref)
@@ -260,12 +275,19 @@ func daemonRestart(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("restart", flag.ContinueOnError)
 	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
 	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
-	if handled, code := parseFlags(fs, "daemon restart", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "daemon restart", args, stdout, stderr); handled {
 		return code
 	}
-
 	httpsSet, httpSet := flagSet(fs, "https-addr"), flagSet(fs, "http-addr")
 	pair := listener.FromFlags(*httpsAddr, *httpAddr)
+	if err := listener.Validate(pair, true); err != nil {
+		return fail(stderr, false, ExitUsage, "bad_listener", err.Error())
+	}
+	unlock, code := acquireStateMutation(stderr, false)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
 	ref := listenerRefFor(pair)
 	client := daemonClientForRef(ref)
 	activity := startActivity(stderr, false, "restarting daemon")
@@ -347,7 +369,7 @@ func daemonStatusMatchesListener(st daemon.Status, pair listener.Pair) bool {
 	if st.HTTPSAddr == "" && st.HTTPAddr == "" {
 		return true
 	}
-	return listener.Equivalent(listener.Pair{HTTPSAddr: st.HTTPSAddr, HTTPAddr: st.HTTPAddr}, pair)
+	return daemonListenMatches(st, pair.HTTPSAddr, pair.HTTPAddr)
 }
 
 func flagSet(fs *flag.FlagSet, name string) bool {
@@ -381,12 +403,49 @@ func daemonExplicitListenMatches(st daemon.Status, httpsAddr, httpAddr string, h
 
 func listenAddrMatches(actual, requested string) bool {
 	if actual == "" || requested == ":0" {
-		return true
+		if actual == "" {
+			return true
+		}
 	}
+	actual = listener.Normalize(listener.Pair{HTTPSAddr: actual, HTTPAddr: actual}).HTTPSAddr
+	requested = listener.Normalize(listener.Pair{HTTPSAddr: requested, HTTPAddr: requested}).HTTPSAddr
+	actualHost, actualPort, actualErr := net.SplitHostPort(actual)
+	requestedHost, requestedPort, requestedErr := net.SplitHostPort(requested)
+	if actualErr != nil || requestedErr != nil {
+		return actual == requested
+	}
+	if requestedPort == "0" {
+		return listenHostsMatch(actualHost, requestedHost) && actualPort != ""
+	}
+	return actualPort == requestedPort && listenHostsMatch(actualHost, requestedHost)
+}
+
+var lookupListenerIPs = net.LookupIP
+
+func listenHostsMatch(actual, requested string) bool {
+	actual = strings.Trim(strings.TrimSpace(actual), "[]")
+	requested = strings.Trim(strings.TrimSpace(requested), "[]")
 	if actual == requested {
 		return true
 	}
-	return listenPort(actual) == listenPort(requested)
+	actualIP := net.ParseIP(strings.SplitN(actual, "%", 2)[0])
+	requestedIP := net.ParseIP(strings.SplitN(requested, "%", 2)[0])
+	if actualIP != nil && requestedIP != nil {
+		return actualIP.Equal(requestedIP)
+	}
+	if actualIP == nil || requested == "" {
+		return false
+	}
+	resolved, err := lookupListenerIPs(requested)
+	if err != nil {
+		return false
+	}
+	for _, ip := range resolved {
+		if actualIP.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func listenPort(addr string) string {
@@ -413,7 +472,7 @@ type daemonStartResult struct {
 	Message string
 }
 
-func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, ref daemonStateRef) daemonStartResult {
+func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, ref daemonStateRef) (result daemonStartResult) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	logFile, logOffset, err := openDaemonLog(ref)
 	if err != nil {
@@ -430,12 +489,20 @@ func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, ref daemonStateRef
 	expectedPID := cmd.Process.Pid
 	waitc := make(chan error, 1)
 	go func() { waitc <- cmd.Wait() }()
-	deadline := time.After(3 * time.Second)
+	cleanup := true
+	defer func() {
+		if cleanup {
+			terminateStartedCommand(cmd.Process, waitc)
+			_ = os.Remove(ref.pidPath())
+		}
+	}()
+	deadline := time.After(daemonReadyTimeout)
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
 		select {
 		case err := <-waitc:
+			cleanup = false
 			if err == nil {
 				err = errors.New("daemon exited before becoming ready")
 			}
@@ -444,16 +511,34 @@ func startDaemonCommand(cmd *exec.Cmd, client *daemon.Client, ref daemonStateRef
 		case <-deadline:
 			return daemonStartResult{Code: ExitError, Message: "daemon did not become ready"}
 		case <-tick.C:
-			if st, err := client.Status(); err == nil && (expectedPID < 0 || st.PID == expectedPID) {
+			if st, err := client.Status(); err == nil && st.PID == expectedPID {
 				if err := os.MkdirAll(filepath.Dir(ref.pidPath()), 0o700); err != nil {
 					return daemonStartResult{Code: ExitError, Message: err.Error()}
 				}
-				if err := os.WriteFile(ref.pidPath(), []byte(strconv.Itoa(st.PID)), 0o600); err != nil {
+				if err := writeDaemonPID(ref.pidPath(), st.PID); err != nil {
 					return daemonStartResult{Code: ExitError, Message: err.Error()}
 				}
+				cleanup = false
 				return daemonStartResult{Code: ExitOK, PID: st.PID}
 			}
 		}
+	}
+}
+
+func terminateStartedCommand(process *os.Process, waitc <-chan error) {
+	if process == nil {
+		return
+	}
+	_ = process.Signal(syscall.SIGTERM)
+	select {
+	case <-waitc:
+		return
+	case <-time.After(500 * time.Millisecond):
+	}
+	_ = process.Signal(syscall.SIGKILL)
+	select {
+	case <-waitc:
+	case <-time.After(2 * time.Second):
 	}
 }
 
@@ -496,10 +581,19 @@ func daemonStop(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(all, "a", false, "target all known listener daemons")
 	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
 	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
-	if handled, code := parseFlags(fs, "daemon stop", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "daemon stop", args, stdout, stderr); handled {
 		return code
 	}
-	refs := []listenerDaemonRef{listenerRefFor(listener.FromFlags(*httpsAddr, *httpAddr))}
+	pair := listener.FromFlags(*httpsAddr, *httpAddr)
+	if err := listener.Validate(pair, true); err != nil {
+		return fail(stderr, false, ExitUsage, "bad_listener", err.Error())
+	}
+	unlock, code := acquireStateMutation(stderr, false)
+	if code != ExitOK {
+		return code
+	}
+	defer unlock()
+	refs := []listenerDaemonRef{listenerRefFor(pair)}
 	if *all {
 		var err error
 		refs, err = allListenerRefs()
@@ -538,14 +632,13 @@ func daemonStopRef(ref daemonStateRef, stdout, stderr io.Writer, printScope bool
 	if err != nil {
 		return fail(stderr, false, ExitError, "pidfile", "corrupt pid file")
 	}
-	if !isGateDaemonPID(pid) {
+	if !isGateDaemonPIDForSocket(pid, ref.socketPath()) {
 		_ = os.Remove(ref.pidPath())
 		printDaemonStop(stdout, ref, "not running", printScope)
 		return ExitOK
 	}
-	proc, err := os.FindProcess(pid)
-	if err == nil {
-		_ = proc.Signal(syscall.SIGTERM)
+	if err := stopDaemonProcess(client, pid, 2*time.Second); err != nil {
+		return fail(stderr, false, ExitError, "stop", err.Error())
 	}
 	_ = os.Remove(ref.pidPath())
 	printDaemonStop(stdout, ref, "stopped", printScope)
@@ -570,35 +663,129 @@ func printDaemonStop(stdout io.Writer, ref daemonStateRef, msg string, printScop
 }
 
 func stopDaemonProcess(client *daemon.Client, pid int, timeout time.Duration) error {
-	proc, perr := os.FindProcess(pid)
-	if perr == nil {
-		_ = proc.Signal(syscall.SIGTERM)
-	}
-	if !waitForDaemonStop(client, pid, timeout) {
-		if perr == nil {
-			_ = proc.Signal(syscall.SIGKILL)
+	authorizedBySocket := false
+	if client != nil {
+		status, statusErr := client.Status()
+		authorizedBySocket = statusErr == nil && status.PID == pid
+		if !authorizedBySocket && !isGateDaemonPIDForSocket(pid, client.SocketPath()) {
+			return fmt.Errorf("refusing to signal pid %d: it is not the gate daemon for %s", pid, client.SocketPath())
 		}
-		if !waitForDaemonStop(client, pid, 2*time.Second) {
+	}
+	if authorizedBySocket {
+		if err := client.Shutdown(); err != nil {
+			return fmt.Errorf("request daemon shutdown through %s: %w", client.SocketPath(), err)
+		}
+		deadline := time.NewTimer(timeout)
+		defer deadline.Stop()
+		tick := time.NewTicker(25 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			if !client.IsRunning() {
+				return nil
+			}
+			select {
+			case <-deadline.C:
+				return daemonStopTimeoutError(pid)
+			case <-tick.C:
+			}
+		}
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	expectedArgs, identityErr := processArgsForPID(pid)
+	if identityErr != nil {
+		if !processExists(pid) {
+			return nil
+		}
+		if !authorizedBySocket {
+			return fmt.Errorf("cannot verify daemon pid %d identity: %w", pid, identityErr)
+		}
+		expectedArgs = ""
+	}
+	if strings.TrimSpace(expectedArgs) == "" && !authorizedBySocket {
+		return fmt.Errorf("cannot verify daemon pid %d identity: empty process arguments", pid)
+	}
+	if authorizedBySocket {
+		status, statusErr := client.Status()
+		if statusErr != nil || status.PID != pid {
+			return nil
+		}
+	} else if !sameProcessIdentity(pid, expectedArgs) {
+		return nil
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	if !waitForProcessExit(pid, expectedArgs, timeout) {
+		if authorizedBySocket {
+			status, statusErr := client.Status()
+			if statusErr != nil || status.PID != pid {
+				return nil
+			}
+		} else if !sameProcessIdentity(pid, expectedArgs) {
+			return nil
+		}
+		if err := proc.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		if !waitForProcessExit(pid, expectedArgs, 2*time.Second) {
+			// A killed child may remain as a zombie until its parent reaps it.
+			// The daemon is operationally stopped once its admin socket is gone.
+			if client != nil && !client.IsRunning() {
+				return nil
+			}
 			return daemonStopTimeoutError(pid)
 		}
 	}
 	return nil
 }
 
-func waitForDaemonStop(client *daemon.Client, pid int, timeout time.Duration) bool {
-	deadline := time.After(timeout)
+func waitForProcessExit(pid int, expectedArgs string, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		if !client.IsRunning() || !processExists(pid) {
+		if processReaped(pid) {
+			return true
+		}
+		if processIsZombie(pid) {
+			return true
+		}
+		if !sameProcessIdentity(pid, expectedArgs) {
 			return true
 		}
 		select {
-		case <-deadline:
+		case <-deadline.C:
 			return false
 		case <-tick.C:
 		}
 	}
+}
+
+func processReaped(pid int) bool {
+	var status syscall.WaitStatus
+	waited, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
+	return err == nil && waited == pid
+}
+
+func processIsZombie(pid int) bool {
+	//nolint:gosec // G204: fixed command and numeric pid.
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").Output()
+	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+func sameProcessIdentity(pid int, expectedArgs string) bool {
+	if !processExists(pid) {
+		return false
+	}
+	if expectedArgs == "" {
+		return true
+	}
+	currentArgs, err := processArgsForPID(pid)
+	return err == nil && currentArgs == expectedArgs
 }
 
 func daemonStopTimeoutError(pid int) error {
@@ -813,6 +1000,14 @@ func isGateDaemonPID(pid int) bool {
 	return isGateDaemonArgs(args)
 }
 
+func isGateDaemonPIDForSocket(pid int, socket string) bool {
+	args, err := processArgsForPID(pid)
+	if err != nil || !isGateDaemonArgs(args) {
+		return false
+	}
+	return filepath.Clean(gateDaemonSocketPath(args)) == filepath.Clean(socket)
+}
+
 var processArgsForPID = func(pid int) (string, error) {
 	//nolint:gosec // G204: fixed executable and fixed flags; pid is data, not a shell command.
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
@@ -841,7 +1036,7 @@ func daemonLogs(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
 	all := fs.Bool("all", false, "target all known listener daemons")
 	fs.BoolVar(all, "a", false, "target all known listener daemons")
-	if handled, code := parseFlags(fs, "daemon logs", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "daemon logs", args, stdout, stderr); handled {
 		return code
 	}
 	refs := []listenerDaemonRef{defaultListenerRef()}
@@ -911,6 +1106,10 @@ func parseServeFlags(args []string, stderr io.Writer) (string, string, string, i
 	httpsAddr := fs.String("https-addr", defaultDaemonHTTPSAddr, "HTTPS listen address")
 	httpAddr := fs.String("http-addr", defaultDaemonHTTPAddr, "HTTP listen address")
 	if err := fs.Parse(args); err != nil {
+		return "", "", "", ExitUsage
+	}
+	if fs.NArg() != 0 {
+		usageLine(stderr, "__serve")
 		return "", "", "", ExitUsage
 	}
 	return *socketPath, *httpsAddr, *httpAddr, ExitOK

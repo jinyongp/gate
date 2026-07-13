@@ -53,6 +53,76 @@ func TestInitNoClobber(t *testing.T) {
 	}
 }
 
+func TestInitRejectsInvalidSpecBeforeWrite(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	var out, errb bytes.Buffer
+	if code := Init([]string{"-y", "--name", "a/b"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("Init exit = %d, want usage; stderr=%s", code, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, config.Filename)); !os.IsNotExist(err) {
+		t.Fatalf("invalid config was written or stat failed: %v", err)
+	}
+	if err := validateInitSpec(initSpec{
+		ProjectName: "demo",
+		BaseDomain:  "demo.localhost",
+		Services:    []initService{{Name: "stop"}},
+	}); err == nil {
+		t.Fatal("reserved service name accepted")
+	}
+}
+
+func TestInitForcePreservesMode(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, config.Filename)
+	if err := os.WriteFile(path, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Init([]string{"-y", "--force", "--name", "demo"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Init exit = %d, stderr=%s", code, errb.String())
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
+	}
+}
+
+func TestInitForcePreservesConfigSymlink(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	target := filepath.Join(dir, "real.toml")
+	path := filepath.Join(dir, config.Filename)
+	if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Init([]string{"-y", "--force", "--name", "demo"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Init exit = %d, stderr=%s", code, errb.String())
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("gate.toml symlink was replaced")
+	}
+	project, err := config.Load(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project.Name != "demo" {
+		t.Fatalf("project = %q", project.Name)
+	}
+}
+
 func TestInitJSON(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

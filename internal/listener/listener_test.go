@@ -77,3 +77,42 @@ func TestKeyForAvoidsHostPunctuationCollisions(t *testing.T) {
 		seen[key] = pair
 	}
 }
+
+func TestValidateListenerPair(t *testing.T) {
+	valid := []struct {
+		pair      Pair
+		allowZero bool
+	}{
+		{pair: Pair{HTTPSAddr: ":443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "localhost:443", HTTPAddr: "localhost:80"}},
+		{pair: Pair{HTTPSAddr: "[fe80::1%lo0]:443", HTTPAddr: "[::1]:80"}},
+		{pair: Pair{HTTPSAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0"}, allowZero: true},
+	}
+	for _, tc := range valid {
+		if err := Validate(tc.pair, tc.allowZero); err != nil {
+			t.Errorf("Validate(%+v, %v): %v", tc.pair, tc.allowZero, err)
+		}
+	}
+
+	invalid := []struct {
+		pair      Pair
+		allowZero bool
+	}{
+		{pair: Pair{HTTPSAddr: ":443", HTTPAddr: ":443"}},
+		{pair: Pair{HTTPSAddr: "bad host:443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "-bad:443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "host_:443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: ":65536", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: ":0", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "localhost", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "[127.0.0.1%lo0]:443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "[fe80::1%]:443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "[fe80::1%lo0%bad]:443", HTTPAddr: ":80"}},
+		{pair: Pair{HTTPSAddr: "[fe80::1%bad/zone]:443", HTTPAddr: ":80"}},
+	}
+	for _, tc := range invalid {
+		if err := Validate(tc.pair, tc.allowZero); err == nil {
+			t.Errorf("Validate(%+v, %v) succeeded", tc.pair, tc.allowZero)
+		}
+	}
+}

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gate/internal/paths"
 )
 
 func TestRunVersion(t *testing.T) {
@@ -79,11 +81,42 @@ func TestRunIsolatedRootSetsEnvForCommand(t *testing.T) {
 	if code := run([]string{"ping", "--isolated-root", root}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
 	}
-	if got, want := out.String(), root; got != want {
+	want, err := paths.ValidateIsolatedRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	if _, ok := os.LookupEnv(isolatedRootEnv); ok {
 		t.Fatalf("%s leaked after run", isolatedRootEnv)
+	}
+}
+
+func TestRunRejectsUnsafeFlagAndAmbientIsolatedRoots(t *testing.T) {
+	commands["ping"] = func(_ []string, _, _ io.Writer) int {
+		t.Fatal("command ran with unsafe isolated root")
+		return 0
+	}
+	t.Cleanup(func() { delete(commands, "ping") })
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  string
+	}{
+		{name: "flag", args: []string{"ping", "--isolated-root", string(filepath.Separator)}},
+		{name: "ambient", args: []string{"ping"}, env: string(filepath.Separator)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(isolatedRootEnv, tc.env)
+			var out, errb bytes.Buffer
+			if code := run(tc.args, &out, &errb); code != 2 {
+				t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+			}
+			if !strings.Contains(errb.String(), "invalid isolated root") {
+				t.Fatalf("stderr = %q", errb.String())
+			}
+		})
 	}
 }
 

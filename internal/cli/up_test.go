@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,28 @@ func TestUpAllocatesAndReserves(t *testing.T) {
 	api, ok := reg.Get(registry.Key("demo", "api"))
 	if !ok || api.Port != 4501 {
 		t.Fatalf("api should keep fixed port 4501: %+v", api)
+	}
+}
+
+func TestUpEmptyProjectJSONUsesEmptyServicesArray(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gate.toml"), []byte("[project]\nname = \"empty\"\nbase = \"empty.localhost\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	var got struct {
+		Services []any `json:"services"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Services == nil || len(got.Services) != 0 {
+		t.Fatalf("services = %#v, want []", got.Services)
 	}
 }
 
@@ -160,6 +183,93 @@ func TestUpUpdatesExistingFixedPort(t *testing.T) {
 	}
 }
 
+func TestUpRejectsInvalidListenerBeforeRegistryMutation(t *testing.T) {
+	setupUpProject(t)
+	var out, errb bytes.Buffer
+	if code := Up([]string{"--https-addr", "bad host:443"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("Up exit = %d, want usage; stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Services) != 0 {
+		t.Fatalf("registry mutated: %+v", reg.Services)
+	}
+}
+
+func TestUpReconcilesRemovedServiceAndProjectRename(t *testing.T) {
+	setupUpProject(t)
+	oldSelect := selectDNSProvider
+	t.Cleanup(func() { selectDNSProvider = oldSelect })
+	var removed []string
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{remove: func(domain string) error { removed = append(removed, domain); return nil }}
+	}
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("first Up exit = %d, stderr=%s", code, errb.String())
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "[project]\nname = \"renamed\"\n\n[services.web]\ndomain = \"web.demo.localhost\"\n"
+	if err := os.WriteFile(filepath.Join(cwd, "gate.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("second Up exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{registry.Key("demo", "web"), registry.Key("demo", "api")} {
+		if _, ok := reg.Get(key); ok {
+			t.Fatalf("stale reservation remains: %s", key)
+		}
+	}
+	if _, ok := reg.Get(registry.Key("renamed", "web")); !ok {
+		t.Fatal("renamed project reservation missing")
+	}
+	if !slices.Contains(removed, "api.demo.localhost") {
+		t.Fatalf("removed DNS = %v", removed)
+	}
+}
+
+func TestDownDeactivatesConfigOwnedRemovedService(t *testing.T) {
+	setupUpProject(t)
+	oldSelect := selectDNSProvider
+	t.Cleanup(func() { selectDNSProvider = oldSelect })
+	selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "[project]\nname = \"demo\"\n\n[services.web]\ndomain = \"web.demo.localhost\"\n"
+	if err := os.WriteFile(filepath.Join(cwd, "gate.toml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := Down(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Down exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, ok := reg.Get(registry.Key("demo", "api"))
+	if !ok || api.Active {
+		t.Fatalf("removed config service was not deactivated: %+v", api)
+	}
+}
+
 func TestUpPrunesMissingConfigReservationBeforeConflict(t *testing.T) {
 	setupUpProject(t)
 	missing := filepath.Join(t.TempDir(), "missing", "gate.toml")
@@ -188,6 +298,108 @@ func TestUpPrunesMissingConfigReservationBeforeConflict(t *testing.T) {
 	}
 	if _, ok := reg.Get(registry.Key("demo", "web")); !ok {
 		t.Fatal("new reservation missing")
+	}
+}
+
+func TestUpPrunesActiveReservationReloadsOldListenerAndRemovesDNS(t *testing.T) {
+	setupUpProject(t)
+	oldPair := listener.FromFlags("127.0.0.1:19001", "127.0.0.1:19002")
+	missing := filepath.Join(t.TempDir(), "missing", "gate.toml")
+	stale := registry.Reservation{
+		Project: "old", Service: "web", Domain: "old.test", Port: 4300,
+		DNS: "hosts", Active: true, ConfigPath: missing,
+	}
+	stale.SetListenerPair(oldPair)
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(stale)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var removed []string
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{remove: func(domain string) error {
+			removed = append(removed, domain)
+			return nil
+		}}
+	}
+	var refs []listenerDaemonRef
+	setListenerRoutesFunc = func(ref listenerDaemonRef, _ []proxy.Route) error {
+		refs = append(refs, ref)
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	if len(refs) != 1 || refs[0].fileKey() != listenerRefFor(oldPair).fileKey() {
+		t.Fatalf("reloaded refs = %+v, want old listener", refs)
+	}
+	if !reflect.DeepEqual(removed, []string{"old.test"}) {
+		t.Fatalf("removed DNS = %v", removed)
+	}
+}
+
+func TestUpPreservesUninspectableUnrelatedReservation(t *testing.T) {
+	setupUpProject(t)
+	dir := t.TempDir()
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{
+			Project: "old", Service: "legacy", Domain: "legacy.old.localhost", Port: 4600, ConfigPath: loop,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get(registry.Key("old", "legacy")); !ok {
+		t.Fatal("uninspectable unrelated reservation was pruned")
+	}
+}
+
+func TestUpPreservesUnrelatedStaleExposedReservation(t *testing.T) {
+	setupUpProject(t)
+	missing := filepath.Join(t.TempDir(), "missing", "gate.toml")
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{
+			Project: "old", Service: "legacy", Domain: "legacy.old.localhost", Port: 4600, ConfigPath: missing,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeProject, Project: "old", Service: "legacy", Provider: expose.ProviderLAN,
+		Target: "legacy.old.localhost", PublicURL: "https://legacy.old.localhost.local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Get(registry.Key("old", "legacy")); !ok {
+		t.Fatal("stale exposed unrelated reservation was pruned")
 	}
 }
 
@@ -388,6 +600,129 @@ func TestUpCurrentProjectRestoresRegistryAndDNSWhenReloadFails(t *testing.T) {
 	}
 	if strings.Join(removed, ",") != "web.demo.localhost,api.demo.localhost" {
 		t.Fatalf("removed DNS = %v", removed)
+	}
+}
+
+func TestUpCurrentProjectKeepsExistingActiveDNSWhenReloadFails(t *testing.T) {
+	setupUpProject(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	previous := registry.Reservation{
+		Project: "demo", Service: "web", Domain: "web.demo.localhost", Port: 4400,
+		DNS: "localhost", Active: true,
+	}
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(previous)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stop, err := daemon.ServeAdmin(context.Background(), defaultListenerRef().socketPath(), proxy.New(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var ensured, removed []string
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{
+			ensure: func(domain string) error {
+				ensured = append(ensured, domain)
+				return nil
+			},
+			remove: func(domain string) error {
+				removed = append(removed, domain)
+				return nil
+			},
+		}
+	}
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
+		return errors.New("reload failed")
+	}
+
+	var out, errb bytes.Buffer
+	if code := Up(nil, &out, &errb); code != ExitError {
+		t.Fatalf("Up exit = %d, want reload failure; stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.Services[registry.Key("demo", "web")]; !reflect.DeepEqual(got, previous) {
+		t.Fatalf("reservation not restored: %+v", got)
+	}
+	if len(removed) != 1 || removed[0] != "api.demo.localhost" {
+		t.Fatalf("removed DNS = %v; existing web DNS must remain", removed)
+	}
+	if len(ensured) < 3 || ensured[len(ensured)-1] != "web.demo.localhost" {
+		t.Fatalf("restored DNS not ensured: %v", ensured)
+	}
+}
+
+func TestUpExistingScopeMovesRoutesFromOldListener(t *testing.T) {
+	isolate(t)
+	oldPair := listener.FromFlags("127.0.0.1:19001", "127.0.0.1:19002")
+	nextPair := listener.FromFlags("127.0.0.1:19003", "127.0.0.1:19004")
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	res := registry.Reservation{
+		Service: "web", Domain: "web.localhost", Port: 4400,
+		DNS: "localhost", Standalone: true, Active: true,
+	}
+	res.SetListenerPair(oldPair)
+	if err := registryStore().Update(func(reg *registry.Registry) error { return reg.Reserve(res) }); err != nil {
+		t.Fatal(err)
+	}
+
+	stop, err := daemon.ServeAdmin(context.Background(), listenerRefFor(nextPair).socketPath(), proxy.New(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
+	var refs []listenerDaemonRef
+	var routesByRef = map[string][]proxy.Route{}
+	setListenerRoutesFunc = func(ref listenerDaemonRef, routes []proxy.Route) error {
+		refs = append(refs, ref)
+		routesByRef[ref.fileKey()] = append([]proxy.Route(nil), routes...)
+		return nil
+	}
+
+	args := []string{"-g", "--https-addr", nextPair.HTTPSAddr, "--http-addr", nextPair.HTTPAddr}
+	var out, errb bytes.Buffer
+	if code := Up(args, &out, &errb); code != ExitOK {
+		t.Fatalf("Up exit = %d, stderr=%s", code, errb.String())
+	}
+	if len(refs) != 2 || refs[0].fileKey() != listenerRefFor(nextPair).fileKey() || refs[1].fileKey() != listenerRefFor(oldPair).fileKey() {
+		t.Fatalf("reload refs = %+v", refs)
+	}
+	if got := routesByRef[listenerRefFor(nextPair).fileKey()]; len(got) != 1 || got[0].Domain != res.Domain {
+		t.Fatalf("new listener routes = %+v", got)
+	}
+	if got := routesByRef[listenerRefFor(oldPair).fileKey()]; len(got) != 0 {
+		t.Fatalf("old listener routes = %+v, want empty", got)
 	}
 }
 
@@ -686,7 +1021,7 @@ func TestUpAppliesExposureRecordsWhenReloadingDaemon(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", shortConfigDir)
 	if err := registryStore().Update(func(reg *registry.Registry) error {
 		return reg.Reserve(registry.Reservation{
-			Service: "web", Domain: "web.localhost", Port: 4400, DNS: "localhost", Standalone: true,
+			Service: "web", Domain: "web.localhost", Port: 4400, DNS: "localhost", Standalone: true, Active: true,
 		})
 	}); err != nil {
 		t.Fatal(err)

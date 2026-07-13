@@ -42,7 +42,7 @@ type RouteStatus struct {
 	Auth     bool   `json:"auth"`
 }
 
-func adminHandlerWithListen(srv *proxy.Server, started time.Time, httpsAddr, httpAddr string) http.Handler {
+func adminHandlerWithListen(srv *proxy.Server, started time.Time, httpsAddr, httpAddr string, shutdown func()) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
@@ -89,6 +89,13 @@ func adminHandlerWithListen(srv *proxy.Server, started time.Time, httpsAddr, htt
 	mux.HandleFunc("POST /reload", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"reloaded": true})
 	})
+
+	if shutdown != nil {
+		mux.HandleFunc("POST /shutdown", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, map[string]any{"stopping": true})
+			go shutdown()
+		})
+	}
 
 	return mux
 }

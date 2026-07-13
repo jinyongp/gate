@@ -2,14 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"gate/internal/daemon"
 	"gate/internal/dns"
 	"gate/internal/expose"
 	"gate/internal/listener"
@@ -71,6 +75,77 @@ func TestAddThenLsJSON(t *testing.T) {
 	if len(got.Services) != 1 || got.Services[0].Domain != "web.localhost" || got.Services[0].Port != 4312 {
 		t.Fatalf("unexpected ls: %+v", got.Services)
 	}
+}
+
+func TestLsJSONIncludesListenerAwareURLs(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+	pair := listener.FromFlags(testTCPAddr(t), testTCPAddr(t))
+	res := registry.Reservation{
+		Service: "web", Domain: "web.localhost", Port: 4312,
+		Standalone: true, Active: true,
+	}
+	res.SetListenerPair(pair)
+	if err := registryStore().Update(func(reg *registry.Registry) error { return reg.Reserve(res) }); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d := daemon.Daemon{
+		Proxy:     proxy.New(nil, nil),
+		Socket:    listenerRefFor(pair).socketPath(),
+		HTTPSAddr: pair.HTTPSAddr,
+		HTTPAddr:  pair.HTTPAddr,
+	}
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	client := daemonClientForRef(listenerRefFor(pair))
+	for i := 0; i < 100 && !client.IsRunning(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !client.IsRunning() {
+		t.Fatal("listener daemon did not start")
+	}
+
+	var out, errb bytes.Buffer
+	if code := Ls([]string{"-g", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Ls exit = %d, stderr=%s", code, errb.String())
+	}
+	var got struct {
+		Services []service `json:"services"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Services) != 1 || !strings.HasPrefix(got.Services[0].URL, "https://web.localhost:") {
+		t.Fatalf("services = %+v", got.Services)
+	}
+	if got.Services[0].LoopbackURL != "http://127.0.0.1:4312" {
+		t.Fatalf("loopback URL = %q", got.Services[0].LoopbackURL)
+	}
+}
+
+func testTCPAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
 }
 
 func TestAddPortConflictExit4(t *testing.T) {
@@ -235,6 +310,13 @@ func TestJSONCommandsDoNotEmitIndicatorBytes(t *testing.T) {
 
 	out.Reset()
 	errb.Reset()
+	if code := Expose([]string{"stop", "web", "--json"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Expose stop --json exit = %d, stderr=%s", code, errb.String())
+	}
+	assertNoIndicatorBytes(t, "expose stop stderr", errb.String())
+
+	out.Reset()
+	errb.Reset()
 	if code := Down([]string{"--json"}, &out, &errb); code != ExitOK {
 		t.Fatalf("Down --json exit = %d, stderr=%s", code, errb.String())
 	}
@@ -254,6 +336,47 @@ func TestJSONCommandsDoNotEmitIndicatorBytes(t *testing.T) {
 		t.Fatalf("Rm --json exit = %d, stderr=%s", code, errb.String())
 	}
 	assertNoIndicatorBytes(t, "rm stderr", errb.String())
+}
+
+func TestIsolatedStateRefusesSystemHostsMutation(t *testing.T) {
+	isolate(t)
+	t.Setenv("GATE_ISOLATED_ROOT", t.TempDir())
+	called := false
+	err := runDomainDNS(dns.Hosts{Path: "/etc/hosts"}, "demo.test", io.Discard, true, "updating DNS", func(string) error {
+		called = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot mutate the shared system hosts file") {
+		t.Fatalf("error = %v", err)
+	}
+	if called {
+		t.Fatal("system hosts mutation callback ran in isolated mode")
+	}
+}
+
+func TestRouteURLResolverCachesListenerStatus(t *testing.T) {
+	oldStatus := listenerStatusFunc
+	t.Cleanup(func() { listenerStatusFunc = oldStatus })
+	calls := 0
+	listenerStatusFunc = func(ref listenerDaemonRef) (daemon.Status, error) {
+		calls++
+		return daemon.Status{HTTPSAddr: ref.Pair.HTTPSAddr, HTTPAddr: ref.Pair.HTTPAddr}, nil
+	}
+	pair := listener.FromFlags("127.0.0.1:9443", "127.0.0.1:9080")
+	first := registry.Reservation{Service: "web", Domain: "web.localhost"}
+	first.SetListenerPair(pair)
+	second := registry.Reservation{Service: "api", Domain: "api.localhost"}
+	second.SetListenerPair(pair)
+	resolver := newRouteURLResolver()
+	if got := resolver.URL(first); got != "https://web.localhost:9443" {
+		t.Fatalf("first URL = %q", got)
+	}
+	if got := resolver.URL(second); got != "https://api.localhost:9443" {
+		t.Fatalf("second URL = %q", got)
+	}
+	if calls != 1 {
+		t.Fatalf("listener status calls = %d, want 1", calls)
+	}
 }
 
 func TestPromptCapableActivityGates(t *testing.T) {
@@ -413,26 +536,170 @@ func TestAddGlobalUpdateRemovesOldDNS(t *testing.T) {
 	}
 }
 
-func TestRmRejectsDomainSelectorAndDot(t *testing.T) {
+func TestAddGlobalRejectsDomainChangeWhileExposed(t *testing.T) {
+	isolate(t)
+	previous := registry.Reservation{
+		Service: "web", Domain: "old.localhost", Port: 4311, DNS: "localhost",
+		Standalone: true, Active: true,
+	}
+	if err := registryStore().Update(func(r *registry.Registry) error { return r.Reserve(previous) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := exposureStore().Upsert(expose.Record{
+		Scope: daemonScopeGlobal, Service: "web", Provider: expose.ProviderLAN,
+		Target: "old.localhost", PublicURL: "https://old.localhost.local",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldSelect := selectDNSProvider
+	t.Cleanup(func() { selectDNSProvider = oldSelect })
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		t.Fatal("DNS must not change while the reservation is exposed")
+		return fakeDNSProvider{}
+	}
+
+	var out, errb bytes.Buffer
+	if code := Add([]string{"-g", "web", "4312", "--domain", "new.localhost"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("Add exit = %d, want conflict; stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reg.Get(registry.Key("", "web"))
+	if !ok || got.Domain != previous.Domain || got.Port != previous.Port {
+		t.Fatalf("reservation changed: %+v, ok=%v", got, ok)
+	}
+}
+
+func TestAddGlobalPreservesStoredDNSForSameDomain(t *testing.T) {
 	isolate(t)
 	if err := registryStore().Update(func(r *registry.Registry) error {
-		return r.Reserve(registry.Reservation{Service: "web.localhost", Domain: "web.localhost", Port: 4312, Standalone: true, Active: true})
+		return r.Reserve(registry.Reservation{
+			Service: "web", Domain: "web.localhost", Port: 4311, DNS: "localhost",
+			Standalone: true, Active: true,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var modes []string
+	selectDNSProvider = func(_, mode string) dns.Provider {
+		modes = append(modes, mode)
+		return fakeDNSProvider{}
+	}
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return nil }
+
+	var out, errb bytes.Buffer
+	if code := Add([]string{"-g", "web", "4312", "--domain", "web.localhost"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Add exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reg.Get(registry.Key("", "web"))
+	if !ok || got.DNS != "localhost" || got.Port != 4312 {
+		t.Fatalf("reservation = %+v, ok=%v", got, ok)
+	}
+	if len(modes) == 0 || modes[0] != "localhost" {
+		t.Fatalf("DNS modes = %v", modes)
+	}
+}
+
+func TestAddStandaloneChecksConflictBeforeDNS(t *testing.T) {
+	isolate(t)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{
+			Service: "owner", Domain: "owner.localhost", Port: 4312,
+			Standalone: true, Active: true,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldSelect := selectDNSProvider
+	t.Cleanup(func() { selectDNSProvider = oldSelect })
+	ensureCalls := 0
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{ensure: func(string) error {
+			ensureCalls++
+			return nil
+		}}
+	}
+
+	var out, errb bytes.Buffer
+	if code := Add([]string{"web", "4312", "--domain", "web.localhost"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("Add exit = %d, want conflict; stderr=%s", code, errb.String())
+	}
+	if ensureCalls != 0 {
+		t.Fatalf("DNS mutated before conflict preflight: %d calls", ensureCalls)
+	}
+}
+
+func TestRmAllowsExactLegacyServiceSelectors(t *testing.T) {
+	isolate(t)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		if err := r.Reserve(registry.Reservation{Service: "web.localhost", Domain: "web.localhost", Port: 4312, Standalone: true, Active: true}); err != nil {
+			return err
+		}
+		return r.Reserve(registry.Reservation{Service: ".", Domain: "dot.localhost", Port: 4313, Standalone: true, Active: true})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var out, errb bytes.Buffer
 	for _, arg := range []string{"web.localhost", "."} {
+		out.Reset()
 		errb.Reset()
-		if code := Rm([]string{arg}, &out, &errb); code != ExitUsage {
-			t.Fatalf("Rm %q exit = %d, want usage; stderr=%s", arg, code, errb.String())
+		if code := Rm([]string{arg}, &out, &errb); code != ExitOK {
+			t.Fatalf("Rm %q exit = %d, want success; stderr=%s", arg, code, errb.String())
 		}
 	}
 	reg, err := registryStore().Read()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := reg.Get(registry.Key("", "web.localhost")); !ok {
-		t.Fatal("legacy domain-shaped reservation was removed")
+	for _, name := range []string{"web.localhost", "."} {
+		if _, ok := reg.Get(registry.Key("", name)); ok {
+			t.Fatalf("legacy reservation %q was not removed", name)
+		}
+	}
+}
+
+func TestRmAndClearAllowExactLegacyProjectSelector(t *testing.T) {
+	for _, command := range []string{"rm", "clear"} {
+		t.Run(command, func(t *testing.T) {
+			isolate(t)
+			if err := registryStore().Update(func(r *registry.Registry) error {
+				return r.Reserve(registry.Reservation{Project: " demo ", Service: "web", Domain: "web.localhost", Port: 4312, Active: true})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			oldSelect := selectDNSProvider
+			t.Cleanup(func() { selectDNSProvider = oldSelect })
+			selectDNSProvider = func(_, _ string) dns.Provider { return fakeDNSProvider{} }
+			var out, errb bytes.Buffer
+			var code int
+			if command == "rm" {
+				code = Rm([]string{"--project", " demo ", "web"}, &out, &errb)
+			} else {
+				code = Clear([]string{"--project", " demo ", "-y"}, &out, &errb)
+			}
+			if code != ExitOK {
+				t.Fatalf("%s exit = %d, stderr=%s", command, code, errb.String())
+			}
+			reg, err := registryStore().Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := reg.Get(registry.Key(" demo ", "web")); ok {
+				t.Fatal("legacy project reservation was not removed")
+			}
+		})
 	}
 }
 
@@ -1035,6 +1302,242 @@ func TestAddUpdatesActiveProjectServiceReloadsAndCleansOldDNS(t *testing.T) {
 	}
 }
 
+func TestAddRecomputesDNSModeWhenActiveProjectDomainChanges(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gate.toml")
+	body := "[project]\nname = \"demo\"\n\n[services.web]\ndomain = \"old.localhost\"\nport = 4311\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	if err := registryStore().Update(func(r *registry.Registry) error {
+		return r.Reserve(registry.Reservation{
+			Project: "demo", Service: "web", Domain: "old.localhost", Port: 4311,
+			DNS: "localhost", Active: true, ConfigPath: path,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var selected []string
+	selectDNSProvider = func(domain, mode string) dns.Provider {
+		selected = append(selected, domain+":"+mode)
+		return fakeDNSProvider{}
+	}
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return nil }
+
+	var out, errb bytes.Buffer
+	if code := Add([]string{"web", "4312", "--domain", "new.test"}, &out, &errb); code != ExitOK {
+		t.Fatalf("Add exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reg.Services[registry.Key("demo", "web")]
+	if got.DNS != dns.ModeHosts {
+		t.Fatalf("DNS mode = %q, want hosts", got.DNS)
+	}
+	if len(selected) < 2 || selected[0] != "new.test:hosts" || selected[1] != "old.localhost:localhost" {
+		t.Fatalf("selected DNS providers = %v", selected)
+	}
+}
+
+func TestPruneReloadsRoutesAndRemovesActiveDNS(t *testing.T) {
+	isolate(t)
+	missing := filepath.Join(t.TempDir(), "missing.toml")
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		if err := reg.Reserve(registry.Reservation{
+			Project: "demo", Service: "web", Domain: "web.test", Port: 4312,
+			DNS: "hosts", Active: true, ConfigPath: missing,
+		}); err != nil {
+			return err
+		}
+		return reg.Reserve(registry.Reservation{
+			Project: "demo", Service: "idle", Domain: "idle.test", Port: 4313,
+			DNS: "hosts", Active: false, ConfigPath: missing,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var removed []string
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{remove: func(domain string) error {
+			removed = append(removed, domain)
+			return nil
+		}}
+	}
+	var routeCalls [][]proxy.Route
+	setListenerRoutesFunc = func(_ listenerDaemonRef, routes []proxy.Route) error {
+		routeCalls = append(routeCalls, append([]proxy.Route(nil), routes...))
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Prune(nil, &out, &errb); code != ExitOK {
+		t.Fatalf("Prune exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, err := registryStore().Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Services) != 0 {
+		t.Fatalf("registry = %+v", reg.Services)
+	}
+	if len(routeCalls) != 1 || len(routeCalls[0]) != 0 {
+		t.Fatalf("route calls = %+v", routeCalls)
+	}
+	if len(removed) != 1 || removed[0] != "web.test" {
+		t.Fatalf("removed DNS = %v", removed)
+	}
+}
+
+func TestPruneRestoresRegistryOnRouteFailure(t *testing.T) {
+	isolate(t)
+	missing := filepath.Join(t.TempDir(), "missing.toml")
+	res := registry.Reservation{
+		Project: "demo", Service: "web", Domain: "web.test", Port: 4312,
+		DNS: "hosts", Active: true, ConfigPath: missing,
+	}
+	if err := registryStore().Update(func(reg *registry.Registry) error { return reg.Reserve(res) }); err != nil {
+		t.Fatal(err)
+	}
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{remove: func(string) error {
+			t.Fatal("DNS removed before route reload succeeded")
+			return nil
+		}}
+	}
+	calls := 0
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error {
+		calls++
+		if calls == 1 {
+			return errors.New("reload failed")
+		}
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Prune(nil, &out, &errb); code != ExitError {
+		t.Fatalf("Prune exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, _ := registryStore().Read()
+	if got, ok := reg.Get(registry.Key("demo", "web")); !ok || got.Domain != res.Domain {
+		t.Fatalf("reservation not restored: %+v, ok=%v", got, ok)
+	}
+}
+
+func TestPruneRestoresRegistryAndDNSOnDNSFailure(t *testing.T) {
+	isolate(t)
+	missing := filepath.Join(t.TempDir(), "missing.toml")
+	res := registry.Reservation{
+		Project: "demo", Service: "web", Domain: "web.test", Port: 4312,
+		DNS: "hosts", Active: true, ConfigPath: missing,
+	}
+	if err := registryStore().Update(func(reg *registry.Registry) error { return reg.Reserve(res) }); err != nil {
+		t.Fatal(err)
+	}
+	oldSelect := selectDNSProvider
+	oldSetRoutes := setListenerRoutesFunc
+	t.Cleanup(func() {
+		selectDNSProvider = oldSelect
+		setListenerRoutesFunc = oldSetRoutes
+	})
+	var ensured int
+	selectDNSProvider = func(_, _ string) dns.Provider {
+		return fakeDNSProvider{
+			remove: func(string) error { return errors.New("dns failed") },
+			ensure: func(string) error { ensured++; return nil },
+		}
+	}
+	setListenerRoutesFunc = func(_ listenerDaemonRef, _ []proxy.Route) error { return nil }
+
+	var out, errb bytes.Buffer
+	if code := Prune(nil, &out, &errb); code != ExitError {
+		t.Fatalf("Prune exit = %d, stderr=%s", code, errb.String())
+	}
+	reg, _ := registryStore().Read()
+	if _, ok := reg.Get(registry.Key("demo", "web")); !ok {
+		t.Fatal("reservation not restored")
+	}
+	if ensured != 1 {
+		t.Fatalf("DNS restore calls = %d", ensured)
+	}
+}
+
+func TestPruneStatErrorLeavesRegistryUntouched(t *testing.T) {
+	isolate(t)
+	dir := t.TempDir()
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if err := registryStore().Update(func(reg *registry.Registry) error {
+		return reg.Reserve(registry.Reservation{
+			Project: "demo", Service: "web", Domain: "web.test", Port: 4312, ConfigPath: loop,
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := Prune(nil, &out, &errb); code != ExitError {
+		t.Fatalf("Prune exit = %d, want error; stderr=%s", code, errb.String())
+	}
+	reg, _ := registryStore().Read()
+	if _, ok := reg.Get(registry.Key("demo", "web")); !ok {
+		t.Fatal("reservation removed after stat error")
+	}
+}
+
+func TestZeroArgCommandsRejectOperandsBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*bytes.Buffer, *bytes.Buffer) int
+	}{
+		{name: "clear", run: func(out, errb *bytes.Buffer) int { return Clear([]string{"typo", "-y"}, out, errb) }},
+		{name: "prune", run: func(out, errb *bytes.Buffer) int { return Prune([]string{"typo"}, out, errb) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolate(t)
+			if err := registryStore().Update(func(reg *registry.Registry) error {
+				return reg.Reserve(registry.Reservation{
+					Project: "demo", Service: "web", Domain: "web.test", Port: 4312,
+					ConfigPath: filepath.Join(t.TempDir(), "missing.toml"),
+				})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := tc.run(&out, &errb); code != ExitUsage {
+				t.Fatalf("exit = %d, stderr=%s", code, errb.String())
+			}
+			reg, _ := registryStore().Read()
+			if _, ok := reg.Get(registry.Key("demo", "web")); !ok {
+				t.Fatal("operand typo mutated default target")
+			}
+		})
+	}
+}
+
 func TestRmProjectServiceRestoresConfigAndRegistryWhenReloadFails(t *testing.T) {
 	isolate(t)
 	oldSetRoutes := setListenerRoutesFunc
@@ -1436,7 +1939,7 @@ func TestRmProjectRestoresRegistryAndDNSWhenDNSFails(t *testing.T) {
 	if _, ok := reg.Get(registry.Key("demo", "b")); !ok {
 		t.Fatal("demo/b should be restored after DNS failure")
 	}
-	if len(ensured) != 1 || ensured[0] != "a.localhost" {
+	if strings.Join(ensured, ",") != "a.localhost,b.localhost" {
 		t.Fatalf("ensured rollback = %v", ensured)
 	}
 }

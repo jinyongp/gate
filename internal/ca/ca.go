@@ -20,12 +20,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gate/internal/fsutil"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
-	rootValidity = 10 * 365 * 24 * time.Hour
-	leafValidity = 90 * 24 * time.Hour
-	rootCN       = "gate local CA"
+	rootValidity    = 10 * 365 * 24 * time.Hour
+	leafValidity    = 90 * 24 * time.Hour
+	leafRenewBefore = 24 * time.Hour
+	rootCN          = "gate local CA"
 )
 
 // ErrNotFound means no persisted gate root CA exists at the requested location.
@@ -46,6 +51,14 @@ type CA struct {
 // use.
 func Load(baseDir string) (*CA, error) {
 	dir := filepath.Join(baseDir, "ca")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	unlock, err := lockRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	ca, err := loadExistingDir(dir)
 	if err == nil {
 		return ca, nil
@@ -53,8 +66,13 @@ func Load(baseDir string) (*CA, error) {
 	if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, err
+	crtPath, keyPath := (&CA{dir: dir}).paths()
+	if fileExists(crtPath) != fileExists(keyPath) {
+		for _, path := range []string{crtPath, keyPath} {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+		}
 	}
 	ca = &CA{dir: dir, cache: map[string]*tls.Certificate{}}
 	if err := ca.generate(); err != nil {
@@ -126,7 +144,7 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 		return nil, err
 	}
 	c.mu.RLock()
-	if cert, ok := c.cache[name]; ok {
+	if cert, ok := c.cache[name]; ok && leafUsable(cert, c.cert.NotAfter, time.Now()) {
 		c.mu.RUnlock()
 		return cert, nil
 	}
@@ -134,7 +152,7 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cert, ok := c.cache[name]; ok { // re-check after lock upgrade
+	if cert, ok := c.cache[name]; ok && leafUsable(cert, c.cert.NotAfter, time.Now()) { // re-check after lock upgrade
 		return cert, nil
 	}
 	cert, err := c.issueLeaf(name)
@@ -155,12 +173,20 @@ func (c *CA) issueLeaf(domain string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
+	notAfter := now.Add(leafValidity)
+	if c.cert.NotAfter.Before(notAfter) {
+		notAfter = c.cert.NotAfter
+	}
+	if !notAfter.After(now) {
+		return nil, errors.New("ca: root certificate expires before a new leaf can be issued")
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
 		Subject:      pkix.Name{CommonName: domain},
 		DNSNames:     []string{domain},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(leafValidity),
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -239,15 +265,15 @@ func (c *CA) generate() error {
 func (c *CA) save() error {
 	crtPath, keyPath := c.paths()
 	crtPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.der})
-	if err := os.WriteFile(crtPath, crtPEM, 0o644); err != nil { //nolint:gosec // G306: root cert is public.
-		return err
-	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(c.key)
 	if err != nil {
 		return err
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	return os.WriteFile(keyPath, keyPEM, 0o600)
+	if err := fsutil.WriteAtomic(keyPath, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(crtPath, crtPEM, 0o644)
 }
 
 func (c *CA) load(crtPath, keyPath string) error {
@@ -341,4 +367,35 @@ func mustParse(der []byte) *x509.Certificate {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func leafUsable(cert *tls.Certificate, rootNotAfter, now time.Time) bool {
+	if cert == nil || cert.Leaf == nil || !now.Before(cert.Leaf.NotAfter) {
+		return false
+	}
+	rootCapSkew := rootNotAfter.Sub(cert.Leaf.NotAfter)
+	if rootCapSkew >= 0 && rootCapSkew < time.Second && now.Add(leafRenewBefore).After(rootNotAfter) {
+		return true
+	}
+	return now.Add(leafRenewBefore).Before(cert.Leaf.NotAfter)
+}
+
+func lockRoot(dir string) (func(), error) {
+	path := filepath.Join(dir, "root.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }

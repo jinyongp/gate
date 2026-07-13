@@ -1,11 +1,14 @@
 package dns
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"gate/internal/fsutil"
 
@@ -70,14 +73,14 @@ func canonicalDomain(domain string) string {
 }
 
 func (h Hosts) edit(mutate func(entries []string) []string) error {
-	if err := verifyTarget(h.Path); err != nil {
-		return err
-	}
 	unlock, err := h.lock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	if err := verifyTarget(h.Path); err != nil {
+		return err
+	}
 	b, err := os.ReadFile(h.Path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -105,6 +108,9 @@ func (h Hosts) edit(mutate func(entries []string) []string) error {
 	if content != "" {
 		content += "\n"
 	}
+	if err := verifyTarget(h.Path); err != nil {
+		return err
+	}
 	return h.write([]byte(content))
 }
 
@@ -123,9 +129,45 @@ func trimLeadingBlankLines(lines []string) []string {
 }
 
 func (h Hosts) lock() (func(), error) {
-	lf, err := os.OpenFile(h.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	// O_NOFOLLOW prevents a predictable lock path from being redirected to an
+	// unrelated file. The lock carries no data, so read-only mode lets different
+	// users coordinate on the machine-wide /tmp lock without sharing writes.
+	fd, err := unix.Open(h.lockPath(), unix.O_CREAT|unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o644)
 	if err != nil {
 		return nil, err
+	}
+	// Creation honors the caller's umask. The owner normalizes a new/data-less
+	// lock; another user only verifies that the existing lock is world-readable.
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("dns: hosts lock path is not a regular file: %s", h.lockPath())
+	}
+	if int(stat.Uid) == os.Geteuid() {
+		if err := unix.Fchmod(fd, 0o644); err != nil {
+			_ = unix.Close(fd)
+			return nil, err
+		}
+	} else if stat.Mode&0o004 == 0 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("dns: hosts lock owned by another user is not world-readable: %s", h.lockPath())
+	}
+	lf := os.NewFile(uintptr(fd), h.lockPath())
+	if lf == nil {
+		_ = unix.Close(fd)
+		return nil, errors.New("dns: create hosts lock file handle")
+	}
+	info, err := lf.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = lf.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("dns: hosts lock path is not a regular file: %s", h.lockPath())
 	}
 	if err := unix.Flock(int(lf.Fd()), unix.LOCK_EX); err != nil {
 		_ = lf.Close()
@@ -152,6 +194,14 @@ func (h Hosts) write(content []byte) error {
 }
 
 func writeSystemHosts(content []byte) (err error) {
+	info, err := os.Stat(hostsPath)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("dns: cannot determine /etc/hosts ownership")
+	}
 	tmp, err := os.CreateTemp("", "gate-hosts-*")
 	if err != nil {
 		return err
@@ -167,14 +217,22 @@ func writeSystemHosts(content []byte) (err error) {
 	}
 
 	dst := fmt.Sprintf("%s.gate.tmp.%d", hostsPath, os.Getpid())
-	defer func() { _ = runPrivilegedHostsCommand("sudo", "rm", "-f", dst) }()
-	if err := runPrivilegedHostsCommand("sudo", "install", "-m", "0644", tmpName, dst); err != nil {
+	defer func() { _ = runSystemHostsCommand("rm", "-f", dst) }()
+	mode := fmt.Sprintf("%04o", info.Mode().Perm())
+	if err := runSystemHostsCommand("install", "-m", mode, "-o", strconv.FormatUint(uint64(stat.Uid), 10), "-g", strconv.FormatUint(uint64(stat.Gid), 10), tmpName, dst); err != nil {
 		return fmt.Errorf("%w: sudo install %s: %w", os.ErrPermission, hostsPath, err)
 	}
-	if err := runPrivilegedHostsCommand("sudo", "mv", dst, hostsPath); err != nil {
+	if err := runSystemHostsCommand("mv", dst, hostsPath); err != nil {
 		return fmt.Errorf("%w: sudo mv %s: %w", os.ErrPermission, hostsPath, err)
 	}
 	return nil
+}
+
+func runSystemHostsCommand(name string, args ...string) error {
+	if os.Geteuid() == 0 {
+		return runPrivilegedHostsCommand(name, args...)
+	}
+	return runPrivilegedHostsCommand("sudo", append([]string{"--", name}, args...)...)
 }
 
 // verifyTarget hardens against symlink attacks: gate refuses to edit a path that

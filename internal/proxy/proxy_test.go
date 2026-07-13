@@ -202,6 +202,7 @@ func TestDeadUpstreamIs502(t *testing.T) {
 
 func TestHTTPRedirectsToHTTPS(t *testing.T) {
 	s := New(nil, alwaysLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: "127.0.0.1:4310"}})
 	fe := httptest.NewServer(s.HTTPHandler())
 	defer fe.Close()
 	fe.Client().CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -223,6 +224,7 @@ func TestHTTPRedirectsToHTTPS(t *testing.T) {
 
 func TestHTTPRedirectsToHTTPSCustomPort(t *testing.T) {
 	s := New(nil, alwaysLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: "127.0.0.1:4310"}})
 	s.SetHTTPSAddr(":8443")
 	fe := httptest.NewServer(s.HTTPHandler())
 	defer fe.Close()
@@ -240,6 +242,28 @@ func TestHTTPRedirectsToHTTPSCustomPort(t *testing.T) {
 	}
 	if loc := resp.Header.Get("Location"); loc != "https://app.localhost:8443/path?q=1" {
 		t.Fatalf("Location = %q", loc)
+	}
+}
+
+func TestHTTPRejectsUnknownAndRemoteUnexposedRoutesBeforeRedirect(t *testing.T) {
+	s := New(nil, alwaysLive)
+	s.SetRoutes([]Route{{Domain: "app.localhost", Upstream: "127.0.0.1:4310"}})
+	handler := s.HTTPHandler()
+
+	unknown := httptest.NewRequest(http.MethodGet, "http://missing.localhost/", nil)
+	unknown.RemoteAddr = "127.0.0.1:5000"
+	unknownResult := httptest.NewRecorder()
+	handler.ServeHTTP(unknownResult, unknown)
+	if unknownResult.Code != http.StatusNotFound {
+		t.Fatalf("unknown status = %d", unknownResult.Code)
+	}
+
+	remote := httptest.NewRequest(http.MethodGet, "http://app.localhost/", nil)
+	remote.RemoteAddr = "192.168.1.20:5000"
+	remoteResult := httptest.NewRecorder()
+	handler.ServeHTTP(remoteResult, remote)
+	if remoteResult.Code != http.StatusForbidden {
+		t.Fatalf("remote status = %d", remoteResult.Code)
 	}
 }
 

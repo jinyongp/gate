@@ -1,8 +1,10 @@
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,7 +26,7 @@ func TestConfigDir(t *testing.T) {
 		root := t.TempDir()
 		t.Setenv("GATE_ISOLATED_ROOT", root)
 		t.Setenv("XDG_CONFIG_HOME", "/xdg/cfg")
-		if got, want := ConfigDir(), filepath.Join(root, "xdg", "config", "gate"); got != want {
+		if got, want := ConfigDir(), filepath.Join(validatedRoot(t, root), "xdg", "config", "gate"); got != want {
 			t.Fatalf("ConfigDir() = %q, want %q", got, want)
 		}
 	})
@@ -48,7 +50,7 @@ func TestDataDir(t *testing.T) {
 		root := t.TempDir()
 		t.Setenv("GATE_ISOLATED_ROOT", root)
 		t.Setenv("XDG_DATA_HOME", "/xdg/data")
-		if got, want := DataDir(), filepath.Join(root, "xdg", "data", "gate"); got != want {
+		if got, want := DataDir(), filepath.Join(validatedRoot(t, root), "xdg", "data", "gate"); got != want {
 			t.Fatalf("DataDir() = %q, want %q", got, want)
 		}
 	})
@@ -82,7 +84,7 @@ func TestStateDir(t *testing.T) {
 		root := t.TempDir()
 		t.Setenv("GATE_ISOLATED_ROOT", root)
 		t.Setenv("XDG_STATE_HOME", "/xdg/state")
-		if got, want := StateDir(), filepath.Join(root, "xdg", "state", "gate"); got != want {
+		if got, want := StateDir(), filepath.Join(validatedRoot(t, root), "xdg", "state", "gate"); got != want {
 			t.Fatalf("StateDir() = %q, want %q", got, want)
 		}
 	})
@@ -106,6 +108,71 @@ func TestEnsureCreates0700(t *testing.T) {
 	}
 }
 
+func TestFallbackHomeCreatesPrivateOwnedDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+	got := fallbackHome(tempDir, os.Getuid())
+	info, err := os.Lstat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fallback home mode = %v, want private directory", info.Mode())
+	}
+	if again := fallbackHome(tempDir, os.Getuid()); again != got {
+		t.Fatalf("fallback home changed: %q != %q", again, got)
+	}
+}
+
+func TestFallbackHomeRejectsPredictableSymlink(t *testing.T) {
+	tempDir := t.TempDir()
+	victim := filepath.Join(tempDir, "victim")
+	if err := os.Mkdir(victim, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	predictable := filepath.Join(tempDir, "gate-user-"+fmt.Sprint(os.Getuid()))
+	if err := os.Symlink(victim, predictable); err != nil {
+		t.Fatal(err)
+	}
+	got := fallbackHome(tempDir, os.Getuid())
+	if got == predictable {
+		t.Fatalf("trusted attacker-controlled symlink %q", got)
+	}
+	info, err := os.Lstat(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("fallback home mode = %v, want private directory", info.Mode())
+	}
+}
+
+func TestValidateIsolatedRootRejectsBroadAndSymlinkedRoots(t *testing.T) {
+	for _, root := range []string{string(filepath.Separator), os.TempDir()} {
+		if _, err := ValidateIsolatedRoot(root); err == nil {
+			t.Fatalf("ValidateIsolatedRoot(%q) succeeded", root)
+		}
+	}
+	parent := t.TempDir()
+	link := filepath.Join(parent, "root-link")
+	if err := os.Symlink(string(filepath.Separator), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateIsolatedRoot(link); err == nil {
+		t.Fatal("symlink to filesystem root accepted")
+	}
+}
+
+func TestValidateIsolatedRootCanonicalizesDedicatedDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "agent-state")
+	got, err := ValidateIsolatedRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) || filepath.Base(got) != "agent-state" {
+		t.Fatalf("validated root = %q", got)
+	}
+}
+
 func TestScopedDaemonPaths(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/xdg/cfg")
 	t.Setenv("XDG_STATE_HOME", "/xdg/state")
@@ -119,6 +186,27 @@ func TestScopedDaemonPaths(t *testing.T) {
 	if got, want := DaemonLogPath(scope), "/xdg/state/gate/daemons/project-demo.log"; got != want {
 		t.Fatalf("DaemonLogPath() = %q, want %q", got, want)
 	}
+}
+
+func TestIsolatedRuntimeDirUsesShortPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "workspace", ".gate-agent")
+	t.Setenv("GATE_ISOLATED_ROOT", root)
+	want := filepath.Join(validatedRoot(t, root), "run")
+	if got := RuntimeDir(); got != want {
+		t.Fatalf("RuntimeDir() = %q, want %q", got, want)
+	}
+	if got := DaemonSocketPath("listener-https-443-http-80"); !strings.HasPrefix(got, want+string(filepath.Separator)) {
+		t.Fatalf("DaemonSocketPath() = %q, want below %q", got, want)
+	}
+}
+
+func validatedRoot(t *testing.T, root string) string {
+	t.Helper()
+	validated, err := ValidateIsolatedRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return validated
 }
 
 func TestListenerDaemonPaths(t *testing.T) {

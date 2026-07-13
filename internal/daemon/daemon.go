@@ -22,10 +22,12 @@ type Daemon struct {
 
 // Run serves the control socket and both proxy planes until ctx is cancelled.
 func (d *Daemon) Run(ctx context.Context) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var stop func()
-	err := d.Proxy.RunReady(ctx, d.HTTPSAddr, d.HTTPAddr, func(httpsAddr, httpAddr string) error {
+	err := d.Proxy.RunReady(runCtx, d.HTTPSAddr, d.HTTPAddr, func(httpsAddr, httpAddr string) error {
 		var err error
-		stop, err = serveAdmin(ctx, d.Socket, d.Proxy, httpsAddr, httpAddr)
+		stop, err = serveAdmin(runCtx, d.Socket, d.Proxy, httpsAddr, httpAddr, cancel)
 		return err
 	})
 	if stop != nil {
@@ -39,10 +41,16 @@ func (d *Daemon) Run(ctx context.Context) error {
 // removed first. ctx is the base for the shutdown grace period (detached so a
 // cancelled parent still allows graceful drain).
 func ServeAdmin(ctx context.Context, socket string, srv *proxy.Server) (func(), error) {
-	return serveAdmin(ctx, socket, srv, "", "")
+	return serveAdmin(ctx, socket, srv, "", "", nil)
 }
 
-func serveAdmin(ctx context.Context, socket string, srv *proxy.Server, httpsAddr, httpAddr string) (func(), error) {
+// ServeAdminWithShutdown starts a test/helper admin server whose shutdown
+// endpoint invokes shutdown after acknowledging the request.
+func ServeAdminWithShutdown(ctx context.Context, socket string, srv *proxy.Server, shutdown context.CancelFunc) (func(), error) {
+	return serveAdmin(ctx, socket, srv, "", "", shutdown)
+}
+
+func serveAdmin(ctx context.Context, socket string, srv *proxy.Server, httpsAddr, httpAddr string, shutdown context.CancelFunc) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
 		return nil, err
 	}
@@ -56,10 +64,14 @@ func serveAdmin(ctx context.Context, socket string, srv *proxy.Server, httpsAddr
 	if err != nil {
 		return nil, err
 	}
-	_ = os.Chmod(socket, 0o600)
+	if err := os.Chmod(socket, 0o600); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(socket)
+		return nil, err
+	}
 
 	httpd := &http.Server{
-		Handler:           adminHandlerWithListen(srv, time.Now(), httpsAddr, httpAddr),
+		Handler:           adminHandlerWithListen(srv, time.Now(), httpsAddr, httpAddr, shutdown),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = httpd.Serve(ln) }()

@@ -24,6 +24,8 @@ func isolateUninstall(t *testing.T) string {
 	t.Cleanup(func() {
 		uninstallExecutablePathFunc = executablePath
 		uninstallRunHomebrewFunc = runHomebrewUninstall
+		uninstallStopExposuresFunc = stopAllKnownExposures
+		uninstallStopDaemonsFunc = stopAllKnownDaemons
 		uninstallHostsPath = "/etc/hosts"
 		uninstallSystemBinPaths = []string{"/usr/local/bin/gate"}
 		untrustAuthorityFunc = func(authority *ca.CA) error { return authority.Untrust() }
@@ -36,6 +38,48 @@ func isolateUninstall(t *testing.T) string {
 	}
 	uninstallHostsPath = filepath.Join(home, "hosts")
 	return home
+}
+
+func TestUninstallKeepsStateWhenDaemonStopFails(t *testing.T) {
+	home := isolateUninstall(t)
+	configDir := filepath.Join(home, "xdg-config", "gate")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	uninstallStopDaemonsFunc = func(io.Writer, io.Writer) uninstallStep { return uninstallStepFailed }
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitError {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(configDir); err != nil {
+		t.Fatalf("config state removed after daemon stop failure: %v", err)
+	}
+}
+
+func TestUninstallIsolatedModeDoesNotTouchSharedHosts(t *testing.T) {
+	home := isolateUninstall(t)
+	root := filepath.Join(home, "isolated")
+	t.Setenv("GATE_ISOLATED_ROOT", root)
+	if err := os.MkdirAll(paths.ConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hosts := "127.0.0.1 localhost\n# >>> gate managed >>>\n127.0.0.1 demo.local\n# <<< gate managed <<<\n"
+	if err := os.WriteFile(uninstallHostsPath, []byte(hosts), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitOK {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	got, err := os.ReadFile(uninstallHostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != hosts {
+		t.Fatalf("isolated uninstall changed hosts:\n%s", got)
+	}
 }
 
 func TestUninstallRemovesLocalArtifactsAndPathBlock(t *testing.T) {
@@ -88,6 +132,27 @@ func TestUninstallRemovesLocalArtifactsAndPathBlock(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "gate uninstalled") {
 		t.Fatalf("stdout missing completion:\n%s", out.String())
+	}
+}
+
+func TestUninstallRemovesIsolatedRuntimeDir(t *testing.T) {
+	home := isolateUninstall(t)
+	root := filepath.Join(home, "isolated")
+	t.Setenv("GATE_ISOLATED_ROOT", root)
+	runtimeDir := paths.RuntimeDir()
+	if err := os.MkdirAll(filepath.Join(runtimeDir, "daemons"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "daemons", "stale.sock"), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitOK {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if _, err := os.Lstat(runtimeDir); !os.IsNotExist(err) {
+		t.Fatalf("isolated runtime dir still exists or stat failed with %v", err)
 	}
 }
 
@@ -262,5 +327,24 @@ func TestRemoveMarkedBlockRejectsLaterUnterminatedBlock(t *testing.T) {
 	}
 	if string(got) != body {
 		t.Fatalf("file changed despite malformed block:\n%s", got)
+	}
+}
+
+func TestUninstallRejectsUnsafeIsolatedRootBeforeCollectingTargets(t *testing.T) {
+	t.Setenv("GATE_ISOLATED_ROOT", string(filepath.Separator))
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("Uninstall exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "isolated root") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+}
+
+func TestValidateUninstallTargetRejectsIsolatedRootItself(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "isolated")
+	t.Setenv("GATE_ISOLATED_ROOT", root)
+	if err := validateUninstallTarget(root); err == nil {
+		t.Fatal("isolated root accepted as uninstall target")
 	}
 }

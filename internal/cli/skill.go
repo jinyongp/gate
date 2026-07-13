@@ -20,6 +20,9 @@ func Skill(args []string, stdout, stderr io.Writer) int {
 	if handled, code := parseFlags(fs, "skill", args, stdout, stderr); handled {
 		return code
 	}
+	if fs.NArg() > 1 {
+		return usageFail(stderr, false, "skill")
+	}
 	sub := "path"
 	if fs.NArg() > 0 {
 		sub = fs.Arg(0)

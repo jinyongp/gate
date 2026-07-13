@@ -81,6 +81,34 @@ name = "team/demo"
 [services.web]
 domain = "web.localhost"
 `,
+		"project name leading whitespace": `
+[project]
+name = " demo"
+
+[services.web]
+domain = "web.localhost"
+`,
+		"project name line separator": "\n[project]\nname = \"demo\u2028hidden\"\n\n[services.web]\ndomain = \"web.localhost\"\n",
+		"unknown top-level table": `
+[project]
+name = "demo"
+
+[tool]
+enabled = true
+`,
+		"unknown project field": `
+[project]
+name = "demo"
+nmae = "typo"
+`,
+		"unknown service field": `
+[project]
+name = "demo"
+
+[services.web]
+domain = "web.localhost"
+porrt = 4312
+`,
 		"slash service name": `
 [project]
 name = "demo"
@@ -94,6 +122,13 @@ name = "demo"
 
 [services.stop]
 domain = "stop.localhost"
+`,
+		"leading hyphen service name": `
+[project]
+name = "demo"
+
+[services."-web"]
+domain = "web.localhost"
 `,
 		"bad domain": `
 [project]
@@ -178,6 +213,22 @@ base = "demo.localhost"
 
 [services.api]
 route_env = "GATE_API_ROUTE"
+`,
+		"reserved PORT env": `
+[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.api]
+env = "PORT"
+`,
+		"reserved PORT route env": `
+[project]
+name = "demo"
+base = "demo.localhost"
+
+[services.api]
+route_env = "PORT"
 `,
 		"duplicate service env": `
 [project]
@@ -284,6 +335,8 @@ host = "app"
 
 [services.root]
 host = "."
+
+[services.admin_web]
 `)
 	p, err := Load(path)
 	if err != nil {
@@ -297,6 +350,9 @@ host = "."
 	}
 	if p.Services["root"].Domain != "local.example.com" {
 		t.Fatalf("root domain = %q", p.Services["root"].Domain)
+	}
+	if p.Services["admin_web"].Domain != "admin-web.local.example.com" {
+		t.Fatalf("admin_web domain = %q", p.Services["admin_web"].Domain)
 	}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("loaded project should revalidate: %v", err)
@@ -548,5 +604,51 @@ func TestDiscoverStopsAtGitRoot(t *testing.T) {
 	}
 	if _, err := Discover(start); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Discover err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDiscoverStopsAtGitFileBoundary(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, Filename), "[project]\nname=\"parent\"\n")
+	gitRoot := filepath.Join(root, "worktree")
+	start := filepath.Join(gitRoot, "sub")
+	if err := os.MkdirAll(start, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(gitRoot, ".git"), "gitdir: /tmp/example\n")
+
+	if _, err := Discover(start); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Discover err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDiscoverStopsAtBrokenGitSymlinkBoundary(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, Filename), "[project]\nname=\"parent\"\n")
+	gitRoot := filepath.Join(root, "worktree")
+	start := filepath.Join(gitRoot, "sub")
+	if err := os.MkdirAll(start, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "missing-gitdir"), filepath.Join(gitRoot, ".git")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Discover(start); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Discover err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestLoadRejectsServiceNamesTheCLICannotAddress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), Filename)
+	writeFile(t, path, `[project]
+name = "demo"
+
+[services."web.app"]
+domain = "web.demo.localhost"
+`)
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "invalid service name") {
+		t.Fatalf("Load err = %v, want invalid service name", err)
 	}
 }

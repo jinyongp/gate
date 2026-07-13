@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -307,7 +308,7 @@ func TestRunUpgradeInstallUsesInstallerForNonHomebrewInstall(t *testing.T) {
 }
 
 func TestUpgradeInstallScriptTargetsCurrentExecutableDir(t *testing.T) {
-	cmd := upgradeInstallScriptCommand(context.Background(), "/tmp/gate-upgrade.sh", "/opt/gate/bin/gate")
+	cmd := upgradeInstallScriptCommand(context.Background(), "/tmp/gate-upgrade.sh", "/opt/gate/bin/gate", "v1.1.4")
 	got := ""
 	for _, entry := range cmd.Env {
 		if strings.HasPrefix(entry, "GATE_BIN_DIR=") {
@@ -317,6 +318,9 @@ func TestUpgradeInstallScriptTargetsCurrentExecutableDir(t *testing.T) {
 	}
 	if got != "/opt/gate/bin" {
 		t.Fatalf("GATE_BIN_DIR = %q, want /opt/gate/bin", got)
+	}
+	if !slices.Contains(cmd.Env, "GATE_VERSION=v1.1.4") {
+		t.Fatalf("GATE_VERSION missing from env: %v", cmd.Env)
 	}
 }
 
@@ -428,7 +432,7 @@ func TestRestartDaemonAfterUpgradeReloadsListenerRoutes(t *testing.T) {
 		t.Fatalf("restartDaemonAfterUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
 	if got := out.String(); strings.Contains(got, " · ") || !strings.Contains(got, "daemon restarted") || !strings.Contains(got, "https") || !strings.Contains(got, "http") {
-		t.Fatalf("restart output should use daemon result fields, got:\n%s", got)
+		t.Fatalf("restart output should use daemon result fields, got:\n%s\nstderr:\n%s", got, errb.String())
 	}
 	if reloadedRef.fileKey() != ref.fileKey() {
 		t.Fatalf("reload ref = %+v, want %+v", reloadedRef, ref)
@@ -492,7 +496,7 @@ func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {
 	}
 
 	var errb bytes.Buffer
-	path, err := prepareUpgradeScript(context.Background(), &errb)
+	path, err := prepareUpgradeScript(context.Background(), &errb, "v1.1.4")
 	if err != nil {
 		t.Fatalf("prepareUpgradeScript: %v", err)
 	}

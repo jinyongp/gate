@@ -10,6 +10,7 @@ import (
 	"gate/internal/listener"
 	"gate/internal/proxy"
 	"gate/internal/registry"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -60,6 +61,30 @@ func TestDaemonStopTimeoutErrorIncludesRecoveryHint(t *testing.T) {
 	}
 }
 
+func TestDaemonStopRejectsOperandBeforeReadingPID(t *testing.T) {
+	isolate(t)
+	ref := defaultListenerRef()
+	if err := os.MkdirAll(filepath.Dir(ref.pidPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ref.pidPath(), []byte("1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldProcessArgs := processArgsForPID
+	t.Cleanup(func() { processArgsForPID = oldProcessArgs })
+	processArgsForPID = func(int) (string, error) {
+		t.Fatal("pid inspected for invalid operand")
+		return "", nil
+	}
+	var out, errb bytes.Buffer
+	if code := daemonStop([]string{"typo"}, &out, &errb); code != ExitUsage {
+		t.Fatalf("daemonStop exit = %d, stderr=%s", code, errb.String())
+	}
+	if _, err := os.Stat(ref.pidPath()); err != nil {
+		t.Fatalf("pid file changed: %v", err)
+	}
+}
+
 func TestDaemonStartCleansUpStartedDaemonWhenRouteReloadFails(t *testing.T) {
 	isolate(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -98,6 +123,122 @@ func TestDaemonStartCleansUpStartedDaemonWhenRouteReloadFails(t *testing.T) {
 	}
 	if client.IsRunning() {
 		t.Fatal("started daemon still running after reload failure")
+	}
+}
+
+func TestDaemonStartCleansUpStartedDaemonWhenPIDWriteFails(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+
+	oldNewDaemonServeCommand := newDaemonServeCommand
+	oldWriteDaemonPID := writeDaemonPID
+	t.Cleanup(func() {
+		newDaemonServeCommand = oldNewDaemonServeCommand
+		writeDaemonPID = oldWriteDaemonPID
+	})
+	writeDaemonPID = func(string, int) error { return errors.New("pid write failed") }
+	newDaemonServeCommand = func(_, socketPath, _, _ string) *exec.Cmd {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: test launches this same test binary as a helper process.
+		cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+		cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=serve-admin", "GATE_TEST_DAEMON_SOCKET="+socketPath)
+		return cmd
+	}
+
+	pair := listener.FromFlags("127.0.0.1:0", "127.0.0.1:0")
+	ref := listenerRefFor(pair)
+	var out, errb bytes.Buffer
+	if code := daemonStart([]string{"--https-addr", pair.HTTPSAddr, "--http-addr", pair.HTTPAddr}, &out, &errb); code != ExitError {
+		t.Fatalf("daemonStart exit = %d, want error; stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "pid write failed") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+	if daemonClientForRef(ref).IsRunning() {
+		t.Fatal("daemon still running after PID write failure")
+	}
+	if _, err := os.Stat(ref.pidPath()); !os.IsNotExist(err) {
+		t.Fatalf("pid file still exists or stat failed: %v", err)
+	}
+}
+
+func TestStartDaemonCommandCleansUpNeverReadyChild(t *testing.T) {
+	isolate(t)
+	shortConfigDir, err := os.MkdirTemp("/tmp", "gate-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortConfigDir) })
+	t.Setenv("XDG_CONFIG_HOME", shortConfigDir)
+	t.Setenv("XDG_STATE_HOME", shortConfigDir)
+
+	oldReadyTimeout := daemonReadyTimeout
+	t.Cleanup(func() { daemonReadyTimeout = oldReadyTimeout })
+	daemonReadyTimeout = 100 * time.Millisecond
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // G204: test launches this same test binary as a helper process.
+	cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+	cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=wait-signal")
+	ref := defaultListenerRef()
+	result := startDaemonCommand(cmd, daemonClientForRef(ref), ref)
+	if result.Code != ExitError || !strings.Contains(result.Message, "did not become ready") {
+		t.Fatalf("result = %+v", result)
+	}
+	if cmd.Process == nil || processExists(cmd.Process.Pid) {
+		t.Fatalf("never-ready child still alive: %+v", cmd.Process)
+	}
+}
+
+func TestStopDaemonProcessKillsTermIgnoringProcess(t *testing.T) {
+	isolate(t)
+	oldArgs := processArgsForPID
+	t.Cleanup(func() { processArgsForPID = oldArgs })
+	processArgsForPID = func(int) (string, error) { return "owned test helper", nil }
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // G204: test launches this same test binary as a helper process.
+	cmd := exec.Command(exe, "-test.run=TestDaemonStartHelperProcess", "--", "__serve")
+	cmd.Env = append(os.Environ(), "GATE_TEST_DAEMON_START_HELPER=ignore-term")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	time.Sleep(50 * time.Millisecond)
+	if err := stopDaemonProcess(nil, cmd.Process.Pid, 100*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cmd.Process.Wait()
+}
+
+func TestStopDaemonProcessRefusesWrongSocketIdentity(t *testing.T) {
+	isolate(t)
+	oldArgs := processArgsForPID
+	t.Cleanup(func() { processArgsForPID = oldArgs })
+	processArgsForPID = func(int) (string, error) {
+		return "/usr/local/bin/gate __serve --socket /tmp/other.sock", nil
+	}
+	err := stopDaemonProcess(daemon.NewClient("/tmp/expected.sock"), os.Getpid(), time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "refusing to signal") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -551,6 +692,24 @@ func TestDaemonListenMatches(t *testing.T) {
 	}
 }
 
+func TestDaemonListenMatchesResolvedHostname(t *testing.T) {
+	oldLookup := lookupListenerIPs
+	t.Cleanup(func() { lookupListenerIPs = oldLookup })
+	lookupListenerIPs = func(host string) ([]net.IP, error) {
+		if host != "dev.local" {
+			t.Fatalf("lookup host = %q", host)
+		}
+		return []net.IP{net.ParseIP("127.0.0.1")}, nil
+	}
+	if !daemonListenMatches(
+		daemon.Status{HTTPSAddr: "127.0.0.1:443", HTTPAddr: "127.0.0.1:80"},
+		"dev.local:443",
+		"dev.local:80",
+	) {
+		t.Fatal("resolved hostname did not match actual bind IP")
+	}
+}
+
 func TestDaemonStatusMatchesListenerKeepsHostSpecificity(t *testing.T) {
 	if !daemonStatusMatchesListener(
 		daemon.Status{HTTPSAddr: "127.0.0.1:443", HTTPAddr: "127.0.0.1:80"},
@@ -582,6 +741,18 @@ func TestDaemonExplicitListenMatchesOnlyChecksSetFlags(t *testing.T) {
 	}
 	if !daemonExplicitListenMatches(st, ":58393", ":80", true, false) {
 		t.Fatal("explicit matching HTTPS port should pass")
+	}
+	if daemonExplicitListenMatches(
+		daemon.Status{HTTPSAddr: ":58393", HTTPAddr: ":58394"},
+		"127.0.0.1:58393", ":80", true, false,
+	) {
+		t.Fatal("wildcard listener matched explicit loopback listener")
+	}
+	if daemonExplicitListenMatches(
+		daemon.Status{HTTPSAddr: "127.0.0.1:58393", HTTPAddr: ":58394"},
+		":58393", ":80", true, false,
+	) {
+		t.Fatal("loopback listener matched explicit wildcard listener")
 	}
 }
 
@@ -615,6 +786,20 @@ func TestGateDaemonSocketPathParsesSocketForms(t *testing.T) {
 	}
 	if got := gateDaemonSocketPath("gate __serve --socket /tmp/gate state/listener.sock --https-addr :443"); got != "/tmp/gate state/listener.sock" {
 		t.Fatalf("socket path with spaces = %q", got)
+	}
+}
+
+func TestIsGateDaemonPIDForSocketRejectsDifferentListener(t *testing.T) {
+	oldProcessArgs := processArgsForPID
+	t.Cleanup(func() { processArgsForPID = oldProcessArgs })
+	processArgsForPID = func(int) (string, error) {
+		return "gate __serve --socket /tmp/other.sock --https-addr :443", nil
+	}
+	if isGateDaemonPIDForSocket(1234, "/tmp/target.sock") {
+		t.Fatal("different listener socket matched pid file target")
+	}
+	if !isGateDaemonPIDForSocket(1234, "/tmp/other.sock") {
+		t.Fatal("matching listener socket rejected")
 	}
 }
 
@@ -810,7 +995,7 @@ func TestDaemonStartHelperProcess(t *testing.T) {
 			os.Exit(1)
 		}
 		ctx, stopSignal := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-		stopAdmin, err := daemon.ServeAdmin(ctx, socketPath, proxy.New(nil, nil))
+		stopAdmin, err := daemon.ServeAdminWithShutdown(ctx, socketPath, proxy.New(nil, nil), stopSignal)
 		if err != nil {
 			stopSignal()
 			fmt.Fprintln(os.Stderr, err)
@@ -820,6 +1005,14 @@ func TestDaemonStartHelperProcess(t *testing.T) {
 		stopAdmin()
 		stopSignal()
 		return
+	case "wait-signal":
+		ctx, stopSignal := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+		<-ctx.Done()
+		stopSignal()
+		return
+	case "ignore-term":
+		signal.Ignore(syscall.SIGTERM)
+		select {}
 	default:
 		return
 	}

@@ -33,6 +33,9 @@ func NewClient(socket string) *Client {
 	}
 }
 
+// SocketPath returns the Unix-domain control socket this client targets.
+func (c *Client) SocketPath() string { return c.socket }
+
 // IsRunning reports whether a daemon is answering on the socket.
 func (c *Client) IsRunning() bool {
 	_, err := c.Status()
@@ -89,6 +92,23 @@ func (c *Client) SetRoutes(routes []proxy.Route) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("daemon set routes: %s", resp.Status)
+	}
+	return nil
+}
+
+// Shutdown asks the daemon reached through this exact control socket to stop.
+func (c *Client) Shutdown() error {
+	req, err := http.NewRequest(http.MethodPost, "http://unix/shutdown", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon shutdown: %s", resp.Status)
 	}
 	return nil
 }

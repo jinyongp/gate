@@ -85,9 +85,15 @@ func (t *NSSTrust) Uninstall(_ string, cert *x509.Certificate) (err error) {
 		if err != nil {
 			return
 		}
-		// skip if not found
+		// List first so a missing certificate is distinct from a broken NSS DB.
 		//nolint:gosec // tolerable risk necessary for function
-		if err := exec.Command(t.certutilPath, "-V", "-d", profile, "-u", "L", "-n", uniqueName(cert)).Run(); err != nil {
+		listCmd := exec.Command(t.certutilPath, "-L", "-d", profile, "-n", uniqueName(cert))
+		listOut, listErr := listCmd.CombinedOutput()
+		if listErr != nil {
+			if isNSSCertificateNotFound(listOut) {
+				return
+			}
+			err = NewCmdError(listErr, listCmd, listOut)
 			return
 		}
 		// delete certificate
@@ -102,6 +108,12 @@ func (t *NSSTrust) Uninstall(_ string, cert *x509.Certificate) (err error) {
 		debug("certificate uninstalled properly from NSS security databases")
 	}
 	return
+}
+
+func isNSSCertificateNotFound(out []byte) bool {
+	message := strings.ToLower(string(out))
+	return strings.Contains(message, "could not find cert") ||
+		strings.Contains(message, "certificate not found")
 }
 
 // Exists implements the Trust interface. Exists checks if the certificate is

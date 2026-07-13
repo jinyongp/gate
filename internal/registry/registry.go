@@ -138,6 +138,12 @@ func (r *Registry) Reserve(res Reservation) error {
 	if res.Port < 0 || res.Port > 65535 {
 		return fmt.Errorf("port %d is outside valid range", res.Port)
 	}
+	if res.Listener != nil {
+		pair := listener.Pair{HTTPSAddr: res.Listener.HTTPSAddr, HTTPAddr: res.Listener.HTTPAddr}
+		if err := listener.Validate(pair, true); err != nil {
+			return err
+		}
+	}
 	self := Key(res.Project, res.Service)
 	for key, ex := range r.Services {
 		if key == self {
@@ -205,18 +211,30 @@ func canonicalDomain(domain string) string {
 
 // Prune removes reservations whose owning gate.toml no longer exists (per the
 // exists predicate) and returns the removed reservations sorted by key.
-func (r *Registry) Prune(exists func(path string) bool) []Reservation {
-	var removed []Reservation
-	for k, res := range r.Services {
-		if res.ConfigPath != "" && !exists(res.ConfigPath) {
-			removed = append(removed, res)
-			delete(r.Services, k)
+func (r *Registry) Prune(exists func(path string) (bool, error)) ([]Reservation, error) {
+	var staleKeys []string
+	for _, key := range r.Keys() {
+		res := r.Services[key]
+		if res.ConfigPath == "" {
+			continue
 		}
+		present, err := exists(res.ConfigPath)
+		if err != nil {
+			return nil, err
+		}
+		if !present {
+			staleKeys = append(staleKeys, key)
+		}
+	}
+	removed := make([]Reservation, 0, len(staleKeys))
+	for _, key := range staleKeys {
+		removed = append(removed, r.Services[key])
+		delete(r.Services, key)
 	}
 	sort.Slice(removed, func(i, j int) bool {
 		return Key(removed[i].Project, removed[i].Service) < Key(removed[j].Project, removed[j].Service)
 	})
-	return removed
+	return removed, nil
 }
 
 // UsedPorts returns the set of currently reserved ports.
@@ -248,7 +266,8 @@ func (r *Registry) Validate() []IntegrityIssue {
 	var issues []IntegrityIssue
 	domains := map[string]string{}
 	ports := map[int]string{}
-	for key, res := range r.Services {
+	for _, key := range r.Keys() {
+		res := r.Services[key]
 		expected := Key(res.Project, res.Service)
 		if key != expected {
 			issues = append(issues, IntegrityIssue{
@@ -295,6 +314,16 @@ func (r *Registry) Validate() []IntegrityIssue {
 				})
 			} else {
 				ports[res.Port] = key
+			}
+		}
+		if res.Listener != nil {
+			pair := listener.Pair{HTTPSAddr: res.Listener.HTTPSAddr, HTTPAddr: res.Listener.HTTPAddr}
+			if err := listener.Validate(pair, true); err != nil {
+				issues = append(issues, IntegrityIssue{
+					Code:    "registry_invalid_listener",
+					Key:     key,
+					Message: fmt.Sprintf("registry reservation %q has invalid listener: %v", key, err),
+				})
 			}
 		}
 	}

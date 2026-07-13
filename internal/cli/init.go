@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"gate/internal/config"
+	"gate/internal/fsutil"
 	portx "gate/internal/port"
 	"gate/internal/registry"
 
@@ -32,10 +33,9 @@ func Init(args []string, stdout, stderr io.Writer) int {
 	name := fs.String("name", "", "project name (default: current directory name)")
 	yes := fs.Bool("yes", false, "create a default gate.toml without prompts")
 	fs.BoolVar(yes, "y", false, "create a default gate.toml without prompts")
-	if handled, code := parseFlags(fs, "init", args, stdout, stderr); handled {
+	if handled, code := parseNoArgFlags(fs, "init", args, stdout, stderr); handled {
 		return code
 	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitError, "cwd", err.Error())
@@ -45,8 +45,12 @@ func Init(args []string, stdout, stderr io.Writer) int {
 	}
 
 	path := filepath.Join(cwd, config.Filename)
-	if _, err := os.Stat(path); err == nil && !*force {
-		return fail(stderr, *jsonOut, ExitError, "exists", "gate.toml already exists (use --force to overwrite)")
+	if _, statErr := os.Stat(path); statErr == nil {
+		if !*force {
+			return fail(stderr, *jsonOut, ExitError, "exists", "gate.toml already exists (use --force to overwrite)")
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fail(stderr, *jsonOut, ExitError, "stat", statErr.Error())
 	}
 
 	spec := defaultInitSpec(*name)
@@ -63,9 +67,30 @@ func Init(args []string, stdout, stderr io.Writer) int {
 			return fail(stderr, *jsonOut, ExitError, "init", err.Error())
 		}
 	}
+	if err := validateInitSpec(spec); err != nil {
+		return fail(stderr, *jsonOut, ExitUsage, "bad_config", err.Error())
+	}
+	configUnlock, err := config.LockFile(path)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitError, "config_lock", err.Error())
+	}
+	defer configUnlock()
+	writePath, err := config.ResolveFileTarget(path)
+	if err != nil {
+		return fail(stderr, *jsonOut, ExitError, "config", err.Error())
+	}
+	perm := os.FileMode(0o644)
+	if info, statErr := os.Stat(path); statErr == nil {
+		if !*force {
+			return fail(stderr, *jsonOut, ExitError, "exists", "gate.toml was created while init was waiting")
+		}
+		perm = info.Mode().Perm()
+	} else if !os.IsNotExist(statErr) {
+		return fail(stderr, *jsonOut, ExitError, "stat", statErr.Error())
+	}
 
 	content := renderInitSpec(spec)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // project config, not a secret
+	if err := fsutil.WriteAtomic(writePath, []byte(content), perm); err != nil {
 		return fail(stderr, *jsonOut, ExitError, "write", err.Error())
 	}
 
@@ -126,6 +151,26 @@ func initServiceDomain(spec initSpec, svc initService) string {
 		return host
 	}
 	return host + "." + spec.BaseDomain
+}
+
+func validateInitSpec(spec initSpec) error {
+	project := &config.Project{
+		Name:     spec.ProjectName,
+		Base:     spec.BaseDomain,
+		Services: make(map[string]config.Service, len(spec.Services)),
+	}
+	for _, svc := range spec.Services {
+		if _, exists := project.Services[svc.Name]; exists {
+			return fmt.Errorf("duplicate service name %q", svc.Name)
+		}
+		project.Services[svc.Name] = config.Service{
+			Domain: svc.Domain,
+			Host:   svc.Host,
+			Port:   svc.Port,
+			TLS:    config.TLSInternal,
+		}
+	}
+	return project.Validate()
 }
 
 func promptInitSpec(stdout io.Writer, defaultName string) (initSpec, error) {

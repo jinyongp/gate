@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
@@ -70,7 +71,7 @@ func New(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), live Live
 		FlushInterval: -1, // flush immediately for SSE/streaming
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
 			host := hostOnly(r.Host)
-			route := s.lookup(host)
+			route, _ := r.Context().Value(routeKey).(*Route)
 			if route != nil && !s.live(route.Upstream) {
 				writeNotRunning(w, host)
 				return
@@ -173,6 +174,15 @@ func (s *Server) HTTPSHandler() http.Handler {
 func (s *Server) HTTPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := hostOnly(r.Host)
+		route := s.lookup(host)
+		if route == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if !remoteAllowed(r.RemoteAddr, route.Exposed) {
+			http.Error(w, "403 Forbidden", http.StatusForbidden)
+			return
+		}
 		if hostPort, ok := s.httpsHostPort.Load().(string); ok && hostPort != "" {
 			host = net.JoinHostPort(host, hostPort)
 		}
@@ -211,8 +221,12 @@ func basicAuthOK(r *http.Request, userpass string) bool {
 	if !ok {
 		return false
 	}
-	userEq := subtle.ConstantTimeCompare([]byte(user), []byte(wantUser)) == 1
-	passEq := subtle.ConstantTimeCompare([]byte(pass), []byte(wantPass)) == 1
+	wantUserDigest := sha256.Sum256([]byte(wantUser))
+	userDigest := sha256.Sum256([]byte(user))
+	wantPassDigest := sha256.Sum256([]byte(wantPass))
+	passDigest := sha256.Sum256([]byte(pass))
+	userEq := subtle.ConstantTimeCompare(userDigest[:], wantUserDigest[:]) == 1
+	passEq := subtle.ConstantTimeCompare(passDigest[:], wantPassDigest[:]) == 1
 	return userEq && passEq
 }
 
@@ -320,7 +334,20 @@ func validDomainLabel(label string) bool {
 }
 
 func dialLive(upstream string) bool {
-	conn, err := net.DialTimeout("tcp", upstream, 300*time.Millisecond)
+	host, port, err := net.SplitHostPort(upstream)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return false
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return false
+	}
+	address := net.JoinHostPort(ip.String(), strconv.Itoa(p))
+	conn, err := net.DialTimeout("tcp", address, 300*time.Millisecond) //nolint:gosec // G704: address is parsed and restricted to a loopback IP above.
 	if err != nil {
 		return false
 	}

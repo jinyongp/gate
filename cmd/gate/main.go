@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"gate/internal/cli"
+	"gate/internal/paths"
 	"gate/internal/ui"
 
 	"github.com/spf13/cobra"
@@ -40,27 +40,28 @@ func (e exitCodeError) Error() string {
 // commands is the subcommand dispatch table. Subcommands register here as
 // features land across the implementation phases.
 var commands = map[string]command{
-	"init":      cli.Init,
-	"up":        cli.Up,
-	"down":      cli.Down,
-	"ls":        cli.Ls,
-	"port":      cli.Port,
-	"env":       cli.Env,
-	"add":       cli.Add,
-	"rm":        cli.Rm,
-	"clear":     cli.Clear,
-	"prune":     cli.Prune,
-	"run":       cli.Run,
-	"daemon":    cli.Daemon,
-	"doctor":    cli.Doctor,
-	"trust":     cli.Trust,
-	"untrust":   cli.Untrust,
-	"uninstall": cli.Uninstall,
-	"ca":        cli.Ca,
-	"expose":    cli.Expose,
-	"upgrade":   cli.Upgrade,
-	"skill":     cli.Skill,
-	"__serve":   cli.Serve,
+	"init":              cli.Init,
+	"up":                cli.Up,
+	"down":              cli.Down,
+	"ls":                cli.Ls,
+	"port":              cli.Port,
+	"env":               cli.Env,
+	"add":               cli.Add,
+	"rm":                cli.Rm,
+	"clear":             cli.Clear,
+	"prune":             cli.Prune,
+	"run":               cli.Run,
+	"daemon":            cli.Daemon,
+	"doctor":            cli.Doctor,
+	"trust":             cli.Trust,
+	"untrust":           cli.Untrust,
+	"uninstall":         cli.Uninstall,
+	"ca":                cli.Ca,
+	"expose":            cli.Expose,
+	"upgrade":           cli.Upgrade,
+	"skill":             cli.Skill,
+	"__serve":           cli.Serve,
+	"__resolve-project": cli.ResolveProject,
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -70,10 +71,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
-	if isolatedRoot != "" {
-		restore, err := setIsolatedRoot(isolatedRoot)
+	effectiveIsolatedRoot := isolatedRoot
+	if effectiveIsolatedRoot == "" {
+		effectiveIsolatedRoot = os.Getenv(isolatedRootEnv)
+	}
+	if effectiveIsolatedRoot != "" {
+		restore, err := setIsolatedRoot(effectiveIsolatedRoot)
 		if err != nil {
-			fmt.Fprintf(stderr, "gate: invalid --isolated-root: %v\n", err)
+			fmt.Fprintf(stderr, "gate: invalid isolated root: %v\n", err)
 			return 2
 		}
 		defer restore()
@@ -252,7 +257,7 @@ func extractIsolatedRoot(args []string) ([]string, string, error) {
 }
 
 func setIsolatedRoot(root string) (func(), error) {
-	abs, err := filepath.Abs(root)
+	abs, err := paths.ValidateIsolatedRoot(root)
 	if err != nil {
 		return nil, err
 	}

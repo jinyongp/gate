@@ -60,6 +60,63 @@ func TestLoadIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestConcurrentLoadCreatesOneRoot(t *testing.T) {
+	base := t.TempDir()
+	const count = 12
+	fingerprints := make(chan string, count)
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			authority, err := Load(base)
+			if err != nil {
+				errs <- err
+				return
+			}
+			fingerprints <- authority.Fingerprint()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(fingerprints)
+	for err := range errs {
+		t.Fatalf("Load: %v", err)
+	}
+	var want string
+	for fingerprint := range fingerprints {
+		if want == "" {
+			want = fingerprint
+		}
+		if fingerprint != want {
+			t.Fatalf("fingerprint = %q, want %q", fingerprint, want)
+		}
+	}
+}
+
+func TestLoadRecoversIncompleteRootWithPrivateKeyMode(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "ca")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "root.key")
+	if err := os.WriteFile(keyPath, []byte("partial"), 0o644); err != nil { //nolint:gosec // regression fixture
+		t.Fatal(err)
+	}
+	if _, err := Load(base); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("key mode = %o, want 600", got)
+	}
+}
+
 func TestLoadExistingDoesNotGenerateRoot(t *testing.T) {
 	base := t.TempDir()
 	if _, err := LoadExisting(base); !errors.Is(err, ErrNotFound) {
@@ -279,6 +336,44 @@ func TestGetCertificateCaches(t *testing.T) {
 	c2, _ := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: "x.localhost"})
 	if c1 != c2 {
 		t.Fatal("expected cached leaf to be reused")
+	}
+}
+
+func TestGetCertificateRenewsExpiringLeaf(t *testing.T) {
+	authority, _ := loadCA(t)
+	first, err := authority.GetCertificate(&tls.ClientHelloInfo{ServerName: "renew.localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Leaf.NotAfter = time.Now().Add(time.Minute)
+	second, err := authority.GetCertificate(&tls.ClientHelloInfo{ServerName: "renew.localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("expiring leaf was reused")
+	}
+	if second.Leaf.NotAfter.After(authority.Certificate().NotAfter) {
+		t.Fatal("leaf outlives root")
+	}
+}
+
+func TestGetCertificateReusesLeafNearRootExpiry(t *testing.T) {
+	authority, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.cert.NotAfter = time.Now().Add(12 * time.Hour)
+	first, err := authority.GetCertificate(&tls.ClientHelloInfo{ServerName: "near-expiry.localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := authority.GetCertificate(&tls.ClientHelloInfo{ServerName: "near-expiry.localhost"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatal("root-capped leaf was reissued before actual expiry")
 	}
 }
 

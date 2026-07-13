@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -45,10 +47,10 @@ type Trust interface {
 // optionally to the Firefox and Java trustores.
 func Install(cert *x509.Certificate, opts ...Option) error {
 	filename, fn, err := saveTempCert(cert)
-	defer fn()
 	if err != nil {
 		return err
 	}
+	defer fn()
 	return installCertificate(filename, cert, opts)
 }
 
@@ -64,6 +66,9 @@ func InstallFile(filename string, opts ...Option) error {
 
 func installCertificate(filename string, cert *x509.Certificate, opts []Option) error {
 	o := newOptions(opts)
+	if err := errors.Join(o.optionErrors...); err != nil {
+		return err
+	}
 
 	for _, t := range o.trusts {
 		if err := t.PreCheck(); err != nil {
@@ -88,10 +93,10 @@ func installCertificate(filename string, cert *x509.Certificate, opts []Option) 
 // optionally from the Firefox and Java truststres.
 func Uninstall(cert *x509.Certificate, opts ...Option) error {
 	filename, fn, err := saveTempCert(cert)
-	defer fn()
 	if err != nil {
 		return err
 	}
+	defer fn()
 	return uninstallCertificate(filename, cert, opts)
 }
 
@@ -107,6 +112,9 @@ func UninstallFile(filename string, opts ...Option) error {
 
 func uninstallCertificate(filename string, cert *x509.Certificate, opts []Option) error {
 	o := newOptions(opts)
+	if err := errors.Join(o.optionErrors...); err != nil {
+		return err
+	}
 
 	for _, t := range o.trusts {
 		if err := t.PreCheck(); err != nil {
@@ -163,6 +171,7 @@ func SaveCertificate(filename string, cert *x509.Certificate) error {
 type options struct {
 	withNoSystem bool
 	trusts       map[string]Trust
+	optionErrors []error
 }
 
 func newOptions(opts []Option) *options {
@@ -189,7 +198,14 @@ func WithTrust(t Trust) Option {
 // WithFirefox enables the install or uninstall of a certificate in the Firefox
 // truststore.
 func WithFirefox() Option {
-	t, _ := NewNSSTrust()
+	t, err := NewNSSTrust()
+	if err != nil {
+		return func(o *options) {
+			if forEachNSSProfile(func(string) {}) > 0 {
+				o.optionErrors = append(o.optionErrors, fmt.Errorf("Firefox NSS trust is configured but unavailable: %w", err))
+			}
+		}
+	}
 	return WithTrust(t)
 }
 
