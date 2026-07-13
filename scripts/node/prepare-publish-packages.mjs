@@ -1,10 +1,10 @@
-import { readFile, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { copyFile, readFile, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const version = process.argv[2]
 
-if (!version || !/^v?\d+\.\d+\.\d+$/.test(version)) {
+if (!version || !/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
   throw new Error('usage: node scripts/node/prepare-publish-packages.mjs vX.Y.Z')
 }
 
@@ -40,5 +40,6 @@ for (const relativePath of packagePaths) {
   }
 
   await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`)
+  await copyFile(join(repoRoot, 'LICENSE'), join(packageRoot, dirname(relativePath), 'LICENSE'))
   console.log(`${manifest.name}@${packageVersion}`)
 }

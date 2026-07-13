@@ -18,11 +18,25 @@ async function readManifest(path) {
   return JSON.parse(await readFile(path, 'utf8'))
 }
 
+async function assertPackIncludesLicense(packageDir) {
+  const { stdout } = await execFileAsync('npm', ['pack', '--dry-run', '--json'], {
+    cwd: packageDir,
+    env: {
+      ...process.env,
+      npm_config_cache: join(publishRoot, '.npm-cache'),
+    },
+  })
+  const pack = JSON.parse(stdout)
+  assert.equal(pack.length, 1)
+  assert.ok(pack[0].files.some((file) => file.path === 'LICENSE'))
+}
+
 try {
   const sourceNodeManifestBefore = await readFile(
     join(repoRoot, 'packages', 'node', 'package.json'),
     'utf8',
   )
+  const sourceLicense = await readFile(join(repoRoot, 'LICENSE'), 'utf8')
 
   await cp(join(repoRoot, 'packages', 'node'), join(publishRoot, 'packages', 'node'), {
     recursive: true,
@@ -76,6 +90,11 @@ try {
     '@jinyongp/gate-linux-arm64': '9.8.7',
     '@jinyongp/gate-linux-x64': '9.8.7',
   })
+  assert.equal(
+    await readFile(join(publishRoot, 'packages', 'node', 'LICENSE'), 'utf8'),
+    sourceLicense,
+  )
+  await assertPackIncludesLicense(join(publishRoot, 'packages', 'node'))
 
   for (const name of binaryPackages) {
     const manifest = await readManifest(
@@ -83,13 +102,9 @@ try {
     )
     assert.equal(manifest.version, '9.8.7')
     await readFile(join(publishRoot, 'packages', 'binaries', name, 'bin', 'gate'))
-    await execFileAsync('npm', ['pack', '--dry-run'], {
-      cwd: join(publishRoot, 'packages', 'binaries', name),
-      env: {
-        ...process.env,
-        npm_config_cache: join(publishRoot, '.npm-cache'),
-      },
-    })
+    const packageDir = join(publishRoot, 'packages', 'binaries', name)
+    assert.equal(await readFile(join(packageDir, 'LICENSE'), 'utf8'), sourceLicense)
+    await assertPackIncludesLicense(packageDir)
   }
 } catch (error) {
   await rm(publishRoot, { recursive: true, force: true })

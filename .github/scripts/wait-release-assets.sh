@@ -13,13 +13,10 @@ fi
 
 version_tag="${1:?Usage: wait-release-assets.sh VERSION_TAG}"
 
-case "$version_tag" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *)
-    ui_error "version tag must look like vX.Y.Z: ${version_tag}"
-    exit 1
-    ;;
-esac
+if [[ ! "$version_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+	ui_error "version tag must look like vX.Y.Z: ${version_tag}"
+	exit 1
+fi
 
 repo="${GITHUB_REPOSITORY:-jinyongp/gate}"
 release_url="https://github.com/${repo}/releases/download/${version_tag}"

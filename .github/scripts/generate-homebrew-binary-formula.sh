@@ -13,13 +13,10 @@ fi
 tap_path="${1:?Usage: generate-homebrew-binary-formula.sh TAP_PATH VERSION_TAG}"
 version_tag="${2:?Usage: generate-homebrew-binary-formula.sh TAP_PATH VERSION_TAG}"
 
-case "$version_tag" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *)
-    ui_error "version tag must look like vX.Y.Z: ${version_tag}"
-    exit 1
-    ;;
-esac
+if [[ ! "$version_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+	ui_error "version tag must look like vX.Y.Z: ${version_tag}"
+	exit 1
+fi
 
 version="${version_tag#v}"
 repo="jinyongp/gate"

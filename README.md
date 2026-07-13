@@ -109,6 +109,12 @@ machine. If privileged setup artifacts were never created, they are not removed.
 Homebrew-managed symlinks are skipped by the script, so it does not remove the
 Homebrew package itself.
 
+The built-in uninstaller also stops persisted exposures and known daemons before
+deleting state, and aborts deletion if cleanup cannot be verified. If the binary
+is already gone, the standalone script cannot tear down provider state; restore
+the binary and run `gate uninstall`, or clean the provider explicitly before
+removing local state.
+
 ## Quick Start
 
 Run this inside your app repository.
@@ -176,7 +182,8 @@ Run this inside your app repository.
 another local DNS setup, so `gate up` may ask for administrator approval.
 For LAN access, `gate expose <service> --via lan` derives a `.local` alias from
 the service domain: `.local` stays unchanged, `.localhost` becomes `.local`, and
-other domains append `.local`.
+other domains append `.local`. The listener must be bound to `:<port>` or a LAN
+interface, not only `127.0.0.1`; gate does not advertise mDNS or edit client DNS.
 
 Gate daemons are keyed by listener address, not by project. The default listener
 owns HTTPS `:443` and HTTP `:80`, so project and global reservations that use the

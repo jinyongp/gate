@@ -3,6 +3,21 @@ set -euo pipefail
 
 tag="${1:?Usage: publish-release.sh vX.Y.Z}"
 
+if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+	echo "release tag must be strict vX.Y.Z: $tag" >&2
+	exit 1
+fi
+
+bash .github/scripts/verify-release-tag-target.sh "$tag" "${GITHUB_SHA:?}"
+
+assets=(
+	gate-darwin-amd64
+	gate-darwin-arm64
+	gate-linux-amd64
+	gate-linux-arm64
+	checksums.txt
+)
+
 latest_published_tag() {
   local error
   local status
@@ -57,10 +72,33 @@ if [ -z "$notes" ]; then
 fi
 
 if gh release view "$tag" >/dev/null 2>&1; then
-  gh release upload "$tag" gate-* checksums.txt --clobber
+	state="$(gh release view "$tag" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | @tsv')"
+	IFS=$'\t' read -r is_draft is_prerelease <<<"$state"
+	if [ "$is_draft" = "true" ] || [ "$is_prerelease" = "true" ]; then
+		echo "stable release tag has non-final GitHub release state (draft=${is_draft}, prerelease=${is_prerelease}): $tag" >&2
+		exit 1
+	fi
+	existing="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+	tmp="$(mktemp -d)"
+	trap 'rm -rf "$tmp"' EXIT
+	missing=()
+	for asset in "${assets[@]}"; do
+		if printf '%s\n' "$existing" | grep -Fx "$asset" >/dev/null; then
+			gh release download "$tag" --pattern "$asset" --dir "$tmp"
+			if ! cmp -s "$asset" "$tmp/$asset"; then
+				echo "release asset differs from local file; refusing to replace tagged artifact: $asset" >&2
+				exit 1
+			fi
+			continue
+		fi
+		missing+=("$asset")
+	done
+	for asset in "${missing[@]}"; do
+		gh release upload "$tag" "$asset"
+	done
 else
   gh release create "$tag" \
-    gate-darwin-amd64 gate-darwin-arm64 gate-linux-amd64 gate-linux-arm64 checksums.txt \
+		"${assets[@]}" \
     --title "$tag" \
     --notes "$notes" \
     --verify-tag

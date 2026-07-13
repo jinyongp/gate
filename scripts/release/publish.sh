@@ -67,9 +67,13 @@ while [ "$#" -gt 0 ]; do
     patch|minor|major)
       TAG_INPUT="$arg"
       ;;
-    v[0-9]*.[0-9]*.[0-9]*)
-      TAG_INPUT="$arg"
-      ;;
+		v*)
+			if [[ ! "$arg" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+				ui_error "Version tag must be strict vX.Y.Z: $arg"
+				exit 1
+			fi
+			TAG_INPUT="$arg"
+			;;
     *)
       ui_error "Unknown argument: $arg"
       ui_note_err "Usage: scripts/release/publish.sh [--dry-run|-n] [--yes|-y] [--since vX.Y.Z] [patch|minor|major|vX.Y.Z]"
@@ -79,7 +83,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 get_latest_tag() {
-  git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1
+	git tag --list 'v*' --sort=-v:refname | while IFS= read -r candidate; do
+		if [[ "$candidate" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+			if [ -z "${found_tag:-}" ]; then
+				printf '%s\n' "$candidate"
+				found_tag="$candidate"
+			fi
+		fi
+	done
 }
 
 origin_repo_slug() {
@@ -551,6 +562,14 @@ confirm_dirty_tree() {
 
 DIRTY_CHANGES="$(working_tree_changes)"
 if [ -n "$DIRTY_CHANGES" ]; then
+	if [ "$DRY_RUN" -eq 0 ]; then
+		ui_error "Release requires a clean working tree so checks match the tagged commit."
+		while IFS= read -r change; do
+			[ -n "$change" ] || continue
+			ui_item "$change"
+		done <<<"$DIRTY_CHANGES"
+		exit 1
+	fi
   confirm_dirty_tree "$DIRTY_CHANGES"
 fi
 
@@ -561,7 +580,7 @@ fi
 
 LATEST_PUBLISHED_TAG=""
 if [ "$NOTES_BASE_OVERRIDE_SET" -eq 1 ]; then
-  if [[ ! "$NOTES_BASE_OVERRIDE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+	if [[ ! "$NOTES_BASE_OVERRIDE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
     ui_error "--since must be a semver tag like v1.2.3"
     exit 1
   fi
@@ -669,7 +688,7 @@ case "$TAG_INPUT" in
     PATCH_TAG="$(next_version "$MAJOR" "$MINOR" "$PATCH" "$TAG_INPUT")"
     ;;
   *)
-    if [[ ! "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		if [[ ! "$TAG_INPUT" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
       ui_error "Tag must be vX.Y.Z or one of: patch, minor, major"
       exit 1
     fi
@@ -717,5 +736,9 @@ fi
 
 RELEASE_NOTES="$(printf 'Release %s\n\n%s' "$PATCH_TAG" "$(format_commits "$NOTES_RANGE" | sed 's/^/- /')")"
 git tag -a "$PATCH_TAG" -m "$RELEASE_NOTES" "$TARGET_SHA"
-git push --atomic origin HEAD:main "refs/tags/$PATCH_TAG:refs/tags/$PATCH_TAG"
+if ! git push --atomic origin HEAD:main "refs/tags/$PATCH_TAG:refs/tags/$PATCH_TAG"; then
+	git tag -d "$PATCH_TAG" >/dev/null 2>&1 || true
+	ui_error "Push failed; removed the local tag created by this release attempt: $PATCH_TAG"
+	exit 1
+fi
 ui_ok "created and pushed tag $PATCH_TAG"

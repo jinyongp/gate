@@ -4,20 +4,58 @@ set -eu
 VERSION="${GATE_VERSION:-latest}"
 REPO="jinyongp/gate"
 
-SCRIPT_DIR="$(CDPATH="" cd "$(dirname "$0")" 2>/dev/null && pwd || pwd)"
-if [ -r "${SCRIPT_DIR}/lib/ui.sh" ]; then
-  . "${SCRIPT_DIR}/lib/ui.sh"
-else
-  ui_section() { printf '\n%s\n' "$1"; }
-  ui_kv() { printf '  %-12s %s\n' "$1" "$2"; }
-  ui_ok() { printf 'ok: %s\n' "$1"; }
-  ui_warn_err() { printf 'warning: %s\n' "$1" >&2; }
-  ui_error() { printf 'error: %s\n' "$1" >&2; }
-  ui_note() { printf '%s\n' "$1"; }
-  ui_note_err() { printf '%s\n' "$1" >&2; }
-  ui_command() { printf '  %s\n' "$1"; }
-  ui_prompt() { printf '\n%s ' "$1"; }
+ui_section() { printf '\n%s\n' "$1"; }
+ui_kv() { printf '  %-12s %s\n' "$1" "$2"; }
+ui_ok() { printf 'ok: %s\n' "$1"; }
+ui_warn_err() { printf 'warning: %s\n' "$1" >&2; }
+ui_error() { printf 'error: %s\n' "$1" >&2; }
+ui_note() { printf '%s\n' "$1"; }
+ui_note_err() { printf '%s\n' "$1" >&2; }
+ui_command() { printf '  %s\n' "$1"; }
+ui_prompt() { printf '\n%s ' "$1"; }
+
+if [ "$VERSION" != "latest" ] && ! printf '%s\n' "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+  ui_error "GATE_VERSION must be latest or a stable vMAJOR.MINOR.PATCH tag."
+  exit 1
 fi
+
+contains_control_char() {
+  value="$1"
+  cleaned="$(printf '%s' "$value" | LC_ALL=C tr -d '[:cntrl:]')"
+  [ "$cleaned" != "$value" ]
+}
+
+validate_path_value() {
+  name="$1"
+  value="$2"
+  if contains_control_char "$value"; then
+    ui_error "${name} contains control characters."
+    exit 1
+  fi
+}
+
+validate_path_value "HOME" "${HOME:?HOME is required for installation}"
+validate_path_value "GATE_BIN_DIR" "${GATE_BIN_DIR:-}"
+validate_path_value "SHELL" "${SHELL:-}"
+
+if [ -n "${GATE_BIN_DIR:-}" ]; then
+  case "$GATE_BIN_DIR" in
+    /*) ;;
+    *)
+      ui_error "GATE_BIN_DIR must be an absolute path."
+      exit 1
+      ;;
+  esac
+  DEST_DIR="${GATE_BIN_DIR}"
+else
+  DEST_DIR="$HOME/.local/bin"
+fi
+case "$DEST_DIR" in
+  *:*)
+    ui_error "install directory contains ':' and cannot be added to PATH safely: ${DEST_DIR}"
+    exit 1
+    ;;
+esac
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH_RAW="$(uname -m)"
@@ -51,6 +89,9 @@ fi
 TMP_DIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$TMP_DIR"
+	if [ -n "${TEMP_DEST:-}" ]; then
+		rm -f "$TEMP_DEST"
+	fi
 }
 trap cleanup EXIT
 
@@ -91,8 +132,8 @@ resolve_download_url() {
 
 verify_checksum() {
   if [ -z "${CHECKSUMS_URL:-}" ]; then
-    ui_warn_err "release has no checksums.txt; skipping integrity check."
-    return 0
+		ui_error "release has no checksums.txt; refusing to install unverified binary."
+		return 1
   fi
 
   CHECKSUMS_FILE="${TMP_DIR}/checksums.txt"
@@ -148,13 +189,12 @@ fi
 chmod +x "$BINARY_PATH"
 
 if [ -n "${GATE_BIN_DIR:-}" ]; then
-  if ! mkdir -p "${GATE_BIN_DIR}" 2>/dev/null || [ ! -w "${GATE_BIN_DIR}" ]; then
-    ui_error "GATE_BIN_DIR is set but not writable: ${GATE_BIN_DIR}"
+  if ! mkdir -p "$DEST_DIR" 2>/dev/null || [ ! -w "$DEST_DIR" ]; then
+    ui_error "GATE_BIN_DIR is set but not writable: ${DEST_DIR}"
     exit 1
   fi
-  DEST_DIR="${GATE_BIN_DIR}"
-elif [ -w "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin"; then
-  DEST_DIR="$HOME/.local/bin"
+elif [ -w "$DEST_DIR" ] || mkdir -p "$DEST_DIR"; then
+  :
 else
   ui_error "no writable install directory found."
   ui_note_err "Grant permissions or use a custom destination in your shell manually."
@@ -162,25 +202,33 @@ else
 fi
 
 DEST="${DEST_DIR}/gate"
-
-if command -v install >/dev/null 2>&1; then
-  install -m 755 "$BINARY_PATH" "$DEST"
-else
-  cp "$BINARY_PATH" "$DEST"
-  chmod 755 "$DEST"
+if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
+  ui_error "refusing to replace non-regular install target: ${DEST}"
+  exit 1
 fi
+TEMP_DEST="$(mktemp "${DEST_DIR}/.gate.install.XXXXXX")"
+if command -v install >/dev/null 2>&1; then
+  install -m 755 "$BINARY_PATH" "$TEMP_DEST"
+else
+  cp "$BINARY_PATH" "$TEMP_DEST"
+  chmod 755 "$TEMP_DEST"
+fi
+mv -f "$TEMP_DEST" "$DEST"
 
 path_entry_expr() {
-  home_prefix="${HOME}/"
-  case "$DEST_DIR" in
-    "$home_prefix"*)
-      rel="${DEST_DIR#$home_prefix}"
-      printf '$HOME/%s\n' "$rel"
-      ;;
-    *)
-      printf '%s\n' "$DEST_DIR"
-      ;;
-  esac
+	printf '%s\n' "$DEST_DIR"
+}
+
+shell_single_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
+}
+
+fish_single_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g"
+	printf "'"
 }
 
 detected_shell_name() {
@@ -227,10 +275,10 @@ path_update_command() {
   entry="$(path_entry_expr)"
   case "$shell_name" in
     fish)
-      printf 'set -gx PATH "%s" $PATH\n' "$entry"
+			printf 'set -gx PATH %s $PATH\n' "$(fish_single_quote "$entry")"
       ;;
     *)
-      printf 'export PATH="%s:$PATH"\n' "$entry"
+			printf 'export PATH=%s:"$PATH"\n' "$(shell_single_quote "$entry")"
       ;;
   esac
 }
@@ -270,19 +318,35 @@ append_path_to_rc() {
 }
 
 configure_path() {
-  case ":${PATH}:" in
-    *":${DEST_DIR}:"*)
-      ui_ok "gate is already in your current PATH."
-      return
-      ;;
+  old_ifs="$IFS"
+  IFS=:
+  had_noglob=0
+  case $- in
+    *f*) had_noglob=1 ;;
   esac
+  set -f
+  path_found=0
+  for path_item in ${PATH:-}; do
+    if [ "$path_item" = "$DEST_DIR" ]; then
+      path_found=1
+      break
+    fi
+  done
+  if [ "$had_noglob" -eq 0 ]; then
+    set +f
+  fi
+  IFS="$old_ifs"
+  if [ "$path_found" -eq 1 ]; then
+    ui_ok "gate is already in your current PATH."
+    return
+  fi
 
   shell_name="$(detected_shell_name)"
   rc_file="$(shell_rc_file "$shell_name")"
   entry="$(path_entry_expr)"
   cmd="$(path_update_command "$shell_name")"
 
-  if [ -f "$rc_file" ] && { grep -F "$DEST_DIR" "$rc_file" >/dev/null 2>&1 || grep -F "$entry" "$rc_file" >/dev/null 2>&1; }; then
+  if [ -f "$rc_file" ] && grep -F -x -e "$cmd" "$rc_file" >/dev/null 2>&1; then
     ui_ok "${DEST_DIR} is already listed in ${rc_file}."
     ui_note "Open a new terminal, or run:"
     ui_command "${cmd}"
