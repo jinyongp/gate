@@ -399,6 +399,7 @@ select_bump_radio() {
   fi
 
   selected="$(bump_index "$RECOMMENDED_BUMP")"
+  ui_note ""
   ui_note "Use arrow keys and Enter."
   hide_cursor
   render_bump_menu "$selected"
