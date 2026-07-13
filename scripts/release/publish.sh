@@ -672,7 +672,7 @@ ui_section "Release notes base"
 if [ -n "$LATEST_PUBLISHED_TAG" ]; then
   ui_kv "Last published release" "$LATEST_PUBLISHED_TAG"
   if [ "$LATEST_PUBLISHED_TAG" != "$LATEST_TAG" ]; then
-    ui_warn "latest git tag ${LATEST_TAG} has no published release; notes will include commits since ${LATEST_PUBLISHED_TAG}"
+    ui_kv "Latest tag" "${LATEST_TAG} (unpublished; included below)"
   fi
 else
   ui_kv "Last published release" "none"
