@@ -87,8 +87,8 @@ export type GateErrorWithCode<Code extends GateErrorCode> = GateError & {
  *
  * @remarks
  * Pass a code to narrow the result to {@link GateErrorWithCode}. The check also
- * accepts error-like objects with `name: "GateError"` and a known code, which
- * keeps narrowing useful across package copies or process boundaries.
+ * accepts structurally complete GateError objects, which keeps narrowing useful
+ * across package copies or process boundaries without trusting partial lookalikes.
  *
  * @param error - Value caught from `try`/`catch`.
  * @param code - Optional stable Node API error code to match.
@@ -133,10 +133,42 @@ function isGateErrorLike(error: unknown): error is GateError {
   if (!error || typeof error !== 'object') {
     return false
   }
-  const candidate = error as { name?: unknown; code?: unknown }
+  const candidate = error as Record<string, unknown>
   return (
     candidate.name === 'GateError' &&
     typeof candidate.code === 'string' &&
-    gateErrorCodes.has(candidate.code as GateErrorCode)
+    gateErrorCodes.has(candidate.code as GateErrorCode) &&
+    typeof candidate.message === 'string' &&
+    isStringArray(candidate.command) &&
+    isNextActionArray(candidate.nextActions) &&
+    optionalType(candidate.gateCode, 'string') &&
+    optionalType(candidate.severity, 'string') &&
+    optionalType(candidate.retryable, 'boolean') &&
+    optionalType(candidate.hint, 'string') &&
+    optionalType(candidate.exitCode, 'number') &&
+    optionalType(candidate.signal, 'string') &&
+    optionalType(candidate.stdout, 'string') &&
+    optionalType(candidate.stderr, 'string')
   )
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isNextActionArray(value: unknown): value is GateErrorDetails['nextActions'] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        item !== null &&
+        typeof item === 'object' &&
+        typeof (item as { label?: unknown }).label === 'string' &&
+        optionalType((item as { command?: unknown }).command, 'string'),
+    )
+  )
+}
+
+function optionalType(value: unknown, type: 'boolean' | 'number' | 'string'): boolean {
+  return value === undefined || typeof value === type
 }

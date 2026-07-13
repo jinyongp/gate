@@ -96,7 +96,12 @@ passed to the gate binary through `--config`. `scope.project` may be used with
 inline config, but it must match `config.name`. `envFiles` are intentionally not
 part of the Node API; load environment variables before calling gate if inline
 values use `${NAME}` or `${NAME:-fallback}` references.
+Project names cannot contain `/` or surrounding whitespace. Service names must
+match `[A-Za-z0-9_][A-Za-z0-9_-]*`; `ls` and `stop` are reserved.
 Custom domains still require `dns: 'hosts'` or `dns: 'preconfigured'`.
+When `dns` is omitted, project and inline scopes use the `.localhost` safety
+check. Global scope preserves each reservation's stored DNS mode; explicitly
+passing `dns: 'localhost'` validates every selected global reservation first.
 
 Human-facing Node integrations should normally use the default gate state so
 they share the same registry, route, trust, and cache behavior as the `gate`

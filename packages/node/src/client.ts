@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process'
 import { dnsArgs, parseJSON, runGate } from './command.js'
 import { composeSignals } from './command.js'
 import { prepareScope } from './config.js'
-import { gateProcessEnv } from './environment.js'
+import { effectiveIsolatedRoot, gateProcessEnv } from './environment.js'
 import { GateError } from './errors.js'
-import { assertDNSAllowed, assertScopeDNSAllowed } from './preflight.js'
+import { assertScopeDNSAllowed } from './preflight.js'
 import type {
   GateClient,
   GateClientOptions,
@@ -35,6 +35,8 @@ interface GateLsJSON {
     route: 'active' | 'inactive'
     upstream: 'live' | 'down'
     standalone?: boolean
+    url?: string
+    loopbackUrl?: string
   }>
 }
 
@@ -47,6 +49,8 @@ interface GateUpJSON {
     domain: string
     port: number
     allocated?: boolean
+    url?: string
+    loopbackUrl?: string
   }>
 }
 
@@ -87,24 +91,44 @@ export function createGateClient<const Defaults extends GateClientOptions>(
   defaults: Defaults,
 ): GateClient<Defaults extends { isolatedRoot: string } ? true : false>
 export function createGateClient(defaults: GateClientOptions = {}): GateClient<boolean> {
-  const withDefaults = <T extends GateCommandOptions>(options?: T): T & GateCommandOptions =>
-    ({
+  const withDefaults = <T extends GateCommandOptions>(options?: T): T & GateCommandOptions => {
+    const merged = {
       ...defaults,
       ...options,
       env: { ...defaults.env, ...options?.env },
-    }) as T & GateCommandOptions
+    } as T & GateCommandOptions
+    if (options?.isolatedRoot === undefined && defaults.isolatedRoot !== undefined) {
+      merged.isolatedRoot = defaults.isolatedRoot
+    }
+    if (merged.isolatedRoot !== undefined && merged.isolatedRoot.trim() === '') {
+      throw new GateError({
+        code: 'GATE_INVALID_OPTIONS',
+        message: 'isolatedRoot must be a non-empty path',
+      })
+    }
+    if (
+      merged.timeoutMs !== undefined &&
+      (!Number.isFinite(merged.timeoutMs) || merged.timeoutMs <= 0)
+    ) {
+      throw new GateError({
+        code: 'GATE_INVALID_OPTIONS',
+        message: 'timeoutMs must be a finite positive number',
+      })
+    }
+    return merged
+  }
 
   const up = async (options?: GateUpOptions): Promise<GateUpResult> => {
     const merged = withDefaults(options)
     assertDaemonAllowed(merged, [resultCommand(merged), 'up'])
-    await assertScopeDNSAllowed(merged)
     const scope = await prepareScope(merged.scope, merged)
+    await assertScopeDNSAllowed(merged, scope)
     const args = ['up', '--json', ...scope.args, ...dnsArgs(merged.dns)]
     if (merged.daemon) {
       args.push('--daemon')
     }
     const result = await runGate(args, merged)
-    const parsed = parseJSON<GateUpJSON>([resultCommand(merged), ...args], result.stdout)
+    const parsed = parseJSON<GateUpJSON>(result.command, result.stdout, isGateUpJSON)
     return {
       ...parsed,
       services: parsed.services.map((service) => enrichUpService(service)),
@@ -117,11 +141,11 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient<b
     const scope = await prepareScope(merged.scope, merged)
     const args = ['ls', '--json', ...scope.args]
     const result = await runGate(args, merged)
-    const parsed = parseJSON<GateLsJSON>([resultCommand(merged), ...args], result.stdout)
+    const parsed = parseJSON<GateLsJSON>(result.command, result.stdout, isGateLsJSON)
     return parsed.services.map((service) => ({
       ...service,
-      url: `https://${service.domain}`,
-      loopbackUrl: `http://127.0.0.1:${service.port}`,
+      url: service.url ?? `https://${service.domain}`,
+      loopbackUrl: service.loopbackUrl ?? `http://127.0.0.1:${service.port}`,
     }))
   }
 
@@ -131,15 +155,14 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient<b
   ): Promise<GateReadyResult> => {
     const merged = withDefaults(options)
     assertDaemonAllowed(merged, [resultCommand(merged), 'env', name])
-    const serviceOptions = { ...merged, dns: merged.dns ?? 'localhost' }
+    const serviceOptions = merged
     if (merged.up ?? true) {
-      await assertDNSAllowed(name, serviceOptions)
       await up(serviceOptions)
     }
     const scope = await prepareScope(serviceOptions.scope, serviceOptions)
     const args = ['env', '--json', ...scope.args, name]
     const result = await runGate(args, serviceOptions)
-    const parsed = parseJSON<GateEnvJSON>([resultCommand(serviceOptions), ...args], result.stdout)
+    const parsed = parseJSON<GateEnvJSON>(result.command, result.stdout, isGateEnvJSON)
     const { env, envKeys, daemon, diagnostics, ...service } = parsed
     return {
       service,
@@ -191,7 +214,7 @@ export function createGateClient(defaults: GateClientOptions = {}): GateClient<b
       const scope = await prepareScope(merged.scope, merged)
       const args = ['port', '--json', ...scope.args, service]
       const result = await runGate(args, merged)
-      return parseJSON<GatePortJSON>([resultCommand(merged), ...args], result.stdout).port
+      return parseJSON<GatePortJSON>(result.command, result.stdout, isGatePortJSON).port
     },
 
     ls,
@@ -211,24 +234,24 @@ function enrichUpService(
 ): GateUpResult['services'][number] {
   return {
     ...service,
-    url: `https://${service.domain}`,
-    loopbackUrl: `http://127.0.0.1:${service.port}`,
+    url: service.url ?? `https://${service.domain}`,
+    loopbackUrl: service.loopbackUrl ?? `http://127.0.0.1:${service.port}`,
   }
 }
 
 function resultCommand(options: GateCommandOptions): string {
-  return options.bin ?? options.env?.GATE_BIN ?? 'gate'
+  return options.bin ?? options.env?.GATE_BIN ?? process.env.GATE_BIN ?? 'gate'
 }
 
 function assertDaemonAllowed(
   options: GateCommandOptions & { daemon?: boolean },
   command: string[],
 ): void {
-  if (options.isolatedRoot && options.daemon === true) {
+  if (effectiveIsolatedRoot(options) !== undefined && options.daemon === true) {
     throw new GateError({
       code: 'GATE_INVALID_OPTIONS',
       message:
-        'isolatedRoot cannot be combined with daemon: true; use normal gate state for real dev launches, or use the CLI with explicit non-default listener addresses for isolated daemon tests',
+        'daemon: true cannot be combined with effective isolated gate state (isolatedRoot or GATE_ISOLATED_ROOT); use normal gate state for real dev launches, or use the CLI with explicit non-default listener addresses for isolated daemon tests',
       command,
     })
   }
@@ -240,9 +263,8 @@ async function resolveServiceSet(
   up: (options?: GateUpOptions) => Promise<GateUpResult>,
   ls: (options?: GateCommandOptions) => Promise<GateService[]>,
 ): Promise<{ selected: GateService; services: GateService[] }> {
-  const serviceOptions = { ...options, dns: options.dns ?? 'localhost' }
+  const serviceOptions = options
   if (options.up ?? true) {
-    await assertDNSAllowed(name, serviceOptions)
     await up(serviceOptions)
   }
   const services = await ls(serviceOptions)
@@ -307,6 +329,75 @@ function isGateService(value: unknown): value is GateService {
     typeof service.loopbackUrl === 'string' &&
     (service.route === 'active' || service.route === 'inactive') &&
     (service.upstream === 'live' || service.upstream === 'down')
+  )
+}
+
+function isGatePortJSON(value: unknown): value is GatePortJSON {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const port = value as Partial<GatePortJSON>
+  return typeof port.service === 'string' && Number.isInteger(port.port)
+}
+
+function isGateLsJSON(value: unknown): value is GateLsJSON {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const services = (value as { services?: unknown }).services
+  return Array.isArray(services) && services.every(isGateLsService)
+}
+
+function isGateLsService(value: unknown): value is GateLsJSON['services'][number] {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const service = value as GateLsJSON['services'][number]
+  return (
+    typeof service.service === 'string' &&
+    typeof service.domain === 'string' &&
+    Number.isInteger(service.port) &&
+    (service.route === 'active' || service.route === 'inactive') &&
+    (service.upstream === 'live' || service.upstream === 'down') &&
+    (service.url === undefined || typeof service.url === 'string') &&
+    (service.loopbackUrl === undefined || typeof service.loopbackUrl === 'string')
+  )
+}
+
+function isGateUpJSON(value: unknown): value is GateUpJSON {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const up = value as { reloaded?: unknown; services?: unknown }
+  return (
+    typeof up.reloaded === 'boolean' &&
+    Array.isArray(up.services) &&
+    up.services.every((service) => {
+      if (!service || typeof service !== 'object') {
+        return false
+      }
+      const item = service as GateUpJSON['services'][number]
+      return (
+        typeof item.service === 'string' &&
+        typeof item.domain === 'string' &&
+        Number.isInteger(item.port) &&
+        (item.url === undefined || typeof item.url === 'string') &&
+        (item.loopbackUrl === undefined || typeof item.loopbackUrl === 'string')
+      )
+    })
+  )
+}
+
+function isGateEnvJSON(value: unknown): value is GateEnvJSON {
+  if (!isGateService(value)) {
+    return false
+  }
+  const env = value as GateEnvJSON
+  return (
+    isStringRecord(env.env) &&
+    (env.envKeys === undefined || isStringArray(env.envKeys)) &&
+    (env.daemon === undefined || isGateDaemonReadiness(env.daemon)) &&
+    (env.diagnostics === undefined || isGateDiagnostics(env.diagnostics))
   )
 }
 

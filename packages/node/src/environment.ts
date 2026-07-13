@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path'
+import { GateError } from './errors.js'
 import type { GateClientOptions } from './types.js'
 
 export function gateProcessEnv(options: GateClientOptions = {}): NodeJS.ProcessEnv {
@@ -16,6 +17,11 @@ export function gateOptionEnv(options: GateClientOptions = {}): NodeJS.ProcessEn
   }
 }
 
+export function effectiveIsolatedRoot(options: GateClientOptions = {}): string | undefined {
+  const root = gateProcessEnv(options).GATE_ISOLATED_ROOT
+  return typeof root === 'string' && root.trim() !== '' ? root : undefined
+}
+
 function isolatedRootEnv(options: GateClientOptions): NodeJS.ProcessEnv {
   const root = resolveIsolatedRoot(options)
   if (!root) {
@@ -31,8 +37,14 @@ function isolatedRootEnv(options: GateClientOptions): NodeJS.ProcessEnv {
 }
 
 function resolveIsolatedRoot(options: GateClientOptions): string | undefined {
-  if (!options.isolatedRoot) {
+  if (options.isolatedRoot === undefined) {
     return undefined
+  }
+  if (options.isolatedRoot.trim() === '') {
+    throw new GateError({
+      code: 'GATE_INVALID_OPTIONS',
+      message: 'isolatedRoot must be a non-empty path',
+    })
   }
   return resolve(options.cwd ?? process.cwd(), options.isolatedRoot)
 }

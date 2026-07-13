@@ -3,8 +3,6 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { expect, test } from 'vitest'
 import { createGateClient, GateError, isGateError, resolveGateBinary } from './index.js'
-import { serviceEnvDeclarations } from './config.js'
-import { parseProjectConfig, resolveServiceDomain } from './preflight.js'
 
 test('resolveGateBinary prefers explicit bin, env, then package', () => {
   expect(resolveGateBinary({ bin: '/tmp/gate' })).toBe('/tmp/gate')
@@ -54,8 +52,48 @@ test('client service runs up then reads service metadata', async () => {
   expect(service.loopbackUrl).toBe('http://127.0.0.1:4312')
 
   const calls = await readFile(log, 'utf8')
-  expect(calls).toMatch(/up --json --dns localhost/)
+  expect(calls).toMatch(/^up --json$/m)
   expect(calls).toMatch(/ls --json/)
+})
+
+test('client preserves listener-aware URLs from ls', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'), {
+    services: [
+      {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost:9443',
+      },
+    ],
+  })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  const [listed] = await client.ls()
+  const selected = await client.service('web', { up: false })
+  expect(listed?.url).toBe('https://web.demo.localhost:9443')
+  expect(selected.url).toBe('https://web.demo.localhost:9443')
+})
+
+test('client preserves listener-aware URLs from up', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'), {
+    services: [
+      {
+        service: 'web',
+        domain: 'web.demo.localhost',
+        port: 4312,
+        url: 'https://web.demo.localhost:9443',
+      },
+    ],
+  })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  const result = await client.up()
+
+  expect(result.services[0]?.url).toBe('https://web.demo.localhost:9443')
+  expect(result.services[0]?.loopbackUrl).toBe('http://127.0.0.1:4312')
 })
 
 test('client service method is safe to destructure', async () => {
@@ -96,9 +134,10 @@ test('client service accepts inline project config without gate.toml', async () 
 
   const calls = await readFile(log, 'utf8')
   const paths = configPaths(calls)
-  expect(paths).toHaveLength(2)
+  expect(paths).toHaveLength(3)
   expect(new Set(paths).size).toBe(1)
-  expect(calls).toMatch(/up --json --config \S+ --dns localhost/)
+  expect(calls).toMatch(/up --json --config \S+/)
+  expect(calls).not.toMatch(/up [^\n]*--dns/)
   expect(calls).toMatch(/ls --json --config \S+/)
   expect(await readFile(paths[0] ?? '', 'utf8')).toBe(
     `[project]
@@ -142,7 +181,7 @@ test('client commands pass stable generated config path for inline project confi
 
   const calls = await readFile(log, 'utf8')
   const paths = configPaths(calls)
-  expect(paths).toHaveLength(4)
+  expect(paths).toHaveLength(5)
   expect(new Set(paths).size).toBe(1)
   expect(calls).toMatch(/up --json --config \S+/)
   expect(calls).toMatch(/ls --json --config \S+/)
@@ -208,9 +247,46 @@ test('client rejects isolatedRoot with daemon true before invoking gate', async 
 
   await expect(client.up({ daemon: true } as any)).rejects.toMatchObject({
     code: 'GATE_INVALID_OPTIONS',
-    message: expect.stringContaining('isolatedRoot cannot be combined with daemon: true'),
+    message: expect.stringContaining('cannot be combined with effective isolated gate state'),
   })
 
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client rejects options env isolated root with daemon true', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { GATE_ISOLATED_ROOT: '.gate-agent' },
+  })
+
+  await expect(client.up({ daemon: true })).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+  })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client rejects ambient isolated root with daemon true', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const previous = process.env.GATE_ISOLATED_ROOT
+  process.env.GATE_ISOLATED_ROOT = join(dir, '.gate-agent')
+  try {
+    const client = createGateClient({ bin: gate, cwd: dir })
+    await expect(client.up({ daemon: true })).rejects.toMatchObject({
+      code: 'GATE_INVALID_OPTIONS',
+    })
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GATE_ISOLATED_ROOT
+    } else {
+      process.env.GATE_ISOLATED_ROOT = previous
+    }
+  }
   await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
 })
 
@@ -227,6 +303,30 @@ test('client allows isolatedRoot with daemon false', async () => {
   expect(calls).not.toMatch(/--daemon/)
 })
 
+test('per-call undefined isolatedRoot preserves client default', async () => {
+  const dir = await tempDir()
+  const envLog = join(dir, 'env.json')
+  const gate = await fakeGate(dir, join(dir, 'args.log'), { envLog })
+  const client = createGateClient({ bin: gate, cwd: dir, isolatedRoot: '.gate-agent' })
+
+  await client.ls({ isolatedRoot: undefined } as any)
+  const env = JSON.parse(await readFile(envLog, 'utf8')) as Record<string, string>
+  expect(env.GATE_ISOLATED_ROOT).toBe(join(dir, '.gate-agent'))
+})
+
+test('client rejects empty isolatedRoot before invoking gate', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(client.ls({ isolatedRoot: '' } as any)).rejects.toMatchObject({
+    code: 'GATE_INVALID_OPTIONS',
+    message: expect.stringContaining('non-empty path'),
+  })
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
 test('client rejects per-call isolatedRoot with daemon true before invoking gate', async () => {
   const dir = await tempDir()
   const log = join(dir, 'args.log')
@@ -237,7 +337,7 @@ test('client rejects per-call isolatedRoot with daemon true before invoking gate
     client.up({ isolatedRoot: '.gate-agent', daemon: true } as any),
   ).rejects.toMatchObject({
     code: 'GATE_INVALID_OPTIONS',
-    message: expect.stringContaining('isolatedRoot cannot be combined with daemon: true'),
+    message: expect.stringContaining('cannot be combined with effective isolated gate state'),
   })
 
   await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
@@ -371,50 +471,6 @@ route_env = "PUBLIC_API_URL"
 
   expect(env.API_URL).toBe('http://127.0.0.1:4313')
   expect(env.PUBLIC_API_URL).toBe('https://api.demo.localhost')
-})
-
-test('file-backed env declaration discovery skips non-file gate config', async () => {
-  const dir = await tempDir()
-  const nested = join(dir, 'app')
-  await mkdir(join(nested, 'gate.toml'), { recursive: true })
-  await writeFile(
-    join(dir, 'gate.toml'),
-    `[project]
-name = "demo"
-
-[services.api]
-env = "API_URL"
-route_env = "PUBLIC_API_URL"
-`,
-  )
-
-  const declarations = await serviceEnvDeclarations(undefined, { cwd: nested })
-
-  expect(declarations.get('api')).toEqual({
-    env: ['API_URL'],
-    routeEnv: ['PUBLIC_API_URL'],
-  })
-})
-
-test('file-backed env declaration discovery stops at git boundary', async () => {
-  const dir = await tempDir()
-  const nested = join(dir, 'repo', 'app')
-  await mkdir(join(dir, 'repo', '.git'), { recursive: true })
-  await mkdir(nested, { recursive: true })
-  await writeFile(
-    join(dir, 'gate.toml'),
-    `[project]
-name = "demo"
-
-[services.api]
-env = "API_URL"
-route_env = "PUBLIC_API_URL"
-`,
-  )
-
-  const declarations = await serviceEnvDeclarations(undefined, { cwd: nested })
-
-  expect(declarations.size).toBe(0)
 })
 
 test('client env project-only scope without config returns registry-derived values', async () => {
@@ -884,7 +940,41 @@ test('client maps invalid JSON', async () => {
   const gate = await fakeGate(dir, join(dir, 'args.log'), { mode: 'invalid-json' })
   const client = createGateClient({ bin: gate, cwd: dir })
 
+  await expect(client.ls()).rejects.toMatchObject({
+    code: 'GATE_JSON_PARSE_FAILED',
+    command: [gate, 'ls', '--json'],
+  })
+})
+
+test('client rejects valid JSON with the wrong response shape', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'), { mode: 'wrong-shape' })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
   await expect(client.ls()).rejects.toMatchObject({ code: 'GATE_JSON_PARSE_FAILED' })
+  await expect(client.up()).rejects.toMatchObject({ code: 'GATE_JSON_PARSE_FAILED' })
+})
+
+test('client maps gate not_allocated failures', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'), { mode: 'not-allocated' })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(client.port('missing')).rejects.toMatchObject({
+    code: 'GATE_SERVICE_NOT_FOUND',
+    gateCode: 'not_allocated',
+  })
+})
+
+test('client maps gate no_service failures', async () => {
+  const dir = await tempDir()
+  const gate = await fakeGate(dir, join(dir, 'args.log'), { mode: 'no-service' })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(client.port('missing')).rejects.toMatchObject({
+    code: 'GATE_SERVICE_NOT_FOUND',
+    gateCode: 'no_service',
+  })
 })
 
 test('default DNS preflight rejects custom domains before mutating up', async () => {
@@ -898,7 +988,21 @@ test('default DNS preflight rejects custom domains before mutating up', async ()
   const client = createGateClient({ bin: gate, cwd: dir })
 
   await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
+})
+
+test('default DNS preflight preserves implicit global custom-domain scope', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log, {
+    services: [{ service: 'web', domain: 'web.example.test', port: 4312 }],
+  })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(client.service('web')).resolves.toMatchObject({ domain: 'web.example.test' })
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/^__resolve-project(?: |$)/m)
+  expect(calls).toMatch(/^up(?: |$)/m)
 })
 
 test('default DNS preflight rejects single-quoted custom domains before mutating up', async () => {
@@ -912,7 +1016,7 @@ test('default DNS preflight rejects single-quoted custom domains before mutating
   const client = createGateClient({ bin: gate, cwd: dir })
 
   await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
 })
 
 test('default DNS preflight discovers parent gate config', async () => {
@@ -928,7 +1032,7 @@ test('default DNS preflight discovers parent gate config', async () => {
   const client = createGateClient({ bin: gate, cwd: nested })
 
   await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
 })
 
 test('default DNS preflight skips non-file gate config while walking upward', async () => {
@@ -944,7 +1048,7 @@ test('default DNS preflight skips non-file gate config while walking upward', as
   const client = createGateClient({ bin: gate, cwd: nested })
 
   await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
 })
 
 test('default DNS preflight stops at git boundary like gate config discovery', async () => {
@@ -960,15 +1064,21 @@ test('default DNS preflight stops at git boundary like gate config discovery', a
   )
   const client = createGateClient({ bin: gate, cwd: nested })
 
-  await expect(client.service('web')).rejects.toMatchObject({ code: 'GATE_COMMAND_FAILED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expect(client.service('web')).resolves.toMatchObject({ domain: 'web.demo.localhost' })
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/^__resolve-project(?: |$)/m)
+  expect(calls).toMatch(/^up(?: |$)/m)
 })
 
 test('default DNS preflight rejects custom inline config domains before mutating up', async () => {
   const dir = await tempDir()
   const log = join(dir, 'args.log')
   const gate = await fakeGate(dir, log)
-  const client = createGateClient({ bin: gate, cwd: dir })
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { GATE_NODE_CACHE_DIR: join(dir, 'cache') },
+  })
 
   await expect(
     client.service('web', {
@@ -981,14 +1091,18 @@ test('default DNS preflight rejects custom inline config domains before mutating
       },
     }),
   ).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
 })
 
 test('up rejects custom inline config domains before mutating routes', async () => {
   const dir = await tempDir()
   const log = join(dir, 'args.log')
   const gate = await fakeGate(dir, log)
-  const client = createGateClient({ bin: gate, cwd: dir })
+  const client = createGateClient({
+    bin: gate,
+    cwd: dir,
+    env: { GATE_NODE_CACHE_DIR: join(dir, 'cache') },
+  })
 
   await expect(
     client.up({
@@ -1001,7 +1115,7 @@ test('up rejects custom inline config domains before mutating routes', async () 
       },
     }),
   ).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
 })
 
 test('up allows custom inline config domains with explicit DNS mode', async () => {
@@ -1026,7 +1140,37 @@ test('up allows custom inline config domains with explicit DNS mode', async () =
   })
 
   const calls = await readFile(log, 'utf8')
-  expect(calls).toMatch(/up --json --config \S+ --dns localhost/)
+  expect(calls).toMatch(/up --json --config \S+/)
+})
+
+test('implicit global DNS preserves stored mode without forcing localhost', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log, {
+    services: [{ service: 'web', domain: 'web.example.test', port: 4312 }],
+  })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await client.up({ scope: { kind: 'global' } })
+
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/^__resolve-project --global$/m)
+  expect(calls).toMatch(/^up --json --global$/m)
+  expect(calls).not.toMatch(/^up [^\n]*--dns/m)
+})
+
+test('explicit localhost DNS rejects custom global reservations before up', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log, {
+    services: [{ service: 'web', domain: 'web.example.test', port: 4312 }],
+  })
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  await expect(client.up({ scope: { kind: 'global' }, dns: 'localhost' })).rejects.toMatchObject({
+    code: 'GATE_DNS_REQUIRED',
+  })
+  await expectResolverWithoutUp(log)
 })
 
 test('inline DNS preflight expands env references before checking localhost', async () => {
@@ -1050,7 +1194,7 @@ test('inline DNS preflight expands env references before checking localhost', as
   })
 
   const calls = await readFile(log, 'utf8')
-  expect(calls).toMatch(/up --json --config \S+ --dns localhost/)
+  expect(calls).toMatch(/up --json --config \S+/)
 })
 
 test('inline DNS preflight rejects env references that resolve to custom domains', async () => {
@@ -1060,7 +1204,7 @@ test('inline DNS preflight rejects env references that resolve to custom domains
   const client = createGateClient({
     bin: gate,
     cwd: dir,
-    env: { BASE_DOMAIN: 'demo.test' },
+    env: { BASE_DOMAIN: 'demo.test', GATE_NODE_CACHE_DIR: join(dir, 'cache') },
   })
 
   await expect(
@@ -1074,7 +1218,7 @@ test('inline DNS preflight rejects env references that resolve to custom domains
       },
     }),
   ).rejects.toMatchObject({ code: 'GATE_DNS_REQUIRED' })
-  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+  await expectResolverWithoutUp(log)
 })
 
 test('inline project config rejects invalid scope combinations before running gate', async () => {
@@ -1092,6 +1236,27 @@ test('inline project config rejects invalid scope combinations before running ga
       scope: { kind: 'global', config } as never,
     }),
   ).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+  for (const scope of [
+    { kind: 'typo' },
+    { kind: 'project', project: '' },
+    { kind: 'project', config: '  ' },
+    { kind: 'project', typo: true },
+  ]) {
+    await expect(client.ls({ scope: scope as never })).rejects.toMatchObject({
+      code: 'GATE_INVALID_OPTIONS',
+    })
+  }
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
+test('client rejects non-positive and non-finite timeoutMs before spawning gate', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  for (const timeoutMs of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) {
+    const client = createGateClient({ bin: gate, cwd: dir, timeoutMs })
+    await expect(client.ls()).rejects.toMatchObject({ code: 'GATE_INVALID_OPTIONS' })
+  }
   await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
 })
 
@@ -1135,15 +1300,53 @@ test('inline project config rejects unsupported fields before running gate', asy
   await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
 })
 
+test('inline project config rejects project and service names outside CLI grammar', async () => {
+  const dir = await tempDir()
+  const log = join(dir, 'args.log')
+  const gate = await fakeGate(dir, log)
+  const client = createGateClient({ bin: gate, cwd: dir })
+
+  for (const config of [
+    { name: ' demo', services: { web: {} } },
+    { name: 'demo', services: { 'web.app': {} } },
+    { name: 'demo', services: { stop: {} } },
+    { name: 'demo', services: { web: { env: 'PORT' } } },
+    { name: 'demo', services: { web: { routeEnv: 'GATE_WEB_URL' } } },
+    { name: 'demo', services: { web: { env: 'SHARED' }, api: { routeEnv: 'SHARED' } } },
+    { name: 'demo', services: { web: { env: ' SHARED ' }, api: { routeEnv: 'SHARED' } } },
+  ]) {
+    await expect(client.up({ scope: { config } as never })).rejects.toMatchObject({
+      code: 'GATE_INVALID_OPTIONS',
+    })
+  }
+  await expect(readFile(log, 'utf8')).rejects.toThrow(/ENOENT/)
+})
+
 test('isGateError narrows by code', () => {
   const error = new GateError({ code: 'GATE_DNS_REQUIRED', message: 'dns required' })
 
   expect(isGateError(error)).toBe(true)
   expect(isGateError(error, 'GATE_DNS_REQUIRED')).toBe(true)
   expect(isGateError(error, 'GATE_PERMISSION_REQUIRED')).toBe(false)
-  expect(isGateError({ name: 'GateError', code: 'GATE_DNS_REQUIRED' }, 'GATE_DNS_REQUIRED')).toBe(
-    true,
-  )
+  expect(isGateError({ name: 'GateError', code: 'GATE_DNS_REQUIRED' })).toBe(false)
+  expect(
+    isGateError({
+      name: 'GateError',
+      code: 'GATE_DNS_REQUIRED',
+      message: 'dns required',
+      command: ['gate', 'up'],
+      nextActions: [],
+    }),
+  ).toBe(true)
+  expect(
+    isGateError({
+      name: 'GateError',
+      code: 'GATE_DNS_REQUIRED',
+      message: 'dns required',
+      command: ['gate'],
+      nextActions: [{ label: 123 }],
+    }),
+  ).toBe(false)
   expect(isGateError({ name: 'GateError', code: 'NOPE' })).toBe(false)
 })
 
@@ -1167,27 +1370,12 @@ test('timeout still aborts when caller passes a signal', async () => {
   const dir = await tempDir()
   const gate = await fakeGate(dir, join(dir, 'args.log'), { mode: 'hang' })
   const signal = new AbortController().signal
-  const client = createGateClient({ bin: gate, cwd: dir, signal, timeoutMs: 10 })
+  const client = createGateClient({ bin: gate, cwd: dir, signal, timeoutMs: 100 })
 
-  await expect(client.ls()).rejects.toMatchObject({ code: 'GATE_COMMAND_FAILED' })
-})
-
-test('project config parser resolves service domains', () => {
-  const config = parseProjectConfig(`[project]
-name = "demo"
-base = "demo.localhost"
-
-[services.web]
-
-[services.root]
-host = "."
-
-[services.api]
-domain = "api.example.test"
-`)
-  expect(resolveServiceDomain(config, 'web')).toBe('web.demo.localhost')
-  expect(resolveServiceDomain(config, 'root')).toBe('demo.localhost')
-  expect(resolveServiceDomain(config, 'api')).toBe('api.example.test')
+  await expect(client.ls()).rejects.toMatchObject({
+    code: 'GATE_COMMAND_FAILED',
+    cause: expect.objectContaining({ name: 'AbortError' }),
+  })
 })
 
 async function tempDir(): Promise<string> {
@@ -1198,7 +1386,7 @@ async function fakeGate(
   dir: string,
   log: string,
   options: {
-    mode?: 'permission' | 'invalid-json' | 'hang'
+    mode?: 'permission' | 'invalid-json' | 'wrong-shape' | 'no-service' | 'not-allocated' | 'hang'
     envLog?: string
     services?: Array<{ service: string; domain: string; port: number; url?: string }>
   } = {},
@@ -1208,7 +1396,8 @@ async function fakeGate(
     { service: 'web', domain: 'web.demo.localhost', port: 4312 },
   ]
   const body = `#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)}, args.join(" ") + "\\n");
 if (${JSON.stringify(options.envLog)}) {
@@ -1237,17 +1426,44 @@ if (${JSON.stringify(options.mode)} === "invalid-json") {
   console.log("not json");
   process.exit(0);
 }
+if (${JSON.stringify(options.mode)} === "wrong-shape") {
+  console.log(JSON.stringify({ services: null }));
+  process.exit(0);
+}
+if (${JSON.stringify(options.mode)} === "no-service") {
+  console.error(JSON.stringify({ error: { code: "no_service", message: "service not found" } }));
+  process.exit(2);
+}
+if (${JSON.stringify(options.mode)} === "not-allocated") {
+  console.error(JSON.stringify({ error: { code: "not_allocated", message: "service not allocated" } }));
+  process.exit(2);
+}
 if (${JSON.stringify(options.mode)} === "hang") {
-  await new Promise(() => {});
+	setInterval(() => {}, 1000);
+	await new Promise(() => {});
 }
 const cmd = args[0];
 const services = ${JSON.stringify(services)};
 const loopbackUrl = (service) => "http://127.0.0.1:" + service.port;
 const routeUrl = (service) => service.url ?? ("https://" + service.domain);
+const isFile = (path) => {
+	try { return statSync(path).isFile(); } catch { return false; }
+};
+const discoverConfig = () => {
+	let current = resolve(process.cwd());
+	while (true) {
+		const candidate = join(current, "gate.toml");
+		if (isFile(candidate)) return candidate;
+		if (existsSync(join(current, ".git"))) return undefined;
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+};
 const configPath = (() => {
   const index = args.indexOf("--config");
   if (index !== -1) return args[index + 1];
-  return existsSync("gate.toml") ? "gate.toml" : undefined;
+	return discoverConfig();
 })();
 const configBody = configPath && existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
 const projectName = (() => {
@@ -1255,6 +1471,42 @@ const projectName = (() => {
   return match?.[1];
 })();
 const includeDeclarations = Boolean(configBody.includes("[services.api]") && configBody.includes("env") && projectName === "demo");
+const scalar = (raw) => {
+	const value = raw.trim();
+	const unquoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))
+		? value.slice(1, -1)
+		: value;
+	return unquoted.replace(/[$][{]([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?[}]/g, (_, key, fallback) => process.env[key] || fallback || "");
+};
+const resolvedConfigServices = () => {
+	let base;
+	let section;
+	const found = new Map();
+	for (const raw of configBody.split(/\\r?\\n/)) {
+		const line = raw.replace(/#.*$/, "").trim();
+		if (!line) continue;
+		if (line === "[project]") { section = "project"; continue; }
+		const header = line.match(/^\\[services\\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\\]$/);
+		if (header) {
+			section = header[1] || header[2] || header[3];
+			found.set(section, {});
+			continue;
+		}
+		if (line.startsWith("[")) { section = undefined; continue; }
+		const assignment = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+)$/);
+		if (!assignment) continue;
+		const key = assignment[1];
+		const value = scalar(assignment[2]);
+		if (section === "project" && key === "base") base = value;
+		if (section && section !== "project" && (key === "domain" || key === "host")) {
+			found.get(section)[key] = value;
+		}
+	}
+	return [...found.entries()].map(([service, config]) => ({
+		service,
+		domain: config.domain || ((config.host === "." ? "" : (config.host || service) + ".") + base),
+	}));
+};
 const envFor = (selected) => {
   const env = { PORT: String(selected.port) };
   for (const service of services) {
@@ -1270,6 +1522,14 @@ const envFor = (selected) => {
   }
   return env;
 };
+if (cmd === "__resolve-project") {
+	console.log(JSON.stringify({
+		scope: args.includes("--global") || !configBody ? "global" : "project",
+		project: projectName || "demo",
+		services: configBody ? resolvedConfigServices() : services,
+	}));
+	process.exit(0);
+}
 if (cmd === "up") {
   console.log(JSON.stringify({ project: "demo", reloaded: false, services: services.map((service) => ({ ...service, allocated: true })) }));
   process.exit(0);
@@ -1333,6 +1593,12 @@ async function fakeChild(dir: string, body: string): Promise<string> {
   await writeFile(path, body)
   await chmod(path, 0o755)
   return path
+}
+
+async function expectResolverWithoutUp(log: string): Promise<void> {
+  const calls = await readFile(log, 'utf8')
+  expect(calls).toMatch(/^__resolve-project(?: |$)/m)
+  expect(calls).not.toMatch(/^up(?: |$)/m)
 }
 
 function configPaths(calls: string): string[] {

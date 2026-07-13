@@ -80,7 +80,7 @@ export interface GateInlineServiceConfig {
  * @public
  */
 export interface GateInlineProjectConfig {
-  /** Project name used for project-scoped reservations. */
+  /** Project name used for project-scoped reservations; no `/` or surrounding whitespace. */
   name: string
 
   /**
@@ -91,7 +91,7 @@ export interface GateInlineProjectConfig {
    */
   base?: string
 
-  /** Service declarations keyed by service name. */
+  /** Service declarations keyed by `[A-Za-z0-9_][A-Za-z0-9_-]*`; `ls` and `stop` are reserved. */
   services: Record<string, GateInlineServiceConfig>
 }
 
@@ -283,7 +283,9 @@ export interface GateUpOptions extends GateCommandOptions {
   /**
    * DNS mode used when route activation requires DNS changes.
    *
-   * @defaultValue `"localhost"` for APIs that activate a single service.
+   * When omitted for project or inline scopes, the Node API enforces
+   * `.localhost` domains before activation. When omitted for global scope,
+   * gate preserves each reservation's stored DNS mode.
    */
   dns?: GateDNSMode
 }

@@ -5,6 +5,7 @@ import { resolveGateBinary } from './binary.js'
 import { gateProcessEnv } from './environment.js'
 
 export interface CommandResult {
+  command: string[]
   stdout: string
   stderr: string
 }
@@ -72,7 +73,7 @@ export async function runGate(
     child.on('close', (exitCode) => {
       finish(() => {
         if (exitCode === 0) {
-          resolve({ stdout, stderr })
+          resolve({ command, stdout, stderr })
           return
         }
         reject(errorFromGateFailure(command, exitCode ?? 1, stdout, stderr))
@@ -81,9 +82,17 @@ export async function runGate(
   })
 }
 
-export function parseJSON<T>(command: string[], stdout: string): T {
+export function parseJSON<T>(
+  command: string[],
+  stdout: string,
+  validate?: (value: unknown) => value is T,
+): T {
   try {
-    return JSON.parse(stdout) as T
+    const parsed: unknown = JSON.parse(stdout)
+    if (validate && !validate(parsed)) {
+      throw new TypeError('unexpected gate JSON response shape')
+    }
+    return parsed as T
   } catch (cause) {
     throw new GateError({
       code: 'GATE_JSON_PARSE_FAILED',
@@ -103,7 +112,12 @@ function errorFromGateFailure(
 ): GateError {
   const gateEnvelope = parseGateError(stderr)
   return new GateError({
-    code: exitCode === 3 ? 'GATE_PERMISSION_REQUIRED' : 'GATE_COMMAND_FAILED',
+    code:
+      gateEnvelope?.code === 'no_service' || gateEnvelope?.code === 'not_allocated'
+        ? 'GATE_SERVICE_NOT_FOUND'
+        : exitCode === 3
+          ? 'GATE_PERMISSION_REQUIRED'
+          : 'GATE_COMMAND_FAILED',
     message: gateEnvelope?.message ?? (stderr.trim() || `gate exited with code ${exitCode}`),
     command,
     gateCode: gateEnvelope?.code,
