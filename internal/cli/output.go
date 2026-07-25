@@ -145,7 +145,7 @@ func errorHint(code string) string {
 	case "low_port_capability_missing",
 		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
-		"setcap_failed", "setcap_not_found", "getcap_failed", "getcap_not_found", "sudo_not_found":
+		"capability_apply_failed", "capability_xattr_failed", "sudo_failed", "sudo_not_found":
 		return "Run `gate daemon setup` on Linux to configure ports 80 and 443."
 	case "daemon_start":
 		return "Check the requested listener addresses or stop the conflicting daemon first."
@@ -172,7 +172,7 @@ func errorNextActions(code string) []nextAction {
 	case "low_port_capability_missing",
 		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
-		"setcap_failed", "setcap_not_found", "getcap_failed", "getcap_not_found", "sudo_not_found":
+		"capability_apply_failed", "capability_xattr_failed", "sudo_failed", "sudo_not_found":
 		return []nextAction{{Label: "Configure low-port access", Command: "gate daemon setup"}}
 	case "daemon_start", "reload_failed":
 		return []nextAction{{Label: "Inspect daemon", Command: "gate daemon status --json"}}

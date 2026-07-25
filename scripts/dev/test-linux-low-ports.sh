@@ -45,10 +45,9 @@ find_capability_tool() {
 }
 
 getcap_bin="$(find_capability_tool getcap || true)"
-setcap_bin="$(find_capability_tool setcap || true)"
 sudo_bin="$(find_capability_tool sudo || true)"
-if [[ -z "$getcap_bin" || -z "$setcap_bin" || -z "$sudo_bin" ]]; then
-  skip_or_fail "trusted getcap, setcap, or sudo tool unavailable"
+if [[ -z "$getcap_bin" || -z "$sudo_bin" ]]; then
+  skip_or_fail "trusted getcap or sudo tool unavailable"
 fi
 if ! "$sudo_bin" -n true >/dev/null 2>&1; then
   skip_or_fail "passwordless non-interactive sudo unavailable"

@@ -39,8 +39,15 @@ func stubDoctorAfterUpgrade(t *testing.T, report doctorReport) {
 func stubUpgradeRuntimeGOOS(t *testing.T, goos string) {
 	t.Helper()
 	oldGOOS := runtimeGOOS
-	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+	oldTarget := lowPortCapabilityTargetFunc
+	t.Cleanup(func() {
+		runtimeGOOS = oldGOOS
+		lowPortCapabilityTargetFunc = oldTarget
+	})
 	runtimeGOOS = func() string { return goos }
+	lowPortCapabilityTargetFunc = func(path string) (*lowPortCapabilityTarget, error) {
+		return &lowPortCapabilityTarget{Path: path}, nil
+	}
 }
 
 func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
@@ -225,6 +232,9 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 	var events []string
 	lowPortCapabilityTargetFunc = func(path string) (*lowPortCapabilityTarget, error) {
 		events = append(events, "inspect:"+path)
+		if path == "/home/linuxbrew/.linuxbrew/bin/gate" {
+			path = "/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate"
+		}
 		return &lowPortCapabilityTarget{Path: path}, nil
 	}
 	upgradeExecutablePathFunc = func() string {
@@ -264,10 +274,11 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 		"inspect:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.3/bin/gate",
 		"brew-update",
 		"brew-upgrade",
-		"setup:/home/linuxbrew/.linuxbrew/bin/gate",
 		"inspect:/home/linuxbrew/.linuxbrew/bin/gate",
-		"version:/home/linuxbrew/.linuxbrew/bin/gate",
-		"restart:/home/linuxbrew/.linuxbrew/bin/gate",
+		"setup:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
+		"inspect:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
+		"version:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
+		"restart:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
 	}
 	if !slices.Equal(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)

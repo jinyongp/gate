@@ -18,7 +18,7 @@ type fakeLowPortCapabilityManager struct {
 	applied     int
 }
 
-func (m *fakeLowPortCapabilityManager) Inspect(string) (lowPortCapabilityInspection, error) {
+func (m *fakeLowPortCapabilityManager) Inspect(*lowPortCapabilityTarget) (lowPortCapabilityInspection, error) {
 	if m.inspectErr != nil {
 		return lowPortCapabilityInspection{}, m.inspectErr
 	}

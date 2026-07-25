@@ -344,6 +344,7 @@ func TestCompletionRootHidesInternalCommands(t *testing.T) {
 	assertInOrder(t, out, "init", "up", "ls", "port", "env", "run", "down", "expose", "daemon", "add", "rm", "clear", "prune")
 	assertKeepOrderDirective(t, out)
 	assertCompletionExcludes(t, out, "__serve")
+	assertCompletionExcludes(t, out, "__set-low-port-capability")
 }
 
 func TestCompletionCaExportOutUsesFileCompletion(t *testing.T) {

@@ -120,15 +120,27 @@ func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVe
 		if err := runUpgradeCommand(stderr, "upgrading Homebrew package", "brew upgrade jinyongp/tap/gate", upgradeHomebrewCommandFunc(ctx)); err != nil {
 			return "", err
 		}
-		upgradedExecutable, err := homebrewLinkedGatePath(previousExecutable)
+		upgradedLink, err := homebrewLinkedGatePath(previousExecutable)
 		if err != nil {
 			return "", err
 		}
+		upgradedTarget, err := lowPortCapabilityTargetFunc(upgradedLink)
+		if err != nil {
+			return "", fmt.Errorf("resolve upgraded Homebrew gate executable: %w", err)
+		}
+		defer upgradedTarget.Close()
+		upgradedExecutable := upgradedTarget.Path
 		if err := preserveUpgradeLowPortAccess(ctx, stderr, upgradedExecutable, preserveLowPorts, true); err != nil {
 			return "", err
 		}
+		if err := upgradedTarget.validateIdentity(); err != nil {
+			return "", incompleteLowPortUpgradeError(err)
+		}
 		if err := verifyUpgradedVersion(ctx, upgradedExecutable, expectedVersion); err != nil {
 			return "", err
+		}
+		if err := upgradedTarget.validateIdentity(); err != nil {
+			return "", fmt.Errorf("upgraded Homebrew gate executable changed after verification: %w", err)
 		}
 		return upgradedExecutable, nil
 	}
@@ -173,7 +185,7 @@ func inspectUpgradeLowPortIntent(path string) (bool, error) {
 		return false, fmt.Errorf("inspect low-port access before upgrade: %w", err)
 	}
 	defer target.Close()
-	inspection, err := lowPortCapabilityManagerFunc().Inspect(target.operationPath())
+	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
 	if err != nil {
 		return false, fmt.Errorf("inspect low-port access before upgrade: %w", err)
 	}
@@ -215,7 +227,7 @@ func preserveUpgradeLowPortAccess(
 		return incompleteLowPortUpgradeError(err)
 	}
 	defer target.Close()
-	inspection, err := lowPortCapabilityManagerFunc().Inspect(target.operationPath())
+	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
 	if err != nil {
 		return incompleteLowPortUpgradeError(err)
 	}

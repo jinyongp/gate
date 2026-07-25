@@ -29,7 +29,7 @@ type lowPortCapabilityInspection struct {
 }
 
 type lowPortCapabilityManager interface {
-	Inspect(path string) (lowPortCapabilityInspection, error)
+	Inspect(target *lowPortCapabilityTarget) (lowPortCapabilityInspection, error)
 	Apply(target *lowPortCapabilityTarget) error
 }
 
@@ -43,16 +43,6 @@ func (t *lowPortCapabilityTarget) Close() {
 	if t != nil && t.File != nil {
 		_ = t.File.Close()
 	}
-}
-
-func (t *lowPortCapabilityTarget) operationPath() string {
-	if t == nil {
-		return ""
-	}
-	if t.File != nil && runtimeGOOS() == "linux" {
-		return fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), t.File.Fd())
-	}
-	return t.Path
 }
 
 func (t *lowPortCapabilityTarget) validateIdentity() error {
@@ -126,7 +116,7 @@ func daemonSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer target.Close()
 	manager := lowPortCapabilityManagerFunc()
-	inspection, err := manager.Inspect(target.operationPath())
+	inspection, err := manager.Inspect(target)
 	if err != nil {
 		return failLowPortCapability(stderr, *jsonOut, "capability_inspect", err)
 	}
@@ -166,7 +156,7 @@ func daemonSetup(args []string, stdout, stderr io.Writer) int {
 	if err := target.validateIdentity(); err != nil {
 		return failLowPortCapability(stderr, *jsonOut, "capability_target_changed", err)
 	}
-	inspection, err = manager.Inspect(target.operationPath())
+	inspection, err = manager.Inspect(target)
 	if err != nil {
 		return failLowPortCapability(stderr, *jsonOut, "capability_verify", err)
 	}

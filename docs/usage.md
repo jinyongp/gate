@@ -80,8 +80,10 @@ executable. Continue running gate as your normal user; do not use
 WSL installations must place the binary on a Linux-native filesystem, such as
 `/home/<user>/.local/bin`. Windows-mounted paths such as `/mnt/c` can reject the
 file-capability xattr. Move or reinstall the binary on the Linux filesystem,
-then rerun setup. The `getcap` and `setcap` tools are supplied by the
-distribution's libcap package.
+then rerun setup. Setup applies the file capability through gate's fixed
+internal helper and does not invoke an external `setcap` command. Replacing an
+existing standalone install uses the distribution's libcap `getcap` tool to
+detect whether capability preservation is required.
 
 ## Trust HTTPS
 
