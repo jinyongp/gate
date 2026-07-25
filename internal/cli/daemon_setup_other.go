@@ -15,7 +15,7 @@ func (unsupportedLowPortCapabilityManager) Inspect(string) (lowPortCapabilityIns
 	}
 }
 
-func (unsupportedLowPortCapabilityManager) Apply(string) error {
+func (unsupportedLowPortCapabilityManager) Apply(*lowPortCapabilityTarget) error {
 	return &lowPortCapabilityError{
 		Code: "unsupported_platform",
 		Err:  errLowPortCapabilityUnsupported,

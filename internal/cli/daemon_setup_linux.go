@@ -18,6 +18,8 @@ var (
 	linuxCapabilityCommand = exec.Command
 	linuxCapabilityEUID    = os.Geteuid
 	linuxCapabilityTool    = trustedLinuxCapabilityTool
+	linuxCapabilityEval    = filepath.EvalSymlinks
+	linuxCapabilityStat    = os.Stat
 )
 
 func platformLowPortCapabilityManager() lowPortCapabilityManager {
@@ -54,21 +56,22 @@ func (linuxLowPortCapabilityManager) Inspect(path string) (lowPortCapabilityInsp
 	return lowPortCapabilityInspection{State: lowPortCapabilityUnexpected, Raw: capabilities}, nil
 }
 
-func (linuxLowPortCapabilityManager) Apply(path string) error {
-	before, err := os.Stat(path)
-	if err != nil {
-		return &lowPortCapabilityError{Code: "capability_target", Err: fmt.Errorf("inspect gate executable before setup: %w", err)}
+func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) error {
+	if target == nil || target.File == nil || target.Info == nil {
+		return &lowPortCapabilityError{Code: "capability_target", Err: fmt.Errorf("stable gate executable handle is unavailable")}
+	}
+	if err := target.validateIdentity(); err != nil {
+		return err
 	}
 	setcap, err := linuxCapabilityTool("setcap")
 	if err != nil {
 		return err
 	}
-	current, err := os.Stat(path)
-	if err != nil || !os.SameFile(before, current) {
-		return &lowPortCapabilityError{Code: "capability_target_changed", Err: capabilityIdentityError(err)}
+	if err := target.validateIdentity(); err != nil {
+		return err
 	}
 
-	args := []string{lowPortCapability, path}
+	args := []string{lowPortCapability, target.operationPath()}
 	executable := setcap
 	if linuxCapabilityEUID() != 0 {
 		sudo, findErr := linuxCapabilityTool("sudo")
@@ -87,23 +90,43 @@ func (linuxLowPortCapabilityManager) Apply(path string) error {
 		if message == "" {
 			message = err.Error()
 		}
+		if unsupportedCapabilityFilesystem(target.Path, message) {
+			return &lowPortCapabilityError{
+				Code: "capability_filesystem_unsupported",
+				Err: fmt.Errorf(
+					"filesystem does not support Linux file capabilities for %s; "+
+						"move or reinstall gate on a Linux-native filesystem, then rerun `gate daemon setup`: %s",
+					target.Path,
+					message,
+				),
+			}
+		}
 		return &lowPortCapabilityError{
 			Code: "setcap_failed",
 			Err:  fmt.Errorf("configure low-port capability: %s", message),
 		}
 	}
-	after, err := os.Stat(path)
-	if err != nil || !os.SameFile(before, after) {
-		return &lowPortCapabilityError{Code: "capability_target_changed", Err: capabilityIdentityError(err)}
+	if err := target.validateIdentity(); err != nil {
+		return err
 	}
 	return nil
 }
 
-func capabilityIdentityError(err error) error {
-	if err != nil {
-		return fmt.Errorf("gate executable changed during capability setup: %w", err)
+func unsupportedCapabilityFilesystem(path, message string) bool {
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "operation not supported") ||
+		strings.Contains(lower, "not supported") ||
+		strings.Contains(lower, "unsupported") {
+		return true
 	}
-	return fmt.Errorf("gate executable changed during capability setup")
+	cleaned := filepath.Clean(path)
+	parts := strings.Split(strings.TrimPrefix(cleaned, string(filepath.Separator)), string(filepath.Separator))
+	windowsMount := len(parts) >= 2 &&
+		parts[0] == "mnt" &&
+		len(parts[1]) == 1 &&
+		parts[1][0] >= 'a' &&
+		parts[1][0] <= 'z'
+	return windowsMount && strings.Contains(lower, "invalid argument")
 }
 
 func trustedLinuxCapabilityTool(name string) (string, error) {
@@ -134,11 +157,11 @@ func trustedLinuxCapabilityTool(name string) (string, error) {
 }
 
 func trustedRootExecutable(path string) (string, error) {
-	target, err := filepath.EvalSymlinks(path)
+	target, err := linuxCapabilityEval(path)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(target)
+	info, err := linuxCapabilityStat(target)
 	if err != nil {
 		return "", err
 	}
@@ -148,6 +171,19 @@ func trustedRootExecutable(path string) (string, error) {
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 {
 		return "", fmt.Errorf("tool permissions are unsafe: %s", target)
+	}
+	for parent := filepath.Dir(target); ; parent = filepath.Dir(parent) {
+		parentInfo, err := linuxCapabilityStat(parent)
+		if err != nil {
+			return "", err
+		}
+		parentStat, ok := parentInfo.Sys().(*syscall.Stat_t)
+		if !ok || parentStat.Uid != 0 || !parentInfo.IsDir() || parentInfo.Mode().Perm()&0o022 != 0 {
+			return "", fmt.Errorf("tool ancestor permissions are unsafe: %s", parent)
+		}
+		if parent == string(filepath.Separator) {
+			break
+		}
 	}
 	return target, nil
 }

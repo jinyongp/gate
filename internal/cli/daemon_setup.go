@@ -30,7 +30,51 @@ type lowPortCapabilityInspection struct {
 
 type lowPortCapabilityManager interface {
 	Inspect(path string) (lowPortCapabilityInspection, error)
-	Apply(path string) error
+	Apply(target *lowPortCapabilityTarget) error
+}
+
+type lowPortCapabilityTarget struct {
+	Path string
+	File *os.File
+	Info os.FileInfo
+}
+
+func (t *lowPortCapabilityTarget) Close() {
+	if t != nil && t.File != nil {
+		_ = t.File.Close()
+	}
+}
+
+func (t *lowPortCapabilityTarget) operationPath() string {
+	if t == nil {
+		return ""
+	}
+	if t.File != nil && runtimeGOOS() == "linux" {
+		return fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), t.File.Fd())
+	}
+	return t.Path
+}
+
+func (t *lowPortCapabilityTarget) validateIdentity() error {
+	if t == nil || t.File == nil || t.Info == nil {
+		return nil
+	}
+	opened, err := t.File.Stat()
+	if err != nil || !os.SameFile(t.Info, opened) {
+		return &lowPortCapabilityError{Code: "capability_target_changed", Err: capabilityIdentityError(err)}
+	}
+	current, err := os.Stat(t.Path)
+	if err != nil || !os.SameFile(t.Info, current) {
+		return &lowPortCapabilityError{Code: "capability_target_changed", Err: capabilityIdentityError(err)}
+	}
+	return nil
+}
+
+func capabilityIdentityError(err error) error {
+	if err != nil {
+		return fmt.Errorf("gate executable changed during capability setup: %w", err)
+	}
+	return fmt.Errorf("gate executable changed during capability setup")
 }
 
 type lowPortCapabilityError struct {
@@ -80,14 +124,18 @@ func daemonSetup(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, *jsonOut, ExitError, "capability_target", err.Error())
 	}
+	defer target.Close()
 	manager := lowPortCapabilityManagerFunc()
-	inspection, err := manager.Inspect(target)
+	inspection, err := manager.Inspect(target.operationPath())
 	if err != nil {
 		return failLowPortCapability(stderr, *jsonOut, "capability_inspect", err)
 	}
+	if err := target.validateIdentity(); err != nil {
+		return failLowPortCapability(stderr, *jsonOut, "capability_target_changed", err)
+	}
 	switch inspection.State {
 	case lowPortCapabilityConfigured:
-		return writeDaemonSetupSuccess(stdout, *jsonOut, target, false)
+		return writeDaemonSetupSuccess(stdout, *jsonOut, target.Path, false)
 	case lowPortCapabilityUnexpected:
 		msg := fmt.Sprintf("gate executable has unexpected Linux capabilities: %s", inspection.Raw)
 		return fail(stderr, *jsonOut, ExitConflict, "unexpected_capabilities", msg)
@@ -97,7 +145,7 @@ func daemonSetup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *check {
-		return fail(stderr, *jsonOut, ExitPerm, "low_port_capability_missing", "low-port capability is not configured for "+target)
+		return fail(stderr, *jsonOut, ExitPerm, "low_port_capability_missing", "low-port capability is not configured for "+target.Path)
 	}
 	if !*yes {
 		if !stdinIsTTYFunc() {
@@ -115,40 +163,53 @@ func daemonSetup(args []string, stdout, stderr io.Writer) int {
 	if err := manager.Apply(target); err != nil {
 		return failLowPortCapability(stderr, *jsonOut, "capability_apply", err)
 	}
-	inspection, err = manager.Inspect(target)
+	if err := target.validateIdentity(); err != nil {
+		return failLowPortCapability(stderr, *jsonOut, "capability_target_changed", err)
+	}
+	inspection, err = manager.Inspect(target.operationPath())
 	if err != nil {
 		return failLowPortCapability(stderr, *jsonOut, "capability_verify", err)
+	}
+	if err := target.validateIdentity(); err != nil {
+		return failLowPortCapability(stderr, *jsonOut, "capability_target_changed", err)
 	}
 	if inspection.State != lowPortCapabilityConfigured {
 		return fail(stderr, *jsonOut, ExitError, "capability_verify", "low-port capability verification failed")
 	}
-	return writeDaemonSetupSuccess(stdout, *jsonOut, target, true)
+	return writeDaemonSetupSuccess(stdout, *jsonOut, target.Path, true)
 }
 
-func resolveLowPortCapabilityTarget(path string) (string, error) {
+func resolveLowPortCapabilityTarget(path string) (*lowPortCapabilityTarget, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", errors.New("gate executable path is empty")
+		return nil, errors.New("gate executable path is empty")
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve gate executable: %w", err)
+		return nil, fmt.Errorf("resolve gate executable: %w", err)
 	}
 	target, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
-		return "", fmt.Errorf("resolve gate executable: %w", err)
+		return nil, fmt.Errorf("resolve gate executable: %w", err)
 	}
-	info, err := os.Stat(target)
+	file, err := os.Open(target)
 	if err != nil {
-		return "", fmt.Errorf("inspect gate executable: %w", err)
+		return nil, fmt.Errorf("open gate executable: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("inspect gate executable: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("gate executable is not a regular file: %s", target)
+		_ = file.Close()
+		return nil, fmt.Errorf("gate executable is not a regular file: %s", target)
 	}
 	if info.Mode().Perm()&0o111 == 0 {
-		return "", fmt.Errorf("gate executable is not executable: %s", target)
+		_ = file.Close()
+		return nil, fmt.Errorf("gate executable is not executable: %s", target)
 	}
-	return target, nil
+	return &lowPortCapabilityTarget{Path: target, File: file, Info: info}, nil
 }
 
 func confirmLowPortSetup(stdout io.Writer) (bool, error) {

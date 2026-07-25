@@ -55,6 +55,9 @@ var Specs = []CmdSpec{
 func specFor(name string) CmdSpec {
 	for _, s := range Specs {
 		if s.Name == name {
+			if name == "daemon" && runtimeGOOS() == "linux" {
+				s.Args += "|setup"
+			}
 			return s
 		}
 	}

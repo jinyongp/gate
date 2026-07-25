@@ -71,6 +71,14 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$config_home" "$state_home" "$project_dir"
+cat >"${project_dir}/gate.toml" <<'EOF'
+[project]
+name = "capability-fixture"
+base = "capability-fixture.localhost"
+
+[services.probe]
+port = 49191
+EOF
 go build -trimpath -o "$gate_bin" ./cmd/gate
 
 if ! setup_output="$("$gate_bin" daemon setup --yes 2>&1)"; then
@@ -84,7 +92,7 @@ fi
 
 if ! start_output="$(
   XDG_CONFIG_HOME="$config_home" XDG_STATE_HOME="$state_home" \
-    "$gate_bin" daemon start 2>&1
+    "$gate_bin" up -d --config "${project_dir}/gate.toml" 2>&1
 )"; then
   if [[ "$start_output" == *"address already in use"* ]]; then
     skip_or_fail "TCP port 80 or 443 is already in use"
@@ -127,15 +135,6 @@ if (( (16#$listener_cap & 0x400) == 0 )); then
   echo "error: gate listener lacks effective CAP_NET_BIND_SERVICE: ${listener_cap}" >&2
   exit 1
 fi
-
-cat >"${project_dir}/gate.toml" <<'EOF'
-[project]
-name = "capability-fixture"
-base = "capability-fixture.localhost"
-
-[services.probe]
-port = 49191
-EOF
 
 child_cap="$(
   XDG_CONFIG_HOME="$config_home" XDG_STATE_HOME="$state_home" \

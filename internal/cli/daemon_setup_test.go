@@ -30,7 +30,7 @@ func (m *fakeLowPortCapabilityManager) Inspect(string) (lowPortCapabilityInspect
 	return result, nil
 }
 
-func (m *fakeLowPortCapabilityManager) Apply(string) error {
+func (m *fakeLowPortCapabilityManager) Apply(*lowPortCapabilityTarget) error {
 	m.applied++
 	return m.applyErr
 }
@@ -51,7 +51,9 @@ func stubLowPortCapabilitySetup(t *testing.T, manager lowPortCapabilityManager) 
 	})
 	runtimeGOOS = func() string { return "linux" }
 	lowPortCapabilityManagerFunc = func() lowPortCapabilityManager { return manager }
-	lowPortCapabilityTargetFunc = func(string) (string, error) { return "/opt/gate/bin/gate", nil }
+	lowPortCapabilityTargetFunc = func(string) (*lowPortCapabilityTarget, error) {
+		return &lowPortCapabilityTarget{Path: "/opt/gate/bin/gate"}, nil
+	}
 	confirmLowPortSetupFunc = func(io.Writer) (bool, error) { return true, nil }
 	stdinIsTTYFunc = func() bool { return true }
 	t.Setenv("GATE_ISOLATED_ROOT", "")
@@ -189,9 +191,31 @@ func TestDaemonSetupHelpVisibilityFollowsPlatform(t *testing.T) {
 	if got := commandInfoNames(commandsFor("daemon")); strings.Contains(got, "setup") {
 		t.Fatalf("darwin daemon commands = %q", got)
 	}
+	if got := specFor("daemon").Args; strings.Contains(got, "setup") {
+		t.Fatalf("darwin daemon usage = %q", got)
+	}
 	runtimeGOOS = func() string { return "linux" }
 	if got := commandInfoNames(commandsFor("daemon")); !strings.Contains(got, "setup") {
 		t.Fatalf("linux daemon commands = %q", got)
+	}
+	if got := specFor("daemon").Args; !strings.Contains(got, "setup") {
+		t.Fatalf("linux daemon usage = %q", got)
+	}
+}
+
+func TestUnsupportedCapabilityFilesystemProvidesNativeFilesystemRecovery(t *testing.T) {
+	body := errorBodyFor(
+		ExitPerm,
+		"capability_filesystem_unsupported",
+		"filesystem does not support Linux file capabilities",
+	)
+	if !strings.Contains(body.Hint, "Linux-native filesystem") {
+		t.Fatalf("hint = %q", body.Hint)
+	}
+	if len(body.NextActions) != 1 ||
+		!strings.Contains(body.NextActions[0].Label, "Linux-native filesystem") ||
+		body.NextActions[0].Command != "gate daemon setup" {
+		t.Fatalf("next actions = %+v", body.NextActions)
 	}
 }
 
@@ -213,12 +237,13 @@ func TestResolveLowPortCapabilityTargetCanonicalizesExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer got.Close()
 	want, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Fatalf("target = %q, want %q", got, want)
+	if got.Path != want {
+		t.Fatalf("target = %q, want %q", got.Path, want)
 	}
 }
 

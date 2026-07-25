@@ -629,8 +629,11 @@ Other security properties:
 - Low-port setup must never run the whole CLI as root, install a privileged
   resident service, or change the machine-wide unprivileged-port policy.
 - Privileged capability application uses fixed arguments and validated,
-  root-owned tool paths. The executable is canonicalized and identity-checked
-  before mutation, then its exact capability set is verified afterward.
+  root-owned tool paths whose canonical ancestors are not group- or
+  world-writable. The executable is canonicalized and held through a stable
+  file descriptor before inspection; capability application targets that
+  descriptor instead of re-resolving a user-writable pathname, and the exact
+  capability set is verified afterward.
 - File capabilities are replacement-scoped. Gate-managed replacement preserves
   existing intent before daemon restart; standalone replacement is
   transactional, while external package managers require explicit recovery.

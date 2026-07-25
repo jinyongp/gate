@@ -140,6 +140,8 @@ func errorHint(code string) string {
 		return "Use one of --config, --project, --global, or --all where supported."
 	case "permission":
 		return "Run the suggested gate command outside the sandbox or with the required privilege."
+	case "capability_filesystem_unsupported":
+		return "Move or reinstall gate on a Linux-native filesystem, then run `gate daemon setup`."
 	case "low_port_capability_missing",
 		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
@@ -162,6 +164,11 @@ func errorNextActions(code string) []nextAction {
 		return []nextAction{{Label: "List services"}}
 	case "permission":
 		return []nextAction{{Label: "Check setup", Command: "gate doctor --json"}}
+	case "capability_filesystem_unsupported":
+		return []nextAction{{
+			Label:   "Move gate to a Linux-native filesystem, then configure low-port access",
+			Command: "gate daemon setup",
+		}}
 	case "low_port_capability_missing",
 		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
