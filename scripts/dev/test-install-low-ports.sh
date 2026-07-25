@@ -234,7 +234,10 @@ interrupted="$test_root/interrupted"
 mkdir -p "$interrupted/bin"
 printf '#!/bin/sh\nprintf old\n' >"$interrupted/bin/gate"
 chmod +x "$interrupted/bin/gate"
-if run_installer "$interrupted" GATE_INSTALL_TEST_FAIL_AFTER_REPLACE=1 >"$interrupted/output.log" 2>&1; then
+if run_installer "$interrupted" \
+  GATE_TEST_GETCAP_STATE=configured \
+  GATE_INSTALL_TEST_FAIL_AFTER_REPLACE=1 \
+  >"$interrupted/output.log" 2>&1; then
   echo "installer succeeded after injected post-replacement failure" >&2
   exit 1
 fi
@@ -245,12 +248,33 @@ locked="$test_root/locked"
 mkdir -p "$locked/bin" "$locked/bin/gate.install.lock"
 printf '#!/bin/sh\nprintf old\n' >"$locked/bin/gate"
 chmod +x "$locked/bin/gate"
+printf '%s\n' "$$" >"$locked/bin/gate.install.lock/owner"
 if run_installer "$locked" >"$locked/output.log" 2>&1; then
   echo "installer ignored an active destination lock" >&2
   exit 1
 fi
 grep -F "another gate installation or upgrade" "$locked/output.log" >/dev/null
 grep -F "printf old" "$locked/bin/gate" >/dev/null
+
+stale="$test_root/stale"
+mkdir -p "$stale/bin/gate.install.lock"
+printf '#!/bin/sh\nprintf replacement\n' >"$stale/bin/gate"
+printf '#!/bin/sh\nprintf old\n' >"$stale/old-gate"
+chmod +x "$stale/bin/gate" "$stale/old-gate"
+ln "$stale/old-gate" "$stale/bin/gate.install.lock/previous"
+rm -f "$stale/old-gate"
+printf '%s\n' "999999" >"$stale/bin/gate.install.lock/owner"
+printf '%s\n' "replacing" >"$stale/bin/gate.install.lock/state"
+if ! run_installer "$stale" GATE_TEST_GETCAP_STATE=configured >"$stale/output.log" 2>&1; then
+  cat "$stale/output.log" >&2
+  exit 1
+fi
+grep -F "recovered the previous gate binary" "$stale/output.log" >/dev/null
+test "$(cat "$stale/setup.log")" = "daemon setup --yes"
+if rg -F "printf old" "$stale/bin/gate" >/dev/null; then
+  echo "stale-lock recovery did not commit the replacement" >&2
+  exit 1
+fi
 
 concurrent="$test_root/concurrent"
 mkdir -p "$concurrent/bin"
@@ -292,9 +316,10 @@ if find \
   "$upgrade/bin" \
   "$rollback/bin" \
   "$interrupted/bin" \
+  "$stale/bin" \
   "$concurrent/bin" \
   -maxdepth 1 \
-  \( -name '.gate.previous.*' -o -name '.gate.install.*' \) -print -quit |
+  \( -name 'gate.install.lock' -o -name 'gate.install.lock.recover.*' \) -print -quit |
   grep -q .; then
   echo "installer left a transaction artifact behind" >&2
   exit 1

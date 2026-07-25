@@ -105,6 +105,7 @@ cleanup() {
 		fi
 	fi
 	if [ "${INSTALL_LOCK_HELD:-0}" -eq 1 ]; then
+		rm -f "${INSTALL_LOCK_STATE:-}" "${INSTALL_LOCK_OWNER:-}"
 		rmdir "$INSTALL_LOCK_DIR" 2>/dev/null || true
 	fi
 }
@@ -224,12 +225,88 @@ if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
 fi
 
 INSTALL_LOCK_DIR="${DEST}.install.lock"
+INSTALL_LOCK_OWNER="${INSTALL_LOCK_DIR}/owner"
+INSTALL_LOCK_STATE="${INSTALL_LOCK_DIR}/state"
 INSTALL_LOCK_HELD=0
+
+recover_stale_install_lock() {
+  if [ ! -d "$INSTALL_LOCK_DIR" ] || [ -L "$INSTALL_LOCK_DIR" ]; then
+    return 1
+  fi
+  lock_owner="$(cat "$INSTALL_LOCK_OWNER" 2>/dev/null || true)"
+  case "$lock_owner" in
+    ''|*[!0-9]*) return 1 ;;
+    *)
+      if kill -0 "$lock_owner" 2>/dev/null; then
+        return 1
+      fi
+      ;;
+  esac
+  recovery_dir="${INSTALL_LOCK_DIR}.recover.$$"
+  if [ -e "$recovery_dir" ] || [ -L "$recovery_dir" ]; then
+    return 1
+  fi
+  if ! mv "$INSTALL_LOCK_DIR" "$recovery_dir" 2>/dev/null; then
+    return 1
+  fi
+
+  stale_previous="${recovery_dir}/previous"
+  stale_state="$(cat "${recovery_dir}/state" 2>/dev/null || true)"
+  case "$stale_state" in
+    replacing)
+      if [ -L "$stale_previous" ] || [ ! -f "$stale_previous" ]; then
+        ui_error "stale install lock is missing a safe rollback target: ${stale_previous}"
+        return 1
+      fi
+      if ! mv -f "$stale_previous" "$DEST"; then
+        ui_error "failed to restore the interrupted gate installation."
+        return 1
+      fi
+      ui_warn_err "recovered the previous gate binary from an interrupted install."
+      ;;
+    prepared|committed)
+      if [ -e "$stale_previous" ] || [ -L "$stale_previous" ]; then
+        if [ -L "$stale_previous" ] || [ ! -f "$stale_previous" ]; then
+          ui_error "stale install lock contains an unsafe rollback target: ${stale_previous}"
+          return 1
+        fi
+        rm -f "$stale_previous"
+      fi
+      ;;
+    '')
+      if [ -e "$stale_previous" ] || [ -L "$stale_previous" ]; then
+        ui_error "stale install lock has an unjournaled rollback target: ${stale_previous}"
+        return 1
+      fi
+      ;;
+    *)
+      ui_error "stale install lock has an unknown transaction state: ${stale_state}"
+      return 1
+      ;;
+  esac
+  rm -f "${recovery_dir}/owner" "${recovery_dir}/state"
+  rmdir "$recovery_dir" 2>/dev/null || return 1
+  return 0
+}
+
+for recovery_artifact in "${INSTALL_LOCK_DIR}.recover."*; do
+  if [ -e "$recovery_artifact" ] || [ -L "$recovery_artifact" ]; then
+    ui_error "an incomplete gate install recovery requires attention: ${recovery_artifact}"
+    exit 1
+  fi
+done
+
 if ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
-  ui_error "another gate installation or upgrade is already using: ${DEST}"
-  exit 1
+  if ! recover_stale_install_lock || ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
+    ui_error "another gate installation or upgrade is already using: ${DEST}"
+    exit 1
+  fi
 fi
 INSTALL_LOCK_HELD=1
+if ! printf '%s\n' "$$" > "$INSTALL_LOCK_OWNER"; then
+  ui_error "failed to record the gate installation lock owner."
+  exit 1
+fi
 
 find_getcap() {
   if [ -n "${GATE_INSTALL_TEST_GETCAP:-}" ]; then
@@ -289,16 +366,23 @@ fi
 
 PREVIOUS_DEST=""
 REPLACEMENT_ACTIVE=0
-if [ -f "$DEST" ]; then
-  PREVIOUS_DEST="$(mktemp "${DEST_DIR}/.gate.previous.XXXXXX")"
-  rm -f "$PREVIOUS_DEST"
+if [ "$PREVIOUS_LOW_PORT_CAPABILITY" -eq 1 ]; then
+  PREVIOUS_DEST="${INSTALL_LOCK_DIR}/previous"
   if ! ln "$DEST" "$PREVIOUS_DEST"; then
     ui_error "failed to preserve existing gate binary before replacement."
     exit 1
   fi
-fi
-if [ -n "$PREVIOUS_DEST" ]; then
+  if ! printf '%s\n' "prepared" > "$INSTALL_LOCK_STATE"; then
+    ui_error "failed to record the gate replacement transaction."
+    exit 1
+  fi
   REPLACEMENT_ACTIVE=1
+fi
+if [ "$REPLACEMENT_ACTIVE" -eq 1 ]; then
+  if ! printf '%s\n' "replacing" > "$INSTALL_LOCK_STATE"; then
+    ui_error "failed to record the gate replacement transaction."
+    exit 1
+  fi
 fi
 if ! mv -f "$TEMP_DEST" "$DEST"; then
   ui_error "failed to install gate binary."
@@ -380,6 +464,12 @@ configure_linux_low_ports() {
 
 if ! configure_linux_low_ports; then
   exit 1
+fi
+if [ -n "$PREVIOUS_DEST" ]; then
+  if ! printf '%s\n' "committed" > "$INSTALL_LOCK_STATE"; then
+    ui_error "failed to commit the gate replacement transaction."
+    exit 1
+  fi
 fi
 REPLACEMENT_ACTIVE=0
 if [ -n "$PREVIOUS_DEST" ]; then
