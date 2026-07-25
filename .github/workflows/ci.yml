@@ -45,6 +45,12 @@ jobs:
       - name: scripts
         id: scripts
         run: scripts/dev/check-scripts.sh
+      - name: Linux low-port capability
+        id: linux_low_port
+        if: runner.os == 'Linux'
+        run: scripts/dev/test-linux-low-ports.sh
+        env:
+          GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"
       - name: enable corepack
         run: corepack enable
       - name: install node dependencies
@@ -68,5 +74,6 @@ jobs:
           GOLANGCI_LINT_OUTCOME: ${{ steps.golangci_lint.outcome }}
           GOVULNCHECK_OUTCOME: ${{ steps.govulncheck.outcome }}
           SCRIPTS_OUTCOME: ${{ steps.scripts.outcome }}
+          LINUX_LOW_PORT_OUTCOME: ${{ steps.linux_low_port.outcome || 'not run' }}
           NODE_CHECK_OUTCOME: ${{ steps.node_check.outcome }}
           TEST_OUTCOME: ${{ steps.test.outcome }}

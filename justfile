@@ -52,6 +52,10 @@ vuln:
 scripts-check:
   bash scripts/dev/check-scripts.sh
 
+[doc('test Linux low-port capability and child non-inheritance when supported')]
+linux-low-port-test:
+  bash scripts/dev/test-linux-low-ports.sh
+
 [doc('check documentation boundaries')]
 docs-check:
   scripts/dev/docs-check.sh
