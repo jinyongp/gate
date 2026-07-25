@@ -201,6 +201,7 @@ func TestResolveLowPortCapabilityTargetCanonicalizesExecutable(t *testing.T) {
 	if err := os.WriteFile(target, []byte("binary"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:gosec // G302: the capability target fixture must be executable; owner-only is intentional.
 	if err := os.Chmod(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
