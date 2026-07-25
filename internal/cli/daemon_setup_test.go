@@ -198,7 +198,10 @@ func TestDaemonSetupHelpVisibilityFollowsPlatform(t *testing.T) {
 func TestResolveLowPortCapabilityTargetCanonicalizesExecutable(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "gate-real")
-	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+	if err := os.WriteFile(target, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "gate")
