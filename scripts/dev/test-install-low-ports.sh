@@ -89,7 +89,10 @@ run_installer() {
 fresh="$test_root/fresh"
 fresh_output="$fresh/output.log"
 mkdir -p "$fresh"
-run_installer "$fresh" >"$fresh_output" 2>&1
+if ! run_installer "$fresh" >"$fresh_output" 2>&1; then
+  cat "$fresh_output" >&2
+  exit 1
+fi
 test -x "$fresh/bin/gate"
 test ! -e "$fresh/setup.log"
 grep -F "gate daemon setup" "$fresh_output" >/dev/null
@@ -98,7 +101,10 @@ upgrade="$test_root/upgrade"
 mkdir -p "$upgrade/bin"
 printf '#!/bin/sh\nprintf old\n' >"$upgrade/bin/gate"
 chmod +x "$upgrade/bin/gate"
-run_installer "$upgrade" GATE_TEST_GETCAP_STATE=configured >/dev/null 2>&1
+if ! run_installer "$upgrade" GATE_TEST_GETCAP_STATE=configured >"$upgrade/output.log" 2>&1; then
+  cat "$upgrade/output.log" >&2
+  exit 1
+fi
 grep -F "daemon setup --yes" "$upgrade/setup.log" >/dev/null
 test "$(head -n 1 "$upgrade/bin/gate")" = "#!/bin/sh"
 if rg -F "printf old" "$upgrade/bin/gate" >/dev/null; then

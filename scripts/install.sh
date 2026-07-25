@@ -488,7 +488,7 @@ configure_path() {
   fi
 
   ui_warn_err "PATH does not currently include ${DEST_DIR}."
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  if has_interactive_tty; then
     ui_prompt "Add ${DEST_DIR} to PATH in ${rc_file}? [Y/n]:" > /dev/tty
     if IFS= read -r response < /dev/tty; then
       case "$response" in
