@@ -106,6 +106,24 @@ func TestDaemonSetupCheckReportsMissingAction(t *testing.T) {
 	}
 }
 
+func TestDaemonSetupCheckReportsHumanRecoveryCommand(t *testing.T) {
+	manager := &fakeLowPortCapabilityManager{
+		inspections: []lowPortCapabilityInspection{{State: lowPortCapabilityMissing}},
+	}
+	stubLowPortCapabilitySetup(t, manager)
+
+	var out, errb bytes.Buffer
+	if code := daemonSetup([]string{"--check"}, &out, &errb); code != ExitPerm {
+		t.Fatalf("daemonSetup exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "run `gate daemon setup`") {
+		t.Fatalf("stderr lacks recovery command: %q", errb.String())
+	}
+	if manager.applied != 0 {
+		t.Fatalf("Apply called %d times", manager.applied)
+	}
+}
+
 func TestDaemonSetupAppliesAndVerifies(t *testing.T) {
 	manager := &fakeLowPortCapabilityManager{
 		inspections: []lowPortCapabilityInspection{
@@ -125,6 +143,29 @@ func TestDaemonSetupAppliesAndVerifies(t *testing.T) {
 	}
 	if !result.Changed || manager.applied != 1 {
 		t.Fatalf("result = %+v, applied=%d", result, manager.applied)
+	}
+}
+
+func TestDaemonSetupBusyIsRetryableConflict(t *testing.T) {
+	manager := &fakeLowPortCapabilityManager{
+		inspections: []lowPortCapabilityInspection{{State: lowPortCapabilityMissing}},
+		applyErr: &lowPortCapabilityError{
+			Code: "capability_setup_busy",
+			Err:  errors.New("another setup is running"),
+		},
+	}
+	stubLowPortCapabilitySetup(t, manager)
+
+	var out, errb bytes.Buffer
+	if code := daemonSetup([]string{"--yes", "--json"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("daemonSetup exit = %d, stderr=%s", code, errb.String())
+	}
+	var envelope errEnvelope
+	if err := json.Unmarshal(errb.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "capability_setup_busy" || !envelope.Error.Retryable {
+		t.Fatalf("error = %+v", envelope.Error)
 	}
 }
 

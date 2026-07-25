@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -23,12 +24,17 @@ import (
 )
 
 var (
-	uninstallExecutablePathFunc = executablePath
-	uninstallRunHomebrewFunc    = runHomebrewUninstall
-	uninstallStopExposuresFunc  = stopAllKnownExposures
-	uninstallStopDaemonsFunc    = stopAllKnownDaemons
-	uninstallHostsPath          = "/etc/hosts"
-	uninstallSystemBinPaths     = []string{"/usr/local/bin/gate"}
+	errUninstallCoordinationBusy            = errors.New("uninstall coordination is busy")
+	uninstallExecutablePathFunc             = executablePath
+	uninstallRunHomebrewFunc                = runHomebrewUninstall
+	uninstallStopExposuresFunc              = stopAllKnownExposures
+	uninstallStopDaemonsFunc                = stopAllKnownDaemons
+	uninstallHasCapabilityArtifactsFunc     = platformHasLowPortCapabilityArtifacts
+	uninstallCleanupCapabilityArtifactsFunc = platformCleanupLowPortCapabilityArtifacts
+	uninstallAcquireCapabilityLockFunc      = platformAcquireUninstallCapabilityLock
+	uninstallAcquireInstallLocksFunc        = platformAcquireStandaloneInstallLocks
+	uninstallHostsPath                      = "/etc/hosts"
+	uninstallSystemBinPaths                 = []string{"/usr/local/bin/gate"}
 )
 
 // Uninstall removes gate's local machine state and, for Homebrew installs,
@@ -73,7 +79,30 @@ func Uninstall(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	defer unlock()
+	capabilityLock, err := uninstallAcquireCapabilityLockFunc()
+	if err != nil {
+		var capabilityErr *lowPortCapabilityError
+		if errors.As(err, &capabilityErr) && capabilityErr.Code == "capability_setup_busy" {
+			return fail(stderr, false, ExitConflict, capabilityErr.Code, err.Error())
+		}
+		printError(stderr, "failed to lock Linux low-port setup during uninstall: "+err.Error())
+		return ExitError
+	}
+	defer func() { _ = capabilityLock.Close() }()
 	targets = collectUninstallTargets()
+	installLocks, err := uninstallAcquireInstallLocksFunc(standaloneUninstallGatePaths())
+	if err != nil {
+		if errors.Is(err, errUninstallCoordinationBusy) {
+			return fail(stderr, false, ExitConflict, "install_busy", err.Error())
+		}
+		printError(stderr, "failed to lock standalone gate installation during uninstall: "+err.Error())
+		return ExitError
+	}
+	defer func() {
+		for i := len(installLocks) - 1; i >= 0; i-- {
+			_ = installLocks[i].Close()
+		}
+	}()
 
 	failed := false
 	permissionFailed := false
@@ -118,8 +147,17 @@ func Uninstall(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitError
 	}
-	recordStep(cleanupPathBlocks(stdout, stderr))
 	if os.Getenv("GATE_ISOLATED_ROOT") == "" {
+		capabilityResult := uninstallCleanupCapabilityArtifactsFunc(stdout, stderr)
+		recordStep(capabilityResult)
+		if capabilityResult == uninstallStepFailed || capabilityResult == uninstallStepPermission {
+			printError(stderr, "gate uninstall stopped before deleting files because interrupted low-port setup state could not be removed.")
+			if capabilityResult == uninstallStepPermission {
+				return ExitPerm
+			}
+			return ExitError
+		}
+		recordStep(cleanupPathBlocks(stdout, stderr))
 		recordStep(cleanupHostsBlock(stdout, stderr))
 	}
 	if len(targets) > 0 {
@@ -172,7 +210,6 @@ func collectUninstallTargets() []string {
 		if isHomebrewGatePath(path) {
 			return
 		}
-		//nolint:gosec // Uninstall targets are fixed gate-owned paths or explicit GATE_BIN_DIR input.
 		if _, err := os.Lstat(path); err == nil {
 			seen[path] = true
 		}
@@ -181,22 +218,61 @@ func collectUninstallTargets() []string {
 	add(paths.DataDir())
 	add(paths.StateDir())
 	add(paths.RuntimeDir())
-	if binDir := os.Getenv("GATE_BIN_DIR"); binDir != "" {
-		add(filepath.Join(binDir, "gate"))
-	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		add(filepath.Join(home, ".local", "bin", "gate"))
-	}
-	for _, binPath := range uninstallSystemBinPaths {
-		if !isHomebrewGatePath(binPath) {
-			add(binPath)
+	for _, path := range standaloneUninstallGatePaths() {
+		add(path)
+		if runtime.GOOS == "linux" {
+			add(path + ".install.transaction")
 		}
 	}
 
 	out := make([]string, 0, len(seen))
 	for path := range seen {
 		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func standaloneUninstallGatePaths() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(path string) {
+		if strings.TrimSpace(path) == "" || seen[path] || isHomebrewGatePath(path) {
+			return
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	if root := os.Getenv("GATE_ISOLATED_ROOT"); root != "" {
+		if binDir := os.Getenv("GATE_BIN_DIR"); binDir != "" {
+			canonicalBinDir, err := filepath.EvalSymlinks(binDir)
+			if errors.Is(err, os.ErrNotExist) {
+				return out
+			}
+			path := filepath.Join(canonicalBinDir, "gate")
+			if rel, relErr := filepath.Rel(root, path); err == nil && relErr == nil &&
+				rel != "." && rel != ".." &&
+				!strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				add(path)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	if binDir := os.Getenv("GATE_BIN_DIR"); binDir != "" {
+		//nolint:gosec // GATE_BIN_DIR is explicit user input already constrained to an absolute path.
+		if info, err := os.Stat(binDir); err == nil && info.IsDir() {
+			add(filepath.Join(binDir, "gate"))
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		binDir := filepath.Join(home, ".local", "bin")
+		if info, statErr := os.Stat(binDir); statErr == nil && info.IsDir() {
+			add(filepath.Join(binDir, "gate"))
+		}
+	}
+	for _, binPath := range uninstallSystemBinPaths {
+		add(binPath)
 	}
 	sort.Strings(out)
 	return out
@@ -209,16 +285,21 @@ func collectUninstallActions(keepTrust, removeBrew bool) []string {
 			actions = append(actions, "trust store entry for gate root CA")
 		}
 	}
-	if hasHostsBlock() {
-		actions = append(actions, "managed hosts block in "+uninstallHostsPath)
-	}
-	for _, rc := range gateShellStartupFiles() {
-		if fileContains(rc, "# >>> gate PATH >>>") {
-			actions = append(actions, "gate PATH block in "+rc)
+	if os.Getenv("GATE_ISOLATED_ROOT") == "" {
+		if hasHostsBlock() {
+			actions = append(actions, "managed hosts block in "+uninstallHostsPath)
+		}
+		for _, rc := range gateShellStartupFiles() {
+			if fileContains(rc, "# >>> gate PATH >>>") {
+				actions = append(actions, "gate PATH block in "+rc)
+			}
 		}
 	}
 	if removeBrew {
 		actions = append(actions, "Homebrew package gate")
+	}
+	if os.Getenv("GATE_ISOLATED_ROOT") == "" && uninstallHasCapabilityArtifactsFunc() {
+		actions = append(actions, "interrupted Linux low-port setup helper")
 	}
 	return actions
 }
@@ -489,6 +570,11 @@ func validateUninstallTarget(target string) error {
 		}
 		if canonicalTarget == root {
 			return errors.New("isolated root itself is never a removable target")
+		}
+		rel, err := filepath.Rel(root, canonicalTarget)
+		if err != nil || rel == "." || rel == ".." ||
+			strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return errors.New("isolated uninstall target resolves outside its root")
 		}
 		for _, statePath := range []string{paths.ConfigDir(), paths.DataDir(), paths.StateDir(), paths.RuntimeDir()} {
 			stateAbs, err := filepath.Abs(statePath)

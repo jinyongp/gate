@@ -4,13 +4,18 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -23,18 +28,34 @@ func isolateLinuxCapabilityManager(t *testing.T) {
 	oldTool := linuxCapabilityTool
 	oldEval := linuxCapabilityEval
 	oldStat := linuxCapabilityStat
+	oldAccess := linuxCapabilityAccess
 	oldSelfStat := linuxCapabilitySelfStat
+	oldExecutable := linuxCapabilityExecutable
 	oldFgetxattr := linuxCapabilityFgetxattr
 	oldFsetxattr := linuxCapabilityFsetxattr
+	oldFremovexattr := linuxCapabilityFremovexattr
+	oldCreateHelper := linuxCapabilityCreateHelper
+	oldValidateHelper := linuxCapabilityValidateHelper
+	oldRemoveHelper := linuxCapabilityRemoveHelper
+	oldSetupLock := linuxCapabilitySetupLock
+	oldCleanupHelpers := linuxCapabilityCleanupHelpers
 	t.Cleanup(func() {
 		linuxCapabilityCommand = oldCommand
 		linuxCapabilityEUID = oldEUID
 		linuxCapabilityTool = oldTool
 		linuxCapabilityEval = oldEval
 		linuxCapabilityStat = oldStat
+		linuxCapabilityAccess = oldAccess
 		linuxCapabilitySelfStat = oldSelfStat
+		linuxCapabilityExecutable = oldExecutable
 		linuxCapabilityFgetxattr = oldFgetxattr
 		linuxCapabilityFsetxattr = oldFsetxattr
+		linuxCapabilityFremovexattr = oldFremovexattr
+		linuxCapabilityCreateHelper = oldCreateHelper
+		linuxCapabilityValidateHelper = oldValidateHelper
+		linuxCapabilityRemoveHelper = oldRemoveHelper
+		linuxCapabilitySetupLock = oldSetupLock
+		linuxCapabilityCleanupHelpers = oldCleanupHelpers
 	})
 }
 
@@ -49,6 +70,24 @@ func openLinuxCapabilityTarget(t *testing.T) *lowPortCapabilityTarget {
 		t.Fatal(err)
 	}
 	linuxCapabilitySelfStat = func() (os.FileInfo, error) { return target.Info, nil }
+	helperFile, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linuxCapabilityCreateHelper = func(string, *lowPortCapabilityTarget, []string) (*lowPortCapabilityHelperCopy, error) {
+		return &lowPortCapabilityHelperCopy{
+			Path: "/tmp/.gate-capability-helper-test",
+			Hash: strings.Repeat("a", sha256.Size*2),
+			File: helperFile,
+		}, nil
+	}
+	linuxCapabilityValidateHelper = func(*lowPortCapabilityHelperCopy) error { return nil }
+	linuxCapabilityRemoveHelper = func(string, string) error { return nil }
+	linuxCapabilitySetupLock = func() (io.Closer, error) {
+		return io.NopCloser(strings.NewReader("")), nil
+	}
+	linuxCapabilityCleanupHelpers = func(string) error { return nil }
+	t.Cleanup(func() { _ = helperFile.Close() })
 	t.Cleanup(target.Close)
 	return target
 }
@@ -114,28 +153,101 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 	linuxCapabilityEUID = func() int { return 1000 }
 	linuxCapabilityTool = func(name string) (string, error) {
 		if name != "sudo" {
-			t.Fatalf("tool = %q, want sudo", name)
+			t.Fatalf("unexpected tool = %q", name)
 		}
-		return "/trusted/sudo", nil
+		return "/trusted/" + name, nil
 	}
 
-	var executable string
-	var args []string
+	var executables []string
+	var calls [][]string
+	var commands []*exec.Cmd
 	linuxCapabilityCommand = func(name string, commandArgs ...string) *exec.Cmd {
-		executable = name
-		args = append([]string{}, commandArgs...)
+		executables = append(executables, name)
+		calls = append(calls, append([]string{}, commandArgs...))
+		cmd := successfulLinuxCapabilityCommand()
+		commands = append(commands, cmd)
+		return cmd
+	}
+	if err := (linuxLowPortCapabilityManager{}).Apply(target); err != nil {
+		t.Fatal(err)
+	}
+	stat, _ := selfInfoSys(target.Info)
+	wantCalls := [][]string{
+		{"-v"},
+		{
+			"-n", "--", "/tmp/.gate-capability-helper-test",
+			lowPortCapabilityHelperName,
+			"--target", target.Path,
+			"--device", strconv.FormatUint(uint64(stat.Dev), 10),
+			"--inode", strconv.FormatUint(stat.Ino, 10),
+			"--sha256", strings.Repeat("a", sha256.Size*2),
+		},
+	}
+	if !slices.Equal(executables, []string{"/trusted/sudo", "/trusted/sudo"}) ||
+		len(calls) != 2 || !slices.Equal(calls[0], wantCalls[0]) ||
+		!slices.Equal(calls[1], wantCalls[1]) {
+		t.Fatalf("commands = %q %q, want %q", executables, calls, wantCalls)
+	}
+	for _, cmd := range commands {
+		if cmd.SysProcAttr == nil || cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
+			t.Fatalf("sudo command lacks parent-death protection: %+v", cmd.SysProcAttr)
+		}
+	}
+	if !strings.HasPrefix(target.operationPath(), "/proc/") || !strings.Contains(target.operationPath(), "/fd/") {
+		t.Fatalf("helper target is not the stable gate descriptor: %q", target.operationPath())
+	}
+}
+
+func TestLinuxCapabilityApplyRetriesHelperOnExecutableTempDir(t *testing.T) {
+	isolateLinuxCapabilityManager(t)
+	target := openLinuxCapabilityTarget(t)
+	linuxCapabilityEUID = func() int { return 1000 }
+	linuxCapabilityTool = func(string) (string, error) { return "/trusted/sudo", nil }
+
+	createCalls := 0
+	linuxCapabilityCreateHelper = func(
+		_ string,
+		_ *lowPortCapabilityTarget,
+		dirs []string,
+	) (*lowPortCapabilityHelperCopy, error) {
+		createCalls++
+		wantDirs := []string{"/tmp", "/var/tmp"}
+		path := "/tmp/.gate-capability-helper-test"
+		if createCalls == 2 {
+			wantDirs = []string{"/var/tmp"}
+			path = "/var/tmp/.gate-capability-helper-test"
+		}
+		if !slices.Equal(dirs, wantDirs) {
+			t.Fatalf("create dirs = %q, want %q", dirs, wantDirs)
+		}
+		file, err := os.Open(target.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &lowPortCapabilityHelperCopy{
+			Path: path,
+			Hash: strings.Repeat("a", sha256.Size*2),
+			File: file,
+		}, nil
+	}
+	commandCall := 0
+	linuxCapabilityCommand = func(string, ...string) *exec.Cmd {
+		commandCall++
+		if commandCall == 2 {
+			return exec.Command(
+				"/bin/sh",
+				"-c",
+				"echo 'sudo: unable to execute /tmp/.gate-capability-helper-test: Permission denied' >&2; exit 1",
+			)
+		}
 		return successfulLinuxCapabilityCommand()
 	}
 
 	if err := (linuxLowPortCapabilityManager{}).Apply(target); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--", target.operationPath(), lowPortCapabilityHelperName}
-	if executable != "/trusted/sudo" || !slices.Equal(args, want) {
-		t.Fatalf("command = %q %q, want %q %q", executable, args, "/trusted/sudo", want)
-	}
-	if !strings.HasPrefix(target.operationPath(), "/proc/") || !strings.HasSuffix(target.operationPath(), "/exe") {
-		t.Fatalf("helper executable is not the running gate inode: %q", target.operationPath())
+	if createCalls != 2 || commandCall != 3 {
+		t.Fatalf("create calls = %d, command calls = %d", createCalls, commandCall)
 	}
 }
 
@@ -254,9 +366,71 @@ func TestLinuxCapabilityApplySeparatesSudoRejection(t *testing.T) {
 	}
 }
 
-func TestLowPortCapabilityHelperWritesOnlyItsExecutable(t *testing.T) {
+func TestLinuxCapabilityApplyFindsHelperErrorAfterSudoDiagnostic(t *testing.T) {
 	isolateLinuxCapabilityManager(t)
+	target := openLinuxCapabilityTarget(t)
+	linuxCapabilityEUID = func() int { return 1000 }
+	linuxCapabilityTool = func(name string) (string, error) { return "/trusted/" + name, nil }
+	call := 0
+	linuxCapabilityCommand = func(string, ...string) *exec.Cmd {
+		call++
+		if call == 1 {
+			return successfulLinuxCapabilityCommand()
+		}
+		return exec.Command(
+			"/bin/sh",
+			"-c",
+			"printf '%s\\n' 'sudo: unable to resolve host' 'gate-capability-helper:filesystem_unsupported:operation not supported' >&2; exit 1",
+		)
+	}
+
+	err := (linuxLowPortCapabilityManager{}).Apply(target)
+	var capabilityErr *lowPortCapabilityError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "capability_filesystem_unsupported" {
+		t.Fatalf("error = %v, want capability_filesystem_unsupported", err)
+	}
+}
+
+func TestLowPortCapabilityHelperWritesOnlyVerifiedTarget(t *testing.T) {
+	isolateLinuxCapabilityManager(t)
+	target := openLinuxCapabilityTarget(t)
 	linuxCapabilityEUID = func() int { return 0 }
+	t.Setenv("SUDO_UID", strconv.Itoa(os.Getuid()))
+	helper, err := os.CreateTemp(
+		"/tmp",
+		lowPortCapabilityHelperPrefix+strconv.Itoa(os.Getuid())+"-*",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperPath := helper.Name()
+	if _, err := helper.Write([]byte("fixture")); err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Chmod(0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(helperPath) })
+	linuxCapabilityExecutable = func() (string, error) {
+		return helperPath, nil
+	}
+	rootInfo, err := os.Stat("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linuxCapabilityStat = func(path string) (os.FileInfo, error) {
+		if path == helperPath {
+			return rootInfo, nil
+		}
+		return os.Stat(path)
+	}
+	expectedHash, err := hashOpenFile(target.File)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var gotName string
 	var gotValue []byte
 	linuxCapabilityFsetxattr = func(_ int, name string, value []byte, _ int) error {
@@ -266,7 +440,14 @@ func TestLowPortCapabilityHelperWritesOnlyItsExecutable(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	if code := LowPortCapabilityHelper(nil, nil, &stderr); code != ExitOK {
+	targetStat, _ := selfInfoSys(target.Info)
+	args := []string{
+		"--target", target.Path,
+		"--device", strconv.FormatUint(uint64(targetStat.Dev), 10),
+		"--inode", strconv.FormatUint(targetStat.Ino, 10),
+		"--sha256", expectedHash,
+	}
+	if code := LowPortCapabilityHelper(args, nil, &stderr); code != ExitOK {
 		t.Fatalf("helper exit = %d, stderr = %q", code, stderr.String())
 	}
 	if gotName != lowPortCapabilityXattr || !slices.Equal(gotValue, lowPortCapabilityXattrBytes()) {
@@ -291,5 +472,86 @@ func TestTrustedRootExecutableRejectsWritableAncestor(t *testing.T) {
 
 	if _, err := trustedRootExecutable("/ignored"); err == nil || !strings.Contains(err.Error(), "ancestor") {
 		t.Fatalf("writable ancestor accepted: %v", err)
+	}
+}
+
+func TestHashOpenFileIncludesContentAppendedAfterInitialStat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gate")
+	if err := os.WriteFile(path, []byte("before"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if _, err := file.Stat(); err != nil {
+		t.Fatal(err)
+	}
+	appendFile, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appendFile.WriteString("-after"); err != nil {
+		_ = appendFile.Close()
+		t.Fatal(err)
+	}
+	if err := appendFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := hashOpenFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256([]byte("before-after"))
+	if got != hex.EncodeToString(want[:]) {
+		t.Fatalf("hash = %s, want %x", got, want)
+	}
+}
+
+func TestLowPortSetupLockRejectsRemovableStateOverlap(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(configHome, "gate"))
+
+	lock, err := acquireLowPortCapabilitySetupLock()
+	if lock != nil {
+		_ = lock.Close()
+	}
+	var capabilityErr *lowPortCapabilityError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "capability_setup_lock" {
+		t.Fatalf("error = %v, want capability_setup_lock", err)
+	}
+}
+
+func TestLowPortSetupLockRejectsNonexistentCacheBelowSymlinkedState(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, "config")
+	configDir := filepath.Join(configHome, "gate")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cacheLink := filepath.Join(home, "cache-link")
+	if err := os.Symlink(configDir, cacheLink); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(cacheLink, "new-cache"))
+
+	lock, err := acquireLowPortCapabilitySetupLock()
+	if lock != nil {
+		_ = lock.Close()
+	}
+	var capabilityErr *lowPortCapabilityError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "capability_setup_lock" {
+		t.Fatalf("error = %v, want capability_setup_lock", err)
 	}
 }

@@ -80,10 +80,17 @@ executable. Continue running gate as your normal user; do not use
 WSL installations must place the binary on a Linux-native filesystem, such as
 `/home/<user>/.local/bin`. Windows-mounted paths such as `/mnt/c` can reject the
 file-capability xattr. Move or reinstall the binary on the Linux filesystem,
-then rerun setup. Setup applies the file capability through gate's fixed
-internal helper and does not invoke an external `setcap` command. Replacing an
-existing standalone install uses the distribution's libcap `getcap` tool to
-detect whether capability preservation is required.
+then rerun setup. Setup applies the file capability through an ephemeral,
+root-owned copy of gate's fixed internal helper and does not invoke an external
+`setcap` command. The helper removes itself before mutation; a later serialized
+setup or uninstall cleans a copy left by interruption before helper startup.
+They serialize on a private user-cache lock that remains stable while uninstall
+removes gate's ordinary config, data, state, and binaries.
+Replacing an existing standalone install uses the distribution's libcap
+`getcap` tool to detect whether capability preservation is required. Every
+standalone Linux install requires the util-linux `flock` tool and retains a
+user-owned `gate.install.lock` coordination file beside the binary; configured
+replacements use it to serialize replacement and crash recovery.
 
 ## Trust HTTPS
 
@@ -1324,7 +1331,11 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/uninstal
 
 Linux low-port access is a file capability on the installed gate binary.
 Deleting or replacing that binary removes the capability with it; uninstall
-does not need to remove a service, sudo policy, or system-wide port setting.
+also removes any root-owned temporary helper left by an interrupted setup.
+Standalone uninstall holds the adjacent installation lock while removing the
+binary and any interrupted replacement transaction. The empty user-owned lock
+file remains so a concurrent installer can never switch to a new lock inode.
+There is no service, sudo policy, or system-wide port setting to remove.
 
 The built-in uninstaller blocks routes and stops persisted external exposures,
 then stops every known daemon before deleting state. Any stop failure aborts

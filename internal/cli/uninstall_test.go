@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,12 +22,17 @@ func isolateUninstall(t *testing.T) string {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "xdg-state"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "xdg-cache"))
 	t.Setenv("GATE_BIN_DIR", "")
 	t.Cleanup(func() {
 		uninstallExecutablePathFunc = executablePath
 		uninstallRunHomebrewFunc = runHomebrewUninstall
 		uninstallStopExposuresFunc = stopAllKnownExposures
 		uninstallStopDaemonsFunc = stopAllKnownDaemons
+		uninstallHasCapabilityArtifactsFunc = platformHasLowPortCapabilityArtifacts
+		uninstallCleanupCapabilityArtifactsFunc = platformCleanupLowPortCapabilityArtifacts
+		uninstallAcquireCapabilityLockFunc = platformAcquireUninstallCapabilityLock
+		uninstallAcquireInstallLocksFunc = platformAcquireStandaloneInstallLocks
 		uninstallHostsPath = "/etc/hosts"
 		uninstallSystemBinPaths = []string{"/usr/local/bin/gate"}
 		untrustAuthorityFunc = func(authority *ca.CA) error { return authority.Untrust() }
@@ -37,7 +44,145 @@ func isolateUninstall(t *testing.T) string {
 		return nil
 	}
 	uninstallHostsPath = filepath.Join(home, "hosts")
+	uninstallHasCapabilityArtifactsFunc = func() bool { return false }
+	uninstallCleanupCapabilityArtifactsFunc = func(io.Writer, io.Writer) uninstallStep {
+		return uninstallStepNoop
+	}
+	uninstallAcquireCapabilityLockFunc = func() (io.Closer, error) {
+		return io.NopCloser(strings.NewReader("")), nil
+	}
+	uninstallAcquireInstallLocksFunc = func([]string) ([]io.Closer, error) {
+		return nil, nil
+	}
 	return home
+}
+
+func TestUninstallRemovesInterruptedLowPortSetupArtifact(t *testing.T) {
+	isolateUninstall(t)
+	uninstallHasCapabilityArtifactsFunc = func() bool { return true }
+	called := false
+	uninstallCleanupCapabilityArtifactsFunc = func(stdout, _ io.Writer) uninstallStep {
+		called = true
+		printUninstallStep(stdout, "removed interrupted Linux low-port setup helper")
+		return uninstallStepChanged
+	}
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitOK {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if !called {
+		t.Fatal("interrupted low-port setup cleanup was not called")
+	}
+	if !strings.Contains(out.String(), "removed interrupted Linux low-port setup helper") {
+		t.Fatalf("stdout missing cleanup result:\n%s", out.String())
+	}
+}
+
+func TestUninstallIsolatedModeSkipsInterruptedLowPortSetupArtifact(t *testing.T) {
+	home := isolateUninstall(t)
+	t.Setenv("GATE_ISOLATED_ROOT", filepath.Join(home, "isolated"))
+	if err := os.MkdirAll(paths.ConfigDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	uninstallHasCapabilityArtifactsFunc = func() bool {
+		t.Fatal("isolated uninstall inspected global low-port state")
+		return false
+	}
+	uninstallCleanupCapabilityArtifactsFunc = func(io.Writer, io.Writer) uninstallStep {
+		t.Fatal("isolated uninstall called global low-port cleanup")
+		return uninstallStepFailed
+	}
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitOK {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if strings.Contains(out.String(), "low-port setup helper") {
+		t.Fatalf("isolated uninstall mentioned global low-port state:\n%s", out.String())
+	}
+}
+
+func TestCollectUninstallTargetsIncludesStandaloneCoordinationArtifacts(t *testing.T) {
+	home := isolateUninstall(t)
+	binDir := filepath.Join(home, "bin")
+	t.Setenv("GATE_BIN_DIR", binDir)
+	if err := os.MkdirAll(filepath.Join(binDir, "gate.install.transaction"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gate.install.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	targets := collectUninstallTargets()
+	if runtime.GOOS != "linux" {
+		if slices.Contains(targets, filepath.Join(binDir, "gate.install.transaction")) ||
+			slices.Contains(targets, filepath.Join(binDir, "gate.install.lock")) {
+			t.Fatalf("non-Linux uninstall claimed Linux coordination artifacts: %q", targets)
+		}
+		return
+	}
+	for _, want := range []string{
+		filepath.Join(binDir, "gate.install.transaction"),
+	} {
+		if !slices.Contains(targets, want) {
+			t.Fatalf("targets = %q, missing %q", targets, want)
+		}
+	}
+	if slices.Contains(targets, filepath.Join(binDir, "gate.install.lock")) {
+		t.Fatalf("persistent install lock must not be removed: %q", targets)
+	}
+}
+
+func TestUninstallStopsWhenStandaloneInstallLockIsBusy(t *testing.T) {
+	home := isolateUninstall(t)
+	configDir := filepath.Join(home, "xdg-config", "gate")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	uninstallAcquireInstallLocksFunc = func([]string) ([]io.Closer, error) {
+		return nil, errUninstallCoordinationBusy
+	}
+	uninstallStopExposuresFunc = func(io.Writer, io.Writer) uninstallStep {
+		t.Fatal("uninstall mutated state after install lock failure")
+		return uninstallStepFailed
+	}
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitConflict {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(configDir); err != nil {
+		t.Fatalf("config removed after install lock failure: %v", err)
+	}
+}
+
+func TestUninstallDoesNotRemoveStandaloneTargetCreatedAfterLockSnapshot(t *testing.T) {
+	home := isolateUninstall(t)
+	configDir := filepath.Join(home, "xdg-config", "gate")
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GATE_BIN_DIR", binDir)
+	gatePath := filepath.Join(binDir, "gate")
+	uninstallAcquireInstallLocksFunc = func([]string) ([]io.Closer, error) {
+		if err := os.WriteFile(gatePath, []byte("new install"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return nil, nil
+	}
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitOK {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if got, err := os.ReadFile(gatePath); err != nil || string(got) != "new install" {
+		t.Fatalf("new install was removed: %q, %v", got, err)
+	}
 }
 
 func TestUninstallKeepsStateWhenDaemonStopFails(t *testing.T) {
@@ -79,6 +224,36 @@ func TestUninstallIsolatedModeDoesNotTouchSharedHosts(t *testing.T) {
 	}
 	if string(got) != hosts {
 		t.Fatalf("isolated uninstall changed hosts:\n%s", got)
+	}
+}
+
+func TestUninstallIsolatedModeRejectsSymlinkedBinOutsideRoot(t *testing.T) {
+	home := isolateUninstall(t)
+	root := filepath.Join(home, "isolated")
+	outside := filepath.Join(home, "outside")
+	if err := os.MkdirAll(filepath.Join(root, "xdg", "config", "gate"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideGate := filepath.Join(outside, "gate")
+	if err := os.WriteFile(outsideGate, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "bin")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	t.Setenv("GATE_ISOLATED_ROOT", root)
+	t.Setenv("GATE_BIN_DIR", link)
+
+	var out, errb bytes.Buffer
+	if code := Uninstall([]string{"-y", "--keep-trust"}, &out, &errb); code != ExitOK {
+		t.Fatalf("exit = %d; stdout=%s stderr=%s", code, out.String(), errb.String())
+	}
+	if got, err := os.ReadFile(outsideGate); err != nil || string(got) != "outside" {
+		t.Fatalf("outside gate changed: %q, %v", got, err)
 	}
 }
 

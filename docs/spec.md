@@ -628,16 +628,20 @@ Other security properties:
 - Basic auth uses constant-time comparison when configured on an exposed route.
 - Low-port setup must never run the whole CLI as root, install a privileged
   resident service, or change the machine-wide unprivileged-port policy.
-- Privileged capability application invokes only a hidden, argument-free
-  helper through fixed `sudo` arguments and a validated root-owned `sudo`
-  path whose canonical ancestors are not group- or world-writable. The
-  executable is canonicalized and held through a stable file descriptor
-  before inspection; the helper applies the capability with `fsetxattr` to
-  its own executable inode instead of re-resolving a user-writable pathname,
-  and the exact capability set is verified afterward.
+- Privileged capability application pre-authorizes `sudo`, uses validated
+  root-owned tools to create a root-owned temporary copy of the running gate
+  executable, and executes only that immutable path with fixed arguments. The
+  helper verifies its own digest, opens the canonical target path, compares its
+  device, inode, and digest with the pinned executable, applies the capability
+  with `fsetxattr`, and verifies the digest again. It unlinks itself before
+  mutation; parent cleanup, the next serialized setup, and uninstall remove
+  copies left before helper startup. The exact capability set is verified
+  afterward. Setup and uninstall share a stable user-owned lock outside
+  removable gate state.
 - File capabilities are replacement-scoped. Gate-managed replacement preserves
   existing intent before daemon restart; standalone replacement is
-  transactional, while external package managers require explicit recovery.
+  transactional under a Linux advisory lock, while external package managers
+  require explicit recovery.
 - The capability is not promoted into an ambient or inheritable set, so
   arbitrary child commands do not receive it.
 - WSL follows the Linux model only on filesystems that support Linux capability

@@ -123,7 +123,7 @@ func errorSeverity(exitCode int, code string) string {
 
 func errorRetryable(code string) bool {
 	switch code {
-	case "reload_failed", "up_failed", "dns_failed":
+	case "reload_failed", "up_failed", "dns_failed", "capability_setup_busy", "install_busy":
 		return true
 	default:
 		return false
@@ -145,7 +145,10 @@ func errorHint(code string) string {
 	case "low_port_capability_missing",
 		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
-		"capability_apply_failed", "capability_xattr_failed", "sudo_failed", "sudo_not_found":
+		"capability_apply_failed", "capability_xattr_failed",
+		"capability_helper_copy", "capability_helper_prepare", "capability_helper_cleanup",
+		"capability_setup_lock", "capability_setup_busy",
+		"sudo_failed", "sudo_not_found", "mktemp_not_found", "install_not_found", "rm_not_found":
 		return "Run `gate daemon setup` on Linux to configure ports 80 and 443."
 	case "daemon_start":
 		return "Check the requested listener addresses or stop the conflicting daemon first."
@@ -172,7 +175,10 @@ func errorNextActions(code string) []nextAction {
 	case "low_port_capability_missing",
 		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
-		"capability_apply_failed", "capability_xattr_failed", "sudo_failed", "sudo_not_found":
+		"capability_apply_failed", "capability_xattr_failed",
+		"capability_helper_copy", "capability_helper_prepare", "capability_helper_cleanup",
+		"capability_setup_lock", "capability_setup_busy",
+		"sudo_failed", "sudo_not_found", "mktemp_not_found", "install_not_found", "rm_not_found":
 		return []nextAction{{Label: "Configure low-port access", Command: "gate daemon setup"}}
 	case "daemon_start", "reload_failed":
 		return []nextAction{{Label: "Inspect daemon", Command: "gate daemon status --json"}}

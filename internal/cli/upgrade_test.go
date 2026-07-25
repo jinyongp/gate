@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,7 +67,7 @@ func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
 		{Scope: "global", PID: 123, HTTPSAddr: "[::]:443", HTTPAddr: "[::]:80"},
 		{Scope: "project:demo", PID: 124, HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"},
 	}
-	code := completeUpgrade(&out, &errb, before, "/opt/gate/bin/gate")
+	code := completeUpgrade(&out, &errb, before, upgradeInstallResult{Executable: "/opt/gate/bin/gate"})
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -92,7 +93,7 @@ func TestCompleteUpgradeSkipsRestartWhenDaemonWasStopped(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code := completeUpgrade(&out, &errb, nil, "/opt/gate/bin/gate")
+	code := completeUpgrade(&out, &errb, nil, upgradeInstallResult{Executable: "/opt/gate/bin/gate"})
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -115,7 +116,7 @@ func TestCompleteUpgradePrintsDoctorIssuesWithoutFailingUpgrade(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code := completeUpgrade(&out, &errb, nil, "/opt/gate/bin/gate")
+	code := completeUpgrade(&out, &errb, nil, upgradeInstallResult{Executable: "/opt/gate/bin/gate"})
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -146,7 +147,12 @@ func TestCompleteUpgradeWarnsAndContinuesAfterRestartFailure(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}, {PID: 456}}, "/opt/gate/bin/gate")
+	code := completeUpgrade(
+		&out,
+		&errb,
+		[]daemon.Status{{PID: 123}, {PID: 456}},
+		upgradeInstallResult{Executable: "/opt/gate/bin/gate"},
+	)
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -158,6 +164,60 @@ func TestCompleteUpgradeWarnsAndContinuesAfterRestartFailure(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "daemon restart after upgrade failed") || !strings.Contains(errb.String(), "gate daemon restart") {
 		t.Fatalf("stderr missing restart warning: %q", errb.String())
+	}
+}
+
+func TestCompleteUpgradeSkipsRestartWhenPinnedExecutableChanges(t *testing.T) {
+	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
+	oldRestart := restartDaemonAfterUpgradeFunc
+	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
+	restartDaemonAfterUpgradeFunc = func(string, daemon.Status, io.Writer, io.Writer) int {
+		t.Fatal("restart should not use an executable other than the verified inode")
+		return ExitError
+	}
+
+	path := filepath.Join(t.TempDir(), "gate")
+	if err := os.WriteFile(path, []byte("verified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // Executable permission is required by the production target resolver.
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target, err := resolveLowPortCapabilityTarget(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	replacement := filepath.Join(filepath.Dir(path), "replacement")
+	if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // Executable permission is required to model a replacement gate binary.
+	if err := os.Chmod(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := completeUpgrade(
+		&out,
+		&errb,
+		nil,
+		upgradeInstallResult{Executable: target.Path, PinnedTarget: target},
+	)
+	if code != ExitError {
+		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "changed before daemon restart") ||
+		!strings.Contains(errb.String(), "reinstall gate") ||
+		!strings.Contains(errb.String(), "gate --version") {
+		t.Fatalf("stderr lacks pinned-executable warning: %q", errb.String())
+	}
+	if strings.Contains(out.String(), "upgrade complete") {
+		t.Fatalf("incomplete replacement reported success: %q", out.String())
 	}
 }
 
@@ -266,6 +326,7 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runUpgradeInstall: %v", err)
 	}
+	defer upgradedExecutable.Close()
 	if code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}}, upgradedExecutable); code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -276,7 +337,6 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 		"brew-upgrade",
 		"inspect:/home/linuxbrew/.linuxbrew/bin/gate",
 		"setup:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
-		"inspect:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
 		"version:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
 		"restart:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.4/bin/gate",
 	}
@@ -384,9 +444,11 @@ func TestLinuxStandaloneUpgradeVerifiesPreservedLowPortAccessBeforeVersion(t *te
 	}
 
 	var out, errb bytes.Buffer
-	if _, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+	result, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
+	if err != nil {
 		t.Fatalf("runUpgradeInstall: %v", err)
 	}
+	defer result.Close()
 	if want := []string{"inspect", "install", "inspect", "version"}; !slices.Equal(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
 	}

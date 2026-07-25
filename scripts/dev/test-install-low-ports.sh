@@ -61,7 +61,25 @@ if [ "${GATE_TEST_GETCAP_STATE:-missing}" = "configured" ]; then
 fi
 EOF
 
-chmod +x "$fake_bin/uname" "$fake_bin/curl" "$fake_bin/sha256sum" "$fake_bin/getcap"
+cat >"$fake_bin/flock" <<'EOF'
+#!/bin/sh
+python3 - "$2" <<'PY'
+import fcntl
+import sys
+
+try:
+    fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(1)
+PY
+EOF
+
+chmod +x \
+  "$fake_bin/uname" \
+  "$fake_bin/curl" \
+  "$fake_bin/sha256sum" \
+  "$fake_bin/getcap" \
+  "$fake_bin/flock"
 
 asset="$test_root/gate-linux-amd64"
 cat >"$asset" <<'EOF'
@@ -89,6 +107,7 @@ run_installer() {
     GATE_TEST_ASSET="$asset" \
     GATE_TEST_SETUP_LOG="$case_root/setup.log" \
     GATE_INSTALL_TEST_GETCAP="$fake_bin/getcap" \
+    GATE_INSTALL_TEST_FLOCK="$fake_bin/flock" \
     "$@" \
     sh scripts/install.sh
 }
@@ -106,6 +125,7 @@ run_installer_pty() {
     GATE_TEST_ASSET="$asset" \
     GATE_TEST_SETUP_LOG="$case_root/setup.log" \
     GATE_INSTALL_TEST_GETCAP="$fake_bin/getcap" \
+    GATE_INSTALL_TEST_FLOCK="$fake_bin/flock" \
     GATE_TEST_PTY_INPUT="$input" \
     "$@" \
     python3 - <<'PY'
@@ -230,6 +250,17 @@ fi
 grep -F "printf old" "$rollback/bin/gate" >/dev/null
 grep -F "Restored the previous gate binary." "$rollback/output.log" >/dev/null
 
+unsafe_transaction="$test_root/unsafe-transaction"
+mkdir -p "$unsafe_transaction/bin" "$unsafe_transaction/external"
+printf '%s\n' "preserve-me" >"$unsafe_transaction/external/state"
+ln -s "$unsafe_transaction/external" "$unsafe_transaction/bin/gate.install.transaction"
+if run_installer "$unsafe_transaction" >"$unsafe_transaction/output.log" 2>&1; then
+  echo "installer accepted an unsafe transaction path" >&2
+  exit 1
+fi
+grep -F "refusing unsafe gate install transaction" "$unsafe_transaction/output.log" >/dev/null
+test "$(cat "$unsafe_transaction/external/state")" = "preserve-me"
+
 interrupted="$test_root/interrupted"
 mkdir -p "$interrupted/bin"
 printf '#!/bin/sh\nprintf old\n' >"$interrupted/bin/gate"
@@ -245,26 +276,43 @@ grep -F "printf old" "$interrupted/bin/gate" >/dev/null
 grep -F "restored the previous gate binary" "$interrupted/output.log" >/dev/null
 
 locked="$test_root/locked"
-mkdir -p "$locked/bin" "$locked/bin/gate.install.lock"
+mkdir -p "$locked/bin"
 printf '#!/bin/sh\nprintf old\n' >"$locked/bin/gate"
 chmod +x "$locked/bin/gate"
-printf '%s\n' "$$" >"$locked/bin/gate.install.lock/owner"
+python3 - "$locked/bin/gate.install.lock" "$locked/lock-ready" <<'PY' &
+import fcntl
+import pathlib
+import sys
+import time
+
+lock = open(sys.argv[1], "a")
+fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+pathlib.Path(sys.argv[2]).touch()
+time.sleep(30)
+PY
+lock_holder_pid=$!
+for _ in $(seq 1 100); do
+  [ -e "$locked/lock-ready" ] && break
+  sleep 0.02
+done
 if run_installer "$locked" >"$locked/output.log" 2>&1; then
   echo "installer ignored an active destination lock" >&2
+  kill "$lock_holder_pid" 2>/dev/null || true
   exit 1
 fi
+kill "$lock_holder_pid" 2>/dev/null || true
+wait "$lock_holder_pid" 2>/dev/null || true
 grep -F "another gate installation or upgrade" "$locked/output.log" >/dev/null
 grep -F "printf old" "$locked/bin/gate" >/dev/null
 
 stale="$test_root/stale"
-mkdir -p "$stale/bin/gate.install.lock"
+mkdir -p "$stale/bin/gate.install.transaction"
 printf '#!/bin/sh\nprintf replacement\n' >"$stale/bin/gate"
 printf '#!/bin/sh\nprintf old\n' >"$stale/old-gate"
 chmod +x "$stale/bin/gate" "$stale/old-gate"
-ln "$stale/old-gate" "$stale/bin/gate.install.lock/previous"
+ln "$stale/old-gate" "$stale/bin/gate.install.transaction/previous"
 rm -f "$stale/old-gate"
-printf '%s\n' "999999" >"$stale/bin/gate.install.lock/owner"
-printf '%s\n' "replacing" >"$stale/bin/gate.install.lock/state"
+printf '%s\n' "replacing" >"$stale/bin/gate.install.transaction/state"
 if ! run_installer "$stale" GATE_TEST_GETCAP_STATE=configured >"$stale/output.log" 2>&1; then
   cat "$stale/output.log" >&2
   exit 1
@@ -273,6 +321,26 @@ grep -F "recovered the previous gate binary" "$stale/output.log" >/dev/null
 test "$(cat "$stale/setup.log")" = "daemon setup --yes"
 if rg -F "printf old" "$stale/bin/gate" >/dev/null; then
   echo "stale-lock recovery did not commit the replacement" >&2
+  exit 1
+fi
+
+stale_before_replace="$test_root/stale-before-replace"
+mkdir -p "$stale_before_replace/bin/gate.install.transaction"
+printf '#!/bin/sh\nprintf old\n' >"$stale_before_replace/bin/gate"
+chmod +x "$stale_before_replace/bin/gate"
+ln \
+  "$stale_before_replace/bin/gate" \
+  "$stale_before_replace/bin/gate.install.transaction/previous"
+printf '%s\n' "replacing" >"$stale_before_replace/bin/gate.install.transaction/state"
+if ! run_installer "$stale_before_replace" \
+  GATE_TEST_GETCAP_STATE=configured \
+  >"$stale_before_replace/output.log" 2>&1; then
+  cat "$stale_before_replace/output.log" >&2
+  exit 1
+fi
+test "$(cat "$stale_before_replace/setup.log")" = "daemon setup --yes"
+if rg -F "recovered the previous gate binary" "$stale_before_replace/output.log" >/dev/null; then
+  echo "pre-replacement crash was misclassified as a completed replacement" >&2
   exit 1
 fi
 
@@ -286,12 +354,12 @@ run_installer "$concurrent" \
   >"$concurrent/first.log" 2>&1 &
 first_installer_pid=$!
 for _ in $(seq 1 100); do
-  if [ -d "$concurrent/bin/gate.install.lock" ]; then
+  if [ -e "$concurrent/setup.log" ]; then
     break
   fi
   sleep 0.02
 done
-if [ ! -d "$concurrent/bin/gate.install.lock" ]; then
+if [ ! -e "$concurrent/setup.log" ]; then
   echo "first installer did not acquire the destination lock" >&2
   kill "$first_installer_pid" 2>/dev/null || true
   wait "$first_installer_pid" 2>/dev/null || true
@@ -317,9 +385,10 @@ if find \
   "$rollback/bin" \
   "$interrupted/bin" \
   "$stale/bin" \
+  "$stale_before_replace/bin" \
   "$concurrent/bin" \
   -maxdepth 1 \
-  \( -name 'gate.install.lock' -o -name 'gate.install.lock.recover.*' \) -print -quit |
+  -name 'gate.install.transaction' -print -quit |
   grep -q .; then
   echo "installer left a transaction artifact behind" >&2
   exit 1

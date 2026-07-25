@@ -8,7 +8,9 @@ KEEP_TRUST=0
 WORKFILE="$(mktemp)"
 SORTED_FILE="${WORKFILE}.sorted"
 CLEANUP_FILE="${WORKFILE}.cleanup"
-trap 'rm -f "$WORKFILE" "$SORTED_FILE" "$CLEANUP_FILE"' EXIT
+HELPER_FILE="${WORKFILE}.helpers"
+INSTALL_LOCKS_FILE="${WORKFILE}.install-locks"
+trap 'rm -f "$WORKFILE" "$SORTED_FILE" "$CLEANUP_FILE" "$HELPER_FILE" "$INSTALL_LOCKS_FILE"' EXIT
 
 ui_section() { printf '\n%s\n' "$1"; }
 ui_ok() { printf 'ok: %s\n' "$1"; }
@@ -71,6 +73,21 @@ do
   fi
 done
 
+if [ "$OS" = "linux" ] && contains_control_char "${XDG_CACHE_HOME:-}"; then
+  ui_error "path-bearing environment values must not contain control characters"
+  exit 1
+fi
+
+if [ "$OS" = "linux" ] && [ -n "${XDG_CACHE_HOME:-}" ]; then
+  case "$XDG_CACHE_HOME" in
+    /*) ;;
+    *)
+      ui_error "XDG_CACHE_HOME must be an absolute path"
+      exit 1
+      ;;
+  esac
+fi
+
 if [ -n "${GATE_ISOLATED_ROOT:-}" ]; then
   case "$GATE_ISOLATED_ROOT" in
     /*) ;;
@@ -105,6 +122,26 @@ if [ -n "${GATE_ISOLATED_ROOT:-}" ]; then
 			exit 1
 			;;
 	esac
+  if [ -n "${GATE_BIN_DIR:-}" ]; then
+    if [ -d "$GATE_BIN_DIR" ]; then
+      bin_dir_canonical="$(cd -P "$GATE_BIN_DIR" && pwd -P)"
+      case "$bin_dir_canonical" in
+        "${GATE_ISOLATED_ROOT}"/*) GATE_BIN_DIR="$bin_dir_canonical" ;;
+        *)
+          ui_error "isolated GATE_BIN_DIR must resolve inside the isolated root"
+          exit 1
+          ;;
+      esac
+    else
+      case "$GATE_BIN_DIR" in
+        "${GATE_ISOLATED_ROOT}"/*) ;;
+        *)
+          ui_error "isolated GATE_BIN_DIR must be inside the isolated root"
+          exit 1
+          ;;
+      esac
+    fi
+  fi
 fi
 
 assert_isolated_descendant() {
@@ -114,6 +151,25 @@ assert_isolated_descendant() {
 	fi
 	case "$path" in
 		"${GATE_ISOLATED_ROOT}"/*) return 0 ;;
+		*)
+			ui_error "refusing unsafe isolated uninstall target: $path"
+			return 1
+			;;
+	esac
+}
+
+assert_isolated_removal_target() {
+	path="$1"
+	if [ -z "${GATE_ISOLATED_ROOT:-}" ]; then
+		return 0
+	fi
+	parent_dir="$(dirname "$path")"
+	if ! canonical_parent="$(cd -P "$parent_dir" 2>/dev/null && pwd -P)"; then
+		ui_error "refusing unsafe isolated uninstall target: $path"
+		return 1
+	fi
+	case "$canonical_parent" in
+		"${GATE_ISOLATED_ROOT}"|"${GATE_ISOLATED_ROOT}"/*) return 0 ;;
 		*)
 			ui_error "refusing unsafe isolated uninstall target: $path"
 			return 1
@@ -192,14 +248,16 @@ collect_paths() {
     printf '%s\n' "$rt_dir" >> "$WORKFILE"
   fi
 
-  if [ -n "${GATE_BIN_DIR:-}" ] && { [ -f "${GATE_BIN_DIR}/gate" ] || [ -L "${GATE_BIN_DIR}/gate" ]; }; then
-    printf '%s\n' "${GATE_BIN_DIR}/gate" >> "$WORKFILE"
-  fi
-  if [ -f "${HOME_DIR}/.local/bin/gate" ] || [ -L "${HOME_DIR}/.local/bin/gate" ]; then
-    printf '%s\n' "${HOME_DIR}/.local/bin/gate" >> "$WORKFILE"
-  fi
-  if { [ -f "/usr/local/bin/gate" ] || [ -L "/usr/local/bin/gate" ]; } && ! is_homebrew_gate "/usr/local/bin/gate"; then
-    printf '%s\n' "/usr/local/bin/gate" >> "$WORKFILE"
+  if [ -n "${GATE_ISOLATED_ROOT:-}" ]; then
+    if [ -n "${GATE_BIN_DIR:-}" ] && [ -d "$GATE_BIN_DIR" ]; then
+      append_standalone_install_paths "${GATE_BIN_DIR}/gate"
+    fi
+  else
+    if [ -n "${GATE_BIN_DIR:-}" ] && [ -d "$GATE_BIN_DIR" ]; then
+      append_standalone_install_paths "${GATE_BIN_DIR}/gate"
+    fi
+    append_standalone_install_paths "${HOME_DIR}/.local/bin/gate"
+    append_standalone_install_paths "/usr/local/bin/gate"
   fi
 }
 
@@ -217,8 +275,196 @@ is_homebrew_gate() {
   return 1
 }
 
+append_standalone_install_paths() {
+  gate_path="$1"
+  if is_homebrew_gate "$gate_path"; then
+    return
+  fi
+  install_paths="$gate_path"
+  if [ "$OS" = "linux" ]; then
+    install_paths="${install_paths}
+${gate_path}.install.transaction"
+  fi
+  printf '%s\n' "$install_paths" | while IFS= read -r install_path; do
+    if [ -e "$install_path" ] || [ -L "$install_path" ]; then
+      printf '%s\n' "$install_path" >> "$WORKFILE"
+    fi
+  done
+}
+
 append_cleanup_action() {
   printf '%s\n' "$1" >> "$CLEANUP_FILE"
+}
+
+collect_low_port_helpers() {
+  : > "$HELPER_FILE"
+  if [ "$OS" != "linux" ] || [ -n "${GATE_ISOLATED_ROOT:-}" ]; then
+    return
+  fi
+  if ! command -v find >/dev/null 2>&1; then
+    ui_error "find is required to inspect interrupted Linux low-port setup state"
+    exit 1
+  fi
+  helper_uid="$(id -u)"
+  for helper_dir in /tmp /var/tmp; do
+    [ -d "$helper_dir" ] || continue
+    find "$helper_dir" -maxdepth 1 -type f -user 0 \
+      \( -perm 0600 -o -perm 0755 \) \
+      -name ".gate-capability-helper-${helper_uid}-*" -print >> "$HELPER_FILE"
+  done
+}
+
+acquire_low_port_setup_lock() {
+  if [ "$OS" != "linux" ] || [ -n "${GATE_ISOLATED_ROOT:-}" ]; then
+    return
+  fi
+  find_flock
+  if [ -z "$flock_bin" ]; then
+    ui_error "flock is required to serialize Linux low-port setup cleanup"
+    exit 1
+  fi
+  capability_cache_dir="${XDG_CACHE_HOME:-${HOME_DIR}/.cache}"
+  mkdir -p "$capability_cache_dir"
+  capability_cache_dir="$(cd -P "$capability_cache_dir" && pwd -P)"
+  capability_lock_dir="${capability_cache_dir}/.gate-capability-locks"
+  capability_lock_path="${capability_lock_dir}/capability-setup.lock"
+  for removable_gate_dir in \
+    "$(gate_config_dir)" \
+    "$(gate_data_dir)" \
+    "$(gate_state_dir)" \
+    "$(gate_runtime_dir)"
+  do
+    if [ -d "$removable_gate_dir" ]; then
+      removable_gate_dir="$(cd -P "$removable_gate_dir" && pwd -P)"
+    fi
+    case "$capability_lock_dir" in
+      "$removable_gate_dir"|"$removable_gate_dir"/*)
+        ui_error "low-port setup lock must be outside removable gate state"
+        exit 1
+        ;;
+    esac
+  done
+  if [ -L "$capability_lock_dir" ] || {
+    [ -e "$capability_lock_dir" ] && [ ! -d "$capability_lock_dir" ]
+  }; then
+    ui_error "refusing unsafe low-port setup lock directory: $capability_lock_dir"
+    exit 1
+  fi
+  mkdir -p "$capability_lock_dir"
+  chmod 0700 "$capability_lock_dir"
+  if [ -L "$capability_lock_path" ] || {
+    [ -e "$capability_lock_path" ] && [ ! -f "$capability_lock_path" ]
+  }; then
+    ui_error "refusing unsafe low-port setup lock: $capability_lock_path"
+    exit 1
+  fi
+  previous_umask="$(umask)"
+  umask 077
+  if ! exec 8>>"$capability_lock_path"; then
+    umask "$previous_umask"
+    ui_error "failed to open low-port setup lock: $capability_lock_path"
+    exit 1
+  fi
+  umask "$previous_umask"
+  chmod 0600 "$capability_lock_path"
+  if ! find "$capability_lock_path" -maxdepth 0 -type f -user "$(id -u)" \
+    -perm 0600 -print | grep -qx "$capability_lock_path"; then
+    ui_error "refusing unsafe low-port setup lock: $capability_lock_path"
+    exit 1
+  fi
+  if ! "$flock_bin" -n 8; then
+    ui_error "another low-port capability setup is running"
+    exit 1
+  fi
+}
+
+find_flock() {
+  flock_bin=""
+  for flock_candidate in /usr/bin/flock /bin/flock; do
+    if [ -x "$flock_candidate" ]; then
+      flock_bin="$flock_candidate"
+      return
+    fi
+  done
+  ui_error "flock is required to serialize Linux uninstall"
+  exit 1
+}
+
+collect_standalone_install_locks() {
+  : > "$INSTALL_LOCKS_FILE"
+  if [ "$OS" != "linux" ]; then
+    return
+  fi
+  if [ -n "${GATE_ISOLATED_ROOT:-}" ]; then
+    if [ -n "${GATE_BIN_DIR:-}" ] && [ -d "$GATE_BIN_DIR" ]; then
+      case "${GATE_BIN_DIR}/gate" in
+        "${GATE_ISOLATED_ROOT}"/*)
+          printf '%s\n' "${GATE_BIN_DIR}/gate"
+          ;;
+      esac
+    fi
+  else
+    if [ -n "${GATE_BIN_DIR:-}" ] && [ -d "$GATE_BIN_DIR" ]; then
+      printf '%s\n' "${GATE_BIN_DIR}/gate"
+    fi
+    if [ -d "${HOME_DIR}/.local/bin" ]; then
+      printf '%s\n' "${HOME_DIR}/.local/bin/gate"
+    fi
+    printf '%s\n' "/usr/local/bin/gate"
+  fi |
+    while IFS= read -r gate_path; do
+      [ -n "$gate_path" ] || continue
+      is_homebrew_gate "$gate_path" && continue
+      managed_install_path=0
+      if [ -n "${GATE_BIN_DIR:-}" ] && [ "$gate_path" = "${GATE_BIN_DIR}/gate" ]; then
+        managed_install_path=1
+      elif [ -z "${GATE_ISOLATED_ROOT:-}" ] &&
+        [ "$gate_path" = "${HOME_DIR}/.local/bin/gate" ]; then
+        managed_install_path=1
+      fi
+      if [ "$managed_install_path" -eq 1 ] ||
+        [ -e "$gate_path" ] || [ -L "$gate_path" ] ||
+        [ -e "${gate_path}.install.lock" ] || [ -L "${gate_path}.install.lock" ] ||
+        [ -e "${gate_path}.install.transaction" ] || [ -L "${gate_path}.install.transaction" ]; then
+        printf '%s\n' "${gate_path}.install.lock"
+      fi
+    done >> "$INSTALL_LOCKS_FILE"
+  sort -u "$INSTALL_LOCKS_FILE" -o "$INSTALL_LOCKS_FILE"
+}
+
+acquire_standalone_install_locks() {
+  if [ ! -s "$INSTALL_LOCKS_FILE" ]; then
+    return
+  fi
+  find_flock
+  lock_count=0
+  while IFS= read -r install_lock_path; do
+    if [ -L "$install_lock_path" ] || {
+      [ -e "$install_lock_path" ] && [ ! -f "$install_lock_path" ]
+    }; then
+      ui_error "refusing unsafe gate install lock: $install_lock_path"
+      exit 1
+    fi
+    previous_umask="$(umask)"
+    umask 077
+    case "$lock_count" in
+      0) exec 7>>"$install_lock_path"; install_lock_fd=7 ;;
+      1) exec 6>>"$install_lock_path"; install_lock_fd=6 ;;
+      2) exec 5>>"$install_lock_path"; install_lock_fd=5 ;;
+      *)
+        umask "$previous_umask"
+        ui_error "too many standalone gate install locks"
+        exit 1
+        ;;
+    esac
+    umask "$previous_umask"
+    chmod 0600 "$install_lock_path"
+    if ! "$flock_bin" -n "$install_lock_fd"; then
+      ui_error "another gate installation or upgrade is using: ${install_lock_path%.install.lock}"
+      exit 1
+    fi
+    lock_count=$((lock_count + 1))
+  done < "$INSTALL_LOCKS_FILE"
 }
 
 collect_cleanup_actions() {
@@ -229,21 +475,29 @@ collect_cleanup_actions() {
   if [ -z "${GATE_ISOLATED_ROOT:-}" ] && [ -f "/etc/hosts" ] && grep -F "# >>> gate managed >>>" "/etc/hosts" >/dev/null 2>&1; then
     append_cleanup_action "managed hosts block in /etc/hosts"
   fi
-  for rc_file in \
-    "${HOME_DIR}/.zshrc" \
-    "${HOME_DIR}/.bashrc" \
-    "${HOME_DIR}/.bash_profile" \
-    "${HOME_DIR}/.bash_login" \
-    "${HOME_DIR}/.profile" \
-    "${HOME_DIR}/.config/fish/config.fish"
-  do
-    if grep -F "# >>> gate PATH >>>" "$rc_file" >/dev/null 2>&1; then
-      append_cleanup_action "gate PATH block in $rc_file"
-    fi
-  done
+  if [ -z "${GATE_ISOLATED_ROOT:-}" ]; then
+    for rc_file in \
+      "${HOME_DIR}/.zshrc" \
+      "${HOME_DIR}/.bashrc" \
+      "${HOME_DIR}/.bash_profile" \
+      "${HOME_DIR}/.bash_login" \
+      "${HOME_DIR}/.profile" \
+      "${HOME_DIR}/.config/fish/config.fish"
+    do
+      if grep -F "# >>> gate PATH >>>" "$rc_file" >/dev/null 2>&1; then
+        append_cleanup_action "gate PATH block in $rc_file"
+      fi
+    done
+  fi
+  collect_low_port_helpers
+  if [ -s "$HELPER_FILE" ]; then
+    append_cleanup_action "interrupted Linux low-port setup helper"
+  fi
 }
 
 collect_paths
+collect_low_port_helpers
+collect_standalone_install_locks
 collect_cleanup_actions
 sort -u "$WORKFILE" > "$SORTED_FILE"
 if [ -s "$SORTED_FILE" ] || [ -s "$CLEANUP_FILE" ]; then
@@ -394,6 +648,14 @@ untrust_gate() {
 }
 
 delegate_exposure_cleanup
+collect_low_port_helpers
+collect_standalone_install_locks
+if [ -s "$WORKFILE" ] || [ -s "$HELPER_FILE" ] || [ -s "$CLEANUP_FILE" ] ||
+  command -v gate >/dev/null 2>&1; then
+  acquire_low_port_setup_lock
+  acquire_standalone_install_locks
+  collect_low_port_helpers
+fi
 untrust_gate
 if [ "$FAILED" -eq 1 ]; then
 	ui_error "gate uninstall stopped before deleting files because trust cleanup failed."
@@ -533,11 +795,42 @@ run_privileged() {
   "$@"
 }
 
-cleanup_path_blocks
-cleanup_hosts_block
+cleanup_low_port_helpers() {
+  collect_low_port_helpers
+  if [ ! -s "$HELPER_FILE" ]; then
+    return
+  fi
+  while IFS= read -r helper_path; do
+    case "$helper_path" in
+      /tmp/.gate-capability-helper-*|/var/tmp/.gate-capability-helper-*) ;;
+      *)
+        ui_error "refusing unsafe low-port helper path: $helper_path"
+        FAILED=1
+        continue
+        ;;
+    esac
+    if run_privileged rm -f -- "$helper_path"; then
+      ui_ok "removed interrupted Linux low-port setup helper"
+      FOUND=1
+    else
+      ui_error "failed to remove interrupted Linux low-port setup helper: $helper_path"
+      FAILED=1
+    fi
+  done < "$HELPER_FILE"
+}
+
+if [ -z "${GATE_ISOLATED_ROOT:-}" ]; then
+  cleanup_path_blocks
+  cleanup_hosts_block
+fi
+cleanup_low_port_helpers
 
 while IFS= read -r target; do
   if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+    continue
+  fi
+  if ! assert_isolated_removal_target "$target"; then
+    FAILED=1
     continue
   fi
 

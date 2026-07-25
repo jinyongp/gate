@@ -45,9 +45,13 @@ find_capability_tool() {
 }
 
 getcap_bin="$(find_capability_tool getcap || true)"
+setcap_bin="$(find_capability_tool setcap || true)"
 sudo_bin="$(find_capability_tool sudo || true)"
-if [[ -z "$getcap_bin" || -z "$sudo_bin" ]]; then
-  skip_or_fail "trusted getcap or sudo tool unavailable"
+mktemp_bin="$(find_capability_tool mktemp || true)"
+install_bin="$(find_capability_tool install || true)"
+if [[ -z "$getcap_bin" || -z "$setcap_bin" || -z "$sudo_bin" ||
+  -z "$mktemp_bin" || -z "$install_bin" ]]; then
+  skip_or_fail "trusted getcap, setcap, sudo, mktemp, or install tool unavailable"
 fi
 if ! "$sudo_bin" -n true >/dev/null 2>&1; then
   skip_or_fail "passwordless non-interactive sudo unavailable"
@@ -55,8 +59,12 @@ fi
 
 fixture_root="$(mktemp -d)"
 gate_bin="${fixture_root}/gate"
+shell_gate_bin="${fixture_root}/shell-bin/gate"
 config_home="${fixture_root}/config"
+data_home="${fixture_root}/data"
 state_home="${fixture_root}/state"
+cache_home="${fixture_root}/cache"
+test_home="${fixture_root}/home"
 project_dir="${fixture_root}/project"
 daemon_started=0
 
@@ -69,7 +77,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$config_home" "$state_home" "$project_dir"
+mkdir -p \
+  "$config_home" \
+  "$data_home" \
+  "$state_home" \
+  "$cache_home" \
+  "$test_home" \
+  "$(dirname "$shell_gate_bin")" \
+  "$project_dir"
 cat >"${project_dir}/gate.toml" <<'EOF'
 [project]
 name = "capability-fixture"
@@ -79,6 +94,7 @@ base = "capability-fixture.localhost"
 port = 49191
 EOF
 go build -trimpath -o "$gate_bin" ./cmd/gate
+cp "$gate_bin" "$shell_gate_bin"
 
 if ! setup_output="$("$gate_bin" daemon setup --yes 2>&1)"; then
   skip_or_fail "file capability setup failed: ${setup_output}"
@@ -157,3 +173,68 @@ fi
 
 printf 'ok: gate listener bound :443/:80 with CapEff=%s\n' "$listener_cap"
 printf 'ok: gate run child omitted CAP_NET_BIND_SERVICE with CapEff=%s\n' "$child_cap"
+
+XDG_CONFIG_HOME="$config_home" XDG_STATE_HOME="$state_home" \
+  "$gate_bin" daemon stop >/dev/null
+daemon_started=0
+
+helper_pattern=".gate-capability-helper-$(id -u)-XXXXXXXX"
+make_root_helper_residue() {
+  local source_bin="$1"
+  local residue
+  residue="$("$sudo_bin" -n -- "$mktemp_bin" "/tmp/${helper_pattern}")"
+  "$sudo_bin" -n -- "$install_bin" -m 0755 -- "$source_bin" "$residue"
+  printf '%s\n' "$residue"
+}
+
+assert_no_root_helper_residue() {
+  local found
+  found="$(
+    find /tmp /var/tmp -maxdepth 1 -type f -user 0 \
+      -name ".gate-capability-helper-$(id -u)-*" -print -quit 2>/dev/null || true
+  )"
+  if [[ -n "$found" ]]; then
+    echo "error: root-owned low-port helper residue remains: $found" >&2
+    exit 1
+  fi
+}
+
+"$sudo_bin" -n -- "$setcap_bin" -r "$gate_bin"
+setup_residue="$(make_root_helper_residue "$gate_bin")"
+if [[ ! -f "$setup_residue" ]]; then
+  echo "error: failed to create setup recovery residue" >&2
+  exit 1
+fi
+HOME="$test_home" \
+  XDG_CACHE_HOME="$cache_home" \
+  "$gate_bin" daemon setup --yes >/dev/null
+assert_no_root_helper_residue
+
+builtin_residue="$(make_root_helper_residue "$gate_bin")"
+HOME="$test_home" \
+  XDG_CONFIG_HOME="$config_home" \
+  XDG_DATA_HOME="$data_home" \
+  XDG_STATE_HOME="$state_home" \
+  XDG_CACHE_HOME="$cache_home" \
+  GATE_BIN_DIR="$fixture_root" \
+  "$gate_bin" uninstall --yes --keep-trust >/dev/null
+if [[ -e "$gate_bin" || -e "$builtin_residue" ]]; then
+  echo "error: built-in uninstall left gate or helper residue" >&2
+  exit 1
+fi
+
+shell_residue="$(make_root_helper_residue "$shell_gate_bin")"
+HOME="$test_home" \
+  XDG_CONFIG_HOME="${fixture_root}/shell-config" \
+  XDG_DATA_HOME="${fixture_root}/shell-data" \
+  XDG_STATE_HOME="${fixture_root}/shell-state" \
+  XDG_CACHE_HOME="${fixture_root}/shell-cache" \
+  GATE_BIN_DIR="$(dirname "$shell_gate_bin")" \
+  sh scripts/uninstall.sh --yes --keep-trust >/dev/null
+if [[ -e "$shell_gate_bin" || -e "$shell_residue" ]]; then
+  echo "error: standalone uninstall left gate or helper residue" >&2
+  exit 1
+fi
+assert_no_root_helper_residue
+
+printf 'ok: setup recovery and both uninstall paths removed root helper residue\n'

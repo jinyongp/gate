@@ -36,7 +36,9 @@ gate daemon setup
 
 The standalone installer offers this setup in an interactive terminal.
 Fresh non-interactive and package-manager installs do not elevate silently; run
-the command afterward. In WSL, install `gate` on the Linux filesystem (for
+the command afterward. Standalone Linux installation requires `flock` from
+util-linux; replacing an existing binary also requires `getcap` from libcap.
+In WSL, install `gate` on the Linux filesystem (for
 example, under `/home`), not a Windows-mounted path such as `/mnt/c`, because
 file capabilities may not be supported there. Do not run `sudo gate up -d`;
 setup grants only the installed gate executable permission to bind low ports.

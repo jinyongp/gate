@@ -4,16 +4,21 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"gate/internal/paths"
 
 	"golang.org/x/sys/unix"
 )
@@ -22,21 +27,45 @@ const (
 	lowPortCapabilityXattr        = "security.capability"
 	lowPortCapabilityHelperMarker = "gate-capability-helper:"
 	lowPortCapabilityHelperName   = "__set-low-port-capability"
+	lowPortCapabilityHelperPrefix = ".gate-capability-helper-"
 	vfsCapabilityRevision2        = uint32(0x02000000)
 	vfsCapabilityEffective        = uint32(0x00000001)
 )
 
+var lowPortCapabilityHelperTempDirs = []string{"/tmp", "/var/tmp"}
+
 type linuxLowPortCapabilityManager struct{}
 
+type lowPortCapabilityHelperCopy struct {
+	Path string
+	Hash string
+	File *os.File
+	Info os.FileInfo
+}
+
+func (h *lowPortCapabilityHelperCopy) Close() {
+	if h != nil && h.File != nil {
+		_ = h.File.Close()
+	}
+}
+
 var (
-	linuxCapabilityCommand   = exec.Command
-	linuxCapabilityEUID      = os.Geteuid
-	linuxCapabilityTool      = trustedLinuxCapabilityTool
-	linuxCapabilityEval      = filepath.EvalSymlinks
-	linuxCapabilityStat      = os.Stat
-	linuxCapabilitySelfStat  = func() (os.FileInfo, error) { return os.Stat("/proc/self/exe") }
-	linuxCapabilityFgetxattr = unix.Fgetxattr
-	linuxCapabilityFsetxattr = unix.Fsetxattr
+	linuxCapabilityCommand        = exec.Command
+	linuxCapabilityEUID           = os.Geteuid
+	linuxCapabilityTool           = trustedLinuxCapabilityTool
+	linuxCapabilityEval           = filepath.EvalSymlinks
+	linuxCapabilityStat           = os.Stat
+	linuxCapabilityAccess         = unix.Access
+	linuxCapabilitySelfStat       = func() (os.FileInfo, error) { return os.Stat("/proc/self/exe") }
+	linuxCapabilityExecutable     = os.Executable
+	linuxCapabilityFgetxattr      = unix.Fgetxattr
+	linuxCapabilityFsetxattr      = unix.Fsetxattr
+	linuxCapabilityFremovexattr   = unix.Fremovexattr
+	linuxCapabilityCreateHelper   = createLowPortCapabilityHelperCopy
+	linuxCapabilityValidateHelper = validateLowPortCapabilityHelperCopy
+	linuxCapabilityRemoveHelper   = removeLowPortCapabilityHelper
+	linuxCapabilitySetupLock      = acquireLowPortCapabilitySetupLock
+	linuxCapabilityCleanupHelpers = cleanupLowPortCapabilityHelpers
 )
 
 func platformLowPortCapabilityManager() lowPortCapabilityManager {
@@ -44,10 +73,10 @@ func platformLowPortCapabilityManager() lowPortCapabilityManager {
 }
 
 func (t *lowPortCapabilityTarget) operationPath() string {
-	if t == nil {
+	if t == nil || t.File == nil {
 		return ""
 	}
-	return fmt.Sprintf("/proc/%d/exe", os.Getpid())
+	return fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), t.File.Fd())
 }
 
 func (linuxLowPortCapabilityManager) Inspect(target *lowPortCapabilityTarget) (lowPortCapabilityInspection, error) {
@@ -88,50 +117,567 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 	if err != nil {
 		return err
 	}
+	setupLock, err := linuxCapabilitySetupLock()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = setupLock.Close() }()
+	if err := runLinuxCapabilitySudo(sudo, "-v"); err != nil {
+		return &lowPortCapabilityError{
+			Code: "sudo_failed",
+			Err:  fmt.Errorf("authorize low-port capability setup: %w", err),
+		}
+	}
+	if err := linuxCapabilityCleanupHelpers(sudo); err != nil {
+		return &lowPortCapabilityError{
+			Code: "capability_helper_cleanup",
+			Err:  fmt.Errorf("clean interrupted low-port capability helper: %w", err),
+		}
+	}
 	if err := target.validateIdentity(); err != nil {
 		return err
 	}
-	cmd := linuxCapabilityCommand(sudo, "--", target.operationPath(), lowPortCapabilityHelperName)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(output.String())
-		if message == "" {
-			message = err.Error()
+	if err := validateCapabilityHelperExecutable(target); err != nil {
+		return err
+	}
+	stat, ok := selfInfoSys(target.Info)
+	if !ok {
+		return &lowPortCapabilityError{
+			Code: "capability_target",
+			Err:  fmt.Errorf("gate executable identity is unavailable"),
 		}
-		if helperMessage, ok := strings.CutPrefix(message, lowPortCapabilityHelperMarker); ok {
-			helperMessage = strings.TrimSpace(helperMessage)
+	}
+	remainingDirs := append([]string(nil), lowPortCapabilityHelperTempDirs...)
+	for len(remainingDirs) > 0 {
+		helper, createErr := linuxCapabilityCreateHelper(sudo, target, remainingDirs)
+		if createErr != nil {
+			return &lowPortCapabilityError{
+				Code: "capability_helper_copy",
+				Err:  fmt.Errorf("prepare low-port capability helper: %w", createErr),
+			}
+		}
+		remainingDirs = removeLowPortCapabilityHelperDir(remainingDirs, filepath.Dir(helper.Path))
+		if validateErr := linuxCapabilityValidateHelper(helper); validateErr != nil {
+			helper.Close()
+			_ = linuxCapabilityRemoveHelper(sudo, helper.Path)
+			return &lowPortCapabilityError{
+				Code: "capability_helper_prepare",
+				Err:  fmt.Errorf("validate low-port capability helper: %w", validateErr),
+			}
+		}
+		if identityErr := target.validateIdentity(); identityErr != nil {
+			helper.Close()
+			_ = linuxCapabilityRemoveHelper(sudo, helper.Path)
+			return identityErr
+		}
+		runErr := runLinuxCapabilitySudo(
+			sudo,
+			"-n",
+			"--",
+			helper.Path,
+			lowPortCapabilityHelperName,
+			"--target",
+			target.Path,
+			"--device",
+			strconv.FormatUint(uint64(stat.Dev), 10),
+			"--inode",
+			strconv.FormatUint(stat.Ino, 10),
+			"--sha256",
+			helper.Hash,
+		)
+		helper.Close()
+		cleanupErr := linuxCapabilityRemoveHelper(sudo, helper.Path)
+		if runErr == nil {
+			if cleanupErr != nil {
+				return &lowPortCapabilityError{
+					Code: "capability_helper_cleanup",
+					Err:  fmt.Errorf("remove low-port capability helper: %w", cleanupErr),
+				}
+			}
+			return target.validateIdentity()
+		}
+		message := runErr.Error()
+		if cleanupErr != nil {
+			return &lowPortCapabilityError{
+				Code: "capability_helper_cleanup",
+				Err:  fmt.Errorf("remove failed low-port capability helper: %w", cleanupErr),
+			}
+		}
+		if helperMessage, markerOK := linuxCapabilityHelperMessage(message); markerOK {
 			return classifyCapabilityHelperError(target.Path, helperMessage)
+		}
+		if retryLowPortCapabilityHelperExecution(message, helper.Path) && len(remainingDirs) > 0 {
+			continue
 		}
 		return &lowPortCapabilityError{
 			Code: "sudo_failed",
-			Err:  fmt.Errorf("authorize low-port capability setup: %s", message),
+			Err:  fmt.Errorf("run authorized low-port capability helper: %s", message),
 		}
 	}
-	return target.validateIdentity()
+	return &lowPortCapabilityError{
+		Code: "capability_helper_copy",
+		Err:  fmt.Errorf("no executable trusted temporary directory is available"),
+	}
+}
+
+func runLinuxCapabilitySudo(sudo string, args ...string) error {
+	_, err := runLinuxCapabilitySudoOutput(sudo, args...)
+	return err
+}
+
+func runLinuxCapabilitySudoOutput(sudo string, args ...string) (string, error) {
+	cmd := linuxCapabilityCommand(sudo, args...)
+	return runLinuxCapabilityCommand(cmd)
+}
+
+func runLinuxCapabilityCommand(cmd *exec.Cmd) (string, error) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return "", errors.New(message)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+func linuxCapabilityHelperMessage(output string) (string, bool) {
+	for line := range strings.Lines(output) {
+		line = strings.TrimSpace(line)
+		if message, ok := strings.CutPrefix(line, lowPortCapabilityHelperMarker); ok {
+			return strings.TrimSpace(message), true
+		}
+	}
+	return "", false
+}
+
+func createLowPortCapabilityHelperCopy(
+	sudo string,
+	target *lowPortCapabilityTarget,
+	tempDirs []string,
+) (*lowPortCapabilityHelperCopy, error) {
+	expectedHash, err := hashOpenFile(target.File)
+	if err != nil {
+		return nil, err
+	}
+	mktemp, err := linuxCapabilityTool("mktemp")
+	if err != nil {
+		return nil, err
+	}
+	install, err := linuxCapabilityTool("install")
+	if err != nil {
+		return nil, err
+	}
+
+	var path string
+	for _, dir := range tempDirs {
+		if !trustedLowPortCapabilityTempDir(dir) {
+			continue
+		}
+		template := filepath.Join(
+			dir,
+			lowPortCapabilityHelperPrefix+strconv.Itoa(os.Getuid())+"-XXXXXXXX",
+		)
+		output, runErr := runLinuxCapabilitySudoOutput(sudo, "-n", "--", mktemp, template)
+		if runErr != nil {
+			err = runErr
+			continue
+		}
+		path = strings.TrimSpace(output)
+		if !validLowPortCapabilityHelperPathForUID(path, strconv.Itoa(os.Getuid())) {
+			path = ""
+			err = fmt.Errorf("mktemp returned an invalid helper path")
+			continue
+		}
+		if runErr := runLinuxCapabilitySudo(
+			sudo, "-n", "--", install, "-m", "0755", "--", target.operationPath(), path,
+		); runErr != nil {
+			if cleanupErr := removeLowPortCapabilityHelper(sudo, path); cleanupErr != nil {
+				return nil, cleanupErr
+			}
+			err = runErr
+			path = ""
+			continue
+		}
+		helper, openErr := os.Open(path)
+		if openErr != nil {
+			if cleanupErr := removeLowPortCapabilityHelper(sudo, path); cleanupErr != nil {
+				return nil, cleanupErr
+			}
+			err = openErr
+			path = ""
+			continue
+		}
+		info, statErr := helper.Stat()
+		if statErr != nil || linuxCapabilityAccess(path, unix.X_OK) != nil {
+			_ = helper.Close()
+			if cleanupErr := removeLowPortCapabilityHelper(sudo, path); cleanupErr != nil {
+				return nil, cleanupErr
+			}
+			if statErr != nil {
+				err = statErr
+			} else {
+				err = fmt.Errorf("temporary directory does not allow helper execution: %s", dir)
+			}
+			path = ""
+			continue
+		}
+		return &lowPortCapabilityHelperCopy{
+			Path: path,
+			Hash: expectedHash,
+			File: helper,
+			Info: info,
+		}, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("no trusted temporary directory is available")
+	}
+	return nil, err
+}
+
+func removeLowPortCapabilityHelperDir(dirs []string, used string) []string {
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if dir != used {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+func retryLowPortCapabilityHelperExecution(message, path string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, strings.ToLower(path)) &&
+		(strings.Contains(message, "permission denied") ||
+			strings.Contains(message, "operation not permitted"))
+}
+
+func validateLowPortCapabilityHelperCopy(helper *lowPortCapabilityHelperCopy) error {
+	if helper == nil || helper.File == nil || helper.Info == nil {
+		return fmt.Errorf("stable helper handle is unavailable")
+	}
+	info, err := os.Lstat(helper.Path)
+	if err != nil {
+		return err
+	}
+	stat, ok := selfInfoSys(info)
+	opened, openedErr := helper.File.Stat()
+	if !ok || stat.Uid != 0 || !info.Mode().IsRegular() ||
+		info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 ||
+		openedErr != nil || !os.SameFile(helper.Info, opened) || !os.SameFile(helper.Info, info) {
+		return fmt.Errorf("helper ownership, permissions, or inode are unsafe")
+	}
+	actualHash, err := hashOpenFile(helper.File)
+	if err != nil {
+		return err
+	}
+	if actualHash != helper.Hash {
+		return fmt.Errorf("helper content changed")
+	}
+	return nil
+}
+
+func removeLowPortCapabilityHelper(sudo, path string) error {
+	if path == "" {
+		return nil
+	}
+	rm, err := linuxCapabilityTool("rm")
+	if err != nil {
+		return err
+	}
+	return runLinuxCapabilitySudo(sudo, "-n", "--", rm, "-f", "--", path)
+}
+
+func acquireLowPortCapabilitySetupLock() (io.Closer, error) {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || !filepath.IsAbs(cacheDir) {
+		return nil, &lowPortCapabilityError{
+			Code: "capability_setup_lock",
+			Err:  fmt.Errorf("private low-port setup lock directory is unavailable"),
+		}
+	}
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return nil, err
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(cacheDir); resolveErr == nil {
+		cacheDir = resolved
+	}
+	dir := filepath.Join(cacheDir, ".gate-capability-locks")
+	if lowPortSetupLockOverlapsGateState(dir) {
+		return nil, &lowPortCapabilityError{
+			Code: "capability_setup_lock",
+			Err:  fmt.Errorf("low-port setup lock must be outside removable gate state"),
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	dirFD, err := unix.Open(
+		dir,
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	dirFile := os.NewFile(uintptr(dirFD), dir)
+	defer func() { _ = dirFile.Close() }()
+	if err := unix.Fchmod(dirFD, 0o700); err != nil {
+		return nil, err
+	}
+	dirInfo, err := dirFile.Stat()
+	dirStat, dirOK := selfInfoSys(dirInfo)
+	if err != nil || !dirOK || !dirInfo.IsDir() ||
+		dirStat.Uid != uint32(os.Getuid()) || dirInfo.Mode().Perm() != 0o700 {
+		return nil, &lowPortCapabilityError{
+			Code: "capability_setup_lock",
+			Err:  fmt.Errorf("low-port setup lock directory is unsafe"),
+		}
+	}
+	path := filepath.Join(dir, "capability-setup.lock")
+	fd, err := unix.Openat(
+		dirFD,
+		filepath.Base(path),
+		unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0o600,
+	)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if err := unix.Fchmod(fd, 0o600); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	info, statErr := file.Stat()
+	stat, ok := selfInfoSys(info)
+	if statErr != nil || !ok || !info.Mode().IsRegular() ||
+		stat.Uid != uint32(os.Getuid()) || info.Mode().Perm()&0o077 != 0 {
+		_ = file.Close()
+		return nil, &lowPortCapabilityError{
+			Code: "capability_setup_lock",
+			Err:  fmt.Errorf("low-port setup lock is unsafe"),
+		}
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, &lowPortCapabilityError{
+			Code: "capability_setup_busy",
+			Err:  fmt.Errorf("another low-port capability setup is running: %w", err),
+		}
+	}
+	return file, nil
+}
+
+func lowPortSetupLockOverlapsGateState(lockDir string) bool {
+	lockDir = filepath.Clean(lockDir)
+	for _, stateDir := range []string{
+		paths.ConfigDir(),
+		paths.DataDir(),
+		paths.StateDir(),
+		paths.RuntimeDir(),
+	} {
+		if resolved, err := filepath.EvalSymlinks(stateDir); err == nil {
+			stateDir = resolved
+		}
+		stateDir = filepath.Clean(stateDir)
+		rel, err := filepath.Rel(stateDir, lockDir)
+		if err == nil && (rel == "." ||
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanupLowPortCapabilityHelpers(sudo string) error {
+	return visitLowPortCapabilityHelpers(func(path string, info os.FileInfo) error {
+		if !safeLowPortCapabilityHelper(info) {
+			return fmt.Errorf("unsafe interrupted helper: %s", path)
+		}
+		return removeLowPortCapabilityHelper(sudo, path)
+	})
+}
+
+func visitLowPortCapabilityHelpers(visit func(string, os.FileInfo) error) error {
+	prefix := lowPortCapabilityHelperPrefix + strconv.Itoa(os.Getuid()) + "-"
+	for _, dir := range lowPortCapabilityHelperTempDirs {
+		if !trustedLowPortCapabilityTempDir(dir) {
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(dir, prefix+"*"))
+		if err != nil {
+			return err
+		}
+		for _, path := range matches {
+			info, err := os.Lstat(path)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					continue
+				}
+				return err
+			}
+			stat, ok := selfInfoSys(info)
+			if !ok {
+				return fmt.Errorf("cannot inspect interrupted helper: %s", path)
+			}
+			if stat.Uid != 0 {
+				continue
+			}
+			if err := visit(path, info); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func safeLowPortCapabilityHelper(info os.FileInfo) bool {
+	return info != nil && info.Mode().IsRegular() && info.Mode().Perm()&0o022 == 0
 }
 
 func LowPortCapabilityHelper(args []string, _ io.Writer, stderr io.Writer) int {
-	if len(args) != 0 {
-		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"unexpected arguments")
-		return ExitUsage
-	}
 	if linuxCapabilityEUID() != 0 {
 		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"root authorization required")
 		return ExitPerm
 	}
-	executable, err := os.Open("/proc/self/exe")
+	selfPath, err := linuxCapabilityExecutable()
+	if err != nil || !validLowPortCapabilityHelperPathForUID(
+		selfPath,
+		strings.TrimSpace(os.Getenv("SUDO_UID")),
+	) {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"invalid helper executable")
+		return ExitPerm
+	}
+	self, err := os.Open(selfPath)
+	if err != nil {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"cannot open helper executable")
+		return ExitPerm
+	}
+	defer func() { _ = self.Close() }()
+	selfInfo, err := linuxCapabilityStat(selfPath)
+	selfStat, ok := selfInfoSys(selfInfo)
+	if err != nil || !ok || selfStat.Uid != 0 ||
+		!selfInfo.Mode().IsRegular() || selfInfo.Mode().Perm()&0o111 == 0 ||
+		selfInfo.Mode().Perm()&0o022 != 0 {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"unsafe helper executable")
+		return ExitPerm
+	}
+
+	fs := flag.NewFlagSet(lowPortCapabilityHelperName, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	targetPath := fs.String("target", "", "stable target path")
+	expectedDevice := fs.Uint64("device", 0, "expected target device")
+	expectedInode := fs.Uint64("inode", 0, "expected target inode")
+	expectedHash := fs.String("sha256", "", "expected target digest")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 ||
+		!targetPathValid(*targetPath) || *expectedDevice == 0 || *expectedInode == 0 ||
+		!validSHA256(*expectedHash) {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"invalid helper arguments")
+		return ExitUsage
+	}
+	selfHash, err := hashOpenFile(self)
+	if err != nil || selfHash != *expectedHash {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"helper digest mismatch")
+		return ExitPerm
+	}
+	if err := os.Remove(selfPath); err != nil {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"cannot unlink helper executable")
+		return ExitPerm
+	}
+	target, err := os.Open(*targetPath)
 	if err != nil {
 		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+err.Error())
 		return ExitError
 	}
-	defer func() { _ = executable.Close() }()
-	if err := writeLowPortCapabilityXattr(executable); err != nil {
+	defer func() { _ = target.Close() }()
+	info, err := target.Stat()
+	targetStat, statOK := selfInfoSys(info)
+	if err != nil || !statOK || !info.Mode().IsRegular() ||
+		uint64(targetStat.Dev) != *expectedDevice || targetStat.Ino != *expectedInode {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"invalid target executable")
+		return ExitPerm
+	}
+	actualHash, err := hashOpenFile(target)
+	if err != nil || actualHash != *expectedHash {
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"target digest mismatch")
+		return ExitPerm
+	}
+	if err := writeLowPortCapabilityXattr(target); err != nil {
 		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+capabilityHelperErrorMessage(err))
 		return ExitPerm
 	}
+	postInfo, postStatErr := target.Stat()
+	postStat, postStatOK := selfInfoSys(postInfo)
+	actualHash, err = hashOpenFile(target)
+	if postStatErr != nil || !postStatOK ||
+		uint64(postStat.Dev) != *expectedDevice || postStat.Ino != *expectedInode ||
+		!postInfo.Mode().IsRegular() || postInfo.Size() != info.Size() ||
+		err != nil || actualHash != *expectedHash {
+		_ = linuxCapabilityFremovexattr(int(target.Fd()), lowPortCapabilityXattr)
+		fmt.Fprintln(stderr, lowPortCapabilityHelperMarker+"target changed during capability setup")
+		return ExitPerm
+	}
 	return ExitOK
+}
+
+func targetPathValid(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validLowPortCapabilityHelperPathForUID(path, uid string) bool {
+	if _, err := strconv.ParseUint(uid, 10, 32); err != nil {
+		return false
+	}
+	cleaned := filepath.Clean(path)
+	for _, dir := range lowPortCapabilityHelperTempDirs {
+		if filepath.Dir(cleaned) == dir && trustedLowPortCapabilityTempDir(dir) &&
+			strings.HasPrefix(filepath.Base(cleaned), lowPortCapabilityHelperPrefix+uid+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+func trustedLowPortCapabilityTempDir(path string) bool {
+	if filepath.Clean(path) != path {
+		return false
+	}
+	info, err := linuxCapabilityStat(path)
+	stat, ok := selfInfoSys(info)
+	return err == nil && ok && info.IsDir() && info.Mode()&os.ModeSticky != 0 && stat.Uid == 0
+}
+
+func selfInfoSys(info os.FileInfo) (*syscall.Stat_t, bool) {
+	if info == nil {
+		return nil, false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return stat, ok
+}
+
+func hashOpenFile(file *os.File) (string, error) {
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.NewSectionReader(file, 0, 1<<63-1)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func requireStableLowPortTarget(target *lowPortCapabilityTarget) error {
@@ -254,21 +800,27 @@ func unsupportedCapabilityFilesystemError(path string, err error) error {
 }
 
 func trustedLinuxCapabilityTool(name string) (string, error) {
-	if name != "sudo" {
+	candidates, ok := map[string][]string{
+		"sudo":    {"/usr/bin/sudo", "/bin/sudo"},
+		"mktemp":  {"/usr/bin/mktemp", "/bin/mktemp"},
+		"install": {"/usr/bin/install", "/bin/install"},
+		"rm":      {"/usr/bin/rm", "/bin/rm"},
+	}[name]
+	if !ok {
 		return "", &lowPortCapabilityError{
 			Code: "capability_tool",
 			Err:  fmt.Errorf("unsupported capability tool %q", name),
 		}
 	}
-	for _, candidate := range []string{"/usr/bin/sudo", "/bin/sudo"} {
+	for _, candidate := range candidates {
 		path, err := trustedRootExecutable(candidate)
 		if err == nil {
 			return path, nil
 		}
 	}
 	return "", &lowPortCapabilityError{
-		Code: "sudo_not_found",
-		Err:  fmt.Errorf("trusted sudo executable not found"),
+		Code: name + "_not_found",
+		Err:  fmt.Errorf("trusted %s executable not found", name),
 	}
 }
 

@@ -98,71 +98,121 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 
 	daemonsBefore := daemonStatusesBeforeUpgrade()
 
-	upgradedExecutable, err := runUpgradeInstall(ctx, stdout, stderr, latestTag)
+	installResult, err := runUpgradeInstall(ctx, stdout, stderr, latestTag)
 	if err != nil {
 		return fail(stderr, false, ExitError, "upgrade", err.Error())
 	}
-	return completeUpgrade(stdout, stderr, daemonsBefore, upgradedExecutable)
+	defer installResult.Close()
+	return completeUpgrade(stdout, stderr, daemonsBefore, installResult)
 }
 
-func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVersion string) (string, error) {
+type upgradeInstallResult struct {
+	Executable   string
+	PinnedTarget *lowPortCapabilityTarget
+}
+
+func (r upgradeInstallResult) Close() {
+	if r.PinnedTarget != nil {
+		r.PinnedTarget.Close()
+	}
+}
+
+func (r upgradeInstallResult) validateRestartTarget() error {
+	if r.PinnedTarget == nil {
+		return nil
+	}
+	return r.PinnedTarget.validateIdentity()
+}
+
+func (r upgradeInstallResult) restartExecutable() string {
+	if r.PinnedTarget != nil {
+		return r.PinnedTarget.pinnedExecutionPath()
+	}
+	return r.Executable
+}
+
+func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVersion string) (upgradeInstallResult, error) {
 	_ = stdout
 	previousExecutable := upgradeExecutablePathFunc()
 	preserveLowPorts, err := inspectUpgradeLowPortIntent(previousExecutable)
 	if err != nil {
-		return "", err
+		return upgradeInstallResult{}, err
 	}
 
 	if isHomebrewGatePath(previousExecutable) {
 		if err := runUpgradeCommand(stderr, "updating Homebrew taps", "brew update", upgradeHomebrewUpdateFunc(ctx)); err != nil {
-			return "", err
+			return upgradeInstallResult{}, err
 		}
 		if err := runUpgradeCommand(stderr, "upgrading Homebrew package", "brew upgrade jinyongp/tap/gate", upgradeHomebrewCommandFunc(ctx)); err != nil {
-			return "", err
+			return upgradeInstallResult{}, err
 		}
 		upgradedLink, err := homebrewLinkedGatePath(previousExecutable)
 		if err != nil {
-			return "", err
+			return upgradeInstallResult{}, err
 		}
 		upgradedTarget, err := lowPortCapabilityTargetFunc(upgradedLink)
 		if err != nil {
-			return "", fmt.Errorf("resolve upgraded Homebrew gate executable: %w", err)
+			return upgradeInstallResult{}, fmt.Errorf("resolve upgraded Homebrew gate executable: %w", err)
 		}
-		defer upgradedTarget.Close()
 		upgradedExecutable := upgradedTarget.Path
-		if err := preserveUpgradeLowPortAccess(ctx, stderr, upgradedExecutable, preserveLowPorts, true); err != nil {
-			return "", err
+		if err := preserveUpgradeLowPortAccess(ctx, stderr, upgradedTarget, preserveLowPorts, true); err != nil {
+			upgradedTarget.Close()
+			return upgradeInstallResult{}, err
 		}
 		if err := upgradedTarget.validateIdentity(); err != nil {
-			return "", incompleteLowPortUpgradeError(err)
+			upgradedTarget.Close()
+			return upgradeInstallResult{}, incompleteLowPortUpgradeError(err)
 		}
-		if err := verifyUpgradedVersion(ctx, upgradedExecutable, expectedVersion); err != nil {
-			return "", err
+		if err := verifyUpgradedVersion(ctx, upgradedTarget.pinnedExecutionPath(), expectedVersion); err != nil {
+			upgradedTarget.Close()
+			return upgradeInstallResult{}, err
 		}
 		if err := upgradedTarget.validateIdentity(); err != nil {
-			return "", fmt.Errorf("upgraded Homebrew gate executable changed after verification: %w", err)
+			upgradedTarget.Close()
+			return upgradeInstallResult{}, fmt.Errorf("upgraded Homebrew gate executable changed after verification: %w", err)
 		}
-		return upgradedExecutable, nil
+		return upgradeInstallResult{
+			Executable:   upgradedExecutable,
+			PinnedTarget: upgradedTarget,
+		}, nil
 	}
 
 	scriptPath, err := prepareUpgradeScript(ctx, stderr, expectedVersion)
 	if err != nil {
-		return "", err
+		return upgradeInstallResult{}, err
 	}
 	defer func() {
 		_ = os.Remove(scriptPath)
 	}()
 
 	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommandFunc(ctx, scriptPath, previousExecutable, expectedVersion)); err != nil {
-		return "", err
+		return upgradeInstallResult{}, err
 	}
-	if err := preserveUpgradeLowPortAccess(ctx, stderr, previousExecutable, preserveLowPorts, false); err != nil {
-		return "", err
+	upgradedTarget, err := lowPortCapabilityTargetFunc(previousExecutable)
+	if err != nil {
+		return upgradeInstallResult{}, fmt.Errorf("resolve upgraded standalone gate executable: %w", err)
 	}
-	if err := verifyUpgradedVersion(ctx, previousExecutable, expectedVersion); err != nil {
-		return "", err
+	upgradedExecutable := upgradedTarget.Path
+	if err := preserveUpgradeLowPortAccess(ctx, stderr, upgradedTarget, preserveLowPorts, false); err != nil {
+		upgradedTarget.Close()
+		return upgradeInstallResult{}, err
 	}
-	return previousExecutable, nil
+	if err := upgradedTarget.validateIdentity(); err != nil {
+		upgradedTarget.Close()
+		return upgradeInstallResult{}, fmt.Errorf("upgraded standalone gate executable changed before verification: %w", err)
+	}
+	if err := verifyUpgradedVersion(ctx, upgradedTarget.pinnedExecutionPath(), expectedVersion); err != nil {
+		upgradedTarget.Close()
+		return upgradeInstallResult{}, err
+	}
+	if err := upgradedTarget.validateIdentity(); err != nil {
+		upgradedTarget.Close()
+		return upgradeInstallResult{}, fmt.Errorf("upgraded standalone gate executable changed after verification: %w", err)
+	}
+	return upgradeInstallResult{
+		Executable:   upgradedExecutable,
+		PinnedTarget: upgradedTarget,
+	}, nil
 }
 
 func upgradeInstallScriptCommand(ctx context.Context, scriptPath, currentExecutable, expectedVersion string) *exec.Cmd {
@@ -204,7 +254,7 @@ func inspectUpgradeLowPortIntent(path string) (bool, error) {
 func preserveUpgradeLowPortAccess(
 	ctx context.Context,
 	stderr io.Writer,
-	path string,
+	target *lowPortCapabilityTarget,
 	required bool,
 	apply bool,
 ) error {
@@ -216,17 +266,12 @@ func preserveUpgradeLowPortAccess(
 			stderr,
 			"restoring low-port access",
 			"gate daemon setup --yes",
-			upgradeLowPortSetupCommandFunc(ctx, path),
+			upgradeLowPortSetupCommandFunc(ctx, target.pinnedExecutionPath()),
 		); err != nil {
 			return incompleteLowPortUpgradeError(err)
 		}
 	}
 
-	target, err := lowPortCapabilityTargetFunc(path)
-	if err != nil {
-		return incompleteLowPortUpgradeError(err)
-	}
-	defer target.Close()
 	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
 	if err != nil {
 		return incompleteLowPortUpgradeError(err)
@@ -384,14 +429,25 @@ func daemonStatusesBeforeUpgrade() []daemon.Status {
 	return statuses
 }
 
-func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status, executable string) int {
+func completeUpgrade(
+	stdout, stderr io.Writer,
+	daemonsBefore []daemon.Status,
+	installResult upgradeInstallResult,
+) int {
+	if err := installResult.validateRestartTarget(); err != nil {
+		return failIncompleteUpgradeTarget(stderr, err)
+	}
 	if len(daemonsBefore) > 0 {
 		unlock, err := lockStateMutation()
 		if err != nil {
 			printUpgradeDaemonRestartWarning(stderr, "failed to lock gate state for daemon restart: "+err.Error())
 		} else {
 			for _, st := range daemonsBefore {
-				if nextCode := restartDaemonAfterUpgradeFunc(executable, st, stdout, stderr); nextCode != ExitOK {
+				if err := installResult.validateRestartTarget(); err != nil {
+					unlock()
+					return failIncompleteUpgradeTarget(stderr, err)
+				}
+				if nextCode := restartDaemonAfterUpgradeFunc(installResult.restartExecutable(), st, stdout, stderr); nextCode != ExitOK {
 					printUpgradeDaemonRestartWarning(stderr, "daemon restart after upgrade failed")
 				}
 			}
@@ -401,6 +457,21 @@ func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status, ex
 	printUpgradeStatus(stdout, "upgrade complete")
 	printDoctorAfterUpgrade(stdout)
 	return ExitOK
+}
+
+func failIncompleteUpgradeTarget(stderr io.Writer, err error) int {
+	recovery := "reinstall gate, verify `gate --version`, then retry `gate daemon restart`"
+	if runtimeGOOS() == "linux" {
+		recovery = "run `gate daemon setup`, verify `gate --version`, then retry `gate daemon restart`"
+	}
+	return fail(
+		stderr,
+		false,
+		ExitError,
+		"upgrade_target_changed",
+		"upgraded gate executable changed before daemon restart: "+err.Error()+
+			"; the daemon was not restarted; "+recovery,
+	)
 }
 
 func completeUpToDate(stdout io.Writer, version string) int {

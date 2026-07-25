@@ -45,6 +45,16 @@ func (t *lowPortCapabilityTarget) Close() {
 	}
 }
 
+func (t *lowPortCapabilityTarget) pinnedExecutionPath() string {
+	if t == nil {
+		return ""
+	}
+	if runtimeGOOS() == "linux" && t.File != nil {
+		return fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), t.File.Fd())
+	}
+	return t.Path
+}
+
 func (t *lowPortCapabilityTarget) validateIdentity() error {
 	if t == nil || t.File == nil || t.Info == nil {
 		return nil
@@ -135,7 +145,11 @@ func daemonSetup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *check {
-		return fail(stderr, *jsonOut, ExitPerm, "low_port_capability_missing", "low-port capability is not configured for "+target.Path)
+		message := "low-port capability is not configured for " + target.Path
+		if !*jsonOut {
+			message += "; run `gate daemon setup`"
+		}
+		return fail(stderr, *jsonOut, ExitPerm, "low_port_capability_missing", message)
 	}
 	if !*yes {
 		if !stdinIsTTYFunc() {
@@ -236,5 +250,9 @@ func failLowPortCapability(stderr io.Writer, jsonOut bool, fallbackCode string, 
 	if errors.As(err, &capabilityErr) && capabilityErr.Code != "" {
 		fallbackCode = capabilityErr.Code
 	}
-	return fail(stderr, jsonOut, ExitPerm, fallbackCode, err.Error())
+	exitCode := ExitPerm
+	if fallbackCode == "capability_setup_busy" {
+		exitCode = ExitConflict
+	}
+	return fail(stderr, jsonOut, exitCode, fallbackCode, err.Error())
 }
