@@ -464,6 +464,12 @@ startup is requested, the CLI starts or reuses that listener daemon and replaces
 older scoped gate daemons that already own the same listener before starting the
 listener-keyed daemon.
 
+On Linux, binding privileged listener ports is enabled by an explicit,
+one-time file capability on the installed executable. The daemon and its
+control/state plane remain owned by the invoking user. Custom unprivileged
+listeners require no capability, and non-Linux platforms retain their existing
+listener behavior.
+
 ---
 
 ## 11. Command Model
@@ -592,6 +598,8 @@ flowchart TB
     sudo["OS approval / sudo path"]
     hosts["/etc/hosts managed block"]
     trust["OS/browser trust store"]
+    lowports["Linux executable<br/>low-port file capability"]
+    listener["user-owned listener daemon"]
     key["local root CA key<br/>0600 under private data dir"]
 
     user --> gate
@@ -600,6 +608,7 @@ flowchart TB
     privileged -->|"yes"| sudo
     sudo --> hosts
     sudo --> trust
+    sudo --> lowports --> listener
     gate --> key
 ```
 
@@ -609,7 +618,7 @@ Privileged operations:
 | --- | --- | --- |
 | Trusting or untrusting root CA | OS/browser trust stores are protected | Trust-store integration is isolated behind seams and uses OS-native mechanisms. |
 | Editing `/etc/hosts` | System file | gate edits only its managed block and validates target ownership/symlink state. |
-| Binding low ports | `:443` and `:80` can require privileges on some systems | Daemon/service manager owns the listener process. |
+| Binding low ports on Linux | `:443` and `:80` can require privileges | An explicit setup path grants only the network-bind file capability to the validated gate executable; the daemon still runs as the user. |
 
 Other security properties:
 
@@ -617,6 +626,19 @@ Other security properties:
 - Export command writes only the public root certificate.
 - Non-loopback clients are blocked unless a route is explicitly exposed.
 - Basic auth uses constant-time comparison when configured on an exposed route.
+- Low-port setup must never run the whole CLI as root, install a privileged
+  resident service, or change the machine-wide unprivileged-port policy.
+- Privileged capability application uses fixed arguments and validated,
+  root-owned tool paths. The executable is canonicalized and identity-checked
+  before mutation, then its exact capability set is verified afterward.
+- File capabilities are replacement-scoped. Gate-managed replacement preserves
+  existing intent before daemon restart; standalone replacement is
+  transactional, while external package managers require explicit recovery.
+- The capability is not promoted into an ambient or inheritable set, so
+  arbitrary child commands do not receive it.
+- WSL follows the Linux model only on filesystems that support Linux capability
+  xattrs. Windows-mounted paths are not treated as a reason to weaken
+  machine-wide policy.
 - `internal/truststore` is a vendored, self-contained library and must not import
   gate packages.
 

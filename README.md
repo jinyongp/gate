@@ -27,6 +27,20 @@ Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 > directory is not in `PATH`, the installer offers to update your shell startup
 > file and also prints the exact line you can add manually.
 
+On Linux, including WSL, the default HTTPS `:443` and HTTP `:80` listener needs
+one-time low-port setup:
+
+```bash
+gate daemon setup
+```
+
+The standalone installer offers this setup in an interactive terminal.
+Fresh non-interactive and package-manager installs do not elevate silently; run
+the command afterward. In WSL, install `gate` on the Linux filesystem (for
+example, under `/home`), not a Windows-mounted path such as `/mnt/c`, because
+file capabilities may not be supported there. Do not run `sudo gate up -d`;
+setup grants only the installed gate executable permission to bind low ports.
+
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
 and internals, see [docs/spec.md](docs/spec.md).
 
@@ -71,6 +85,10 @@ During installation gate shows a single status indicator and hides installer
 logs unless the install command fails.
 After a successful upgrade, gate automatically runs `doctor` and prints any
 stale local state with the matching `gate doctor --fix` repair hint.
+On Linux, `gate upgrade` preserves existing low-port setup before restarting
+the daemon. After upgrading through Homebrew or another package manager
+directly, rerun `gate daemon setup` if the replacement lost its file
+capability.
 
 ## Uninstall
 
@@ -97,6 +115,10 @@ If the `gate` binary is already gone, use the standalone uninstall script:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/uninstall.sh | sh
 ```
+
+On Linux, the low-port permission is attached only to the installed binary.
+Removing that binary removes the capability; gate does not install a privileged
+service or change the system-wide unprivileged-port policy.
 
 ```bash
 # non-interactive

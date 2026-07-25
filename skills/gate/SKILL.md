@@ -157,6 +157,30 @@ Common Node error actions:
 When a JSON error envelope is available, `GateError` also carries `severity`,
 `retryable`, `hint`, and `nextActions`.
 
+## Linux and WSL low ports
+
+The default daemon binds HTTPS `:443` and HTTP `:80`. On Linux, including WSL,
+inspect setup without mutation:
+
+```bash
+"$GATE_BIN" daemon setup --check --json
+```
+
+If setup is missing, ask for user approval before running:
+
+```bash
+"$GATE_BIN" daemon setup
+```
+
+Never run the whole gate CLI with sudo. Setup grants only the installed gate
+executable `CAP_NET_BIND_SERVICE`; arbitrary commands launched by `gate run` do
+not inherit it. Setup is unavailable under `--isolated-root`.
+
+In WSL, the binary must live on the Linux filesystem (for example under
+`/home`), not `/mnt/c`. If a package-manager upgrade replaces the binary and a
+low-port bind fails, rerun setup. macOS help and completion intentionally omit
+this Linux-only command.
+
 ## Operational workflows
 
 Use [`docs/usage.md`](../../docs/usage.md) for full command syntax, output

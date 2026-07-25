@@ -59,6 +59,30 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.
 > not in `PATH`, the installer offers to update your shell startup file and
 > prints the exact line you can add manually.
 
+### Linux and WSL low ports
+
+The default listener uses HTTPS `:443` and HTTP `:80`. On Linux, including WSL,
+configure the installed executable once:
+
+```bash
+gate daemon setup
+```
+
+An interactive standalone install offers this step and defaults to yes.
+Fresh non-interactive installs never invoke sudo and print the command to run
+later. Linux package-manager installs cannot perform this privileged
+post-install step, so run it explicitly before starting the default listener.
+
+The command applies only `cap_net_bind_service=ep` to the canonical gate
+executable. Continue running gate as your normal user; do not use
+`sudo gate up -d` or `sudo gate daemon start`.
+
+WSL installations must place the binary on a Linux-native filesystem, such as
+`/home/<user>/.local/bin`. Windows-mounted paths such as `/mnt/c` can reject the
+file-capability xattr. Move or reinstall the binary on the Linux filesystem,
+then rerun setup. The `getcap` and `setcap` tools are supplied by the
+distribution's libcap package.
+
 ## Trust HTTPS
 
 `gate` issues local certificates from a local root CA. To remove browser
@@ -730,6 +754,25 @@ Daemon processes are keyed by listener address pair. The default listener is
 HTTPS `:443` and HTTP `:80`, so one default daemon serves active routes from all
 projects and global reservations that target that listener.
 
+On Linux, inspect or configure the executable's low-port capability:
+
+```bash
+gate daemon setup --check
+gate daemon setup
+gate daemon setup --yes
+gate daemon setup --check --json
+```
+
+`--check` is read-only and exits with a permission-required result when setup
+is missing. Mutation asks for confirmation unless `--yes` is supplied. JSON
+mutation requires `--yes`; JSON inspection requires `--check`. Setup is
+unavailable with `--isolated-root` because it changes the real installed
+executable.
+
+The setup command is advertised by help and completion on Linux only. On macOS,
+daemon help and completion remain unchanged, and manually invoking setup
+returns an unsupported-platform error.
+
 Start, stop, restart, and inspect the default listener proxy:
 
 ```bash
@@ -750,6 +793,16 @@ gate daemon logs --all
 
 `gate up -d` starts the listener daemon when needed and reloads the merged route
 table for that listener.
+
+If a Linux low-port bind fails with `permission denied`, human output points to
+`gate daemon setup`. JSON errors use code `low_port_bind_permission` with the
+same command in `nextActions`. High-port listeners, unrelated permission
+errors, macOS failures, and `address already in use` conflicts keep their
+existing diagnostics. A custom unprivileged listener needs no capability:
+
+```bash
+gate daemon start --https-addr :8443 --http-addr :8080
+```
 
 `gate daemon status --json` includes additive machine-readable health fields
 such as `status`, `listener`, `socket_path`, `pid_path`, `pid_alive`,
@@ -1158,6 +1211,15 @@ failures are reported as warnings with the manual `gate daemon restart` or
 date, it prints the up-to-date status and exits without restarting daemons or
 running `doctor`.
 
+On Linux, a gate-managed upgrade checks whether the current executable has
+low-port access before replacement. Standalone upgrades restore the previous
+binary if capability preservation fails. Homebrew-managed upgrades configure
+and verify the replacement before version verification and daemon restart; on
+failure, gate stops and prints the explicit `gate daemon setup` recovery path.
+Upgrades performed directly by a package manager are outside gate's
+transaction, so rerun setup afterward when the default listener reports a
+permission failure.
+
 Skip confirmation:
 
 ```bash
@@ -1198,6 +1260,9 @@ Installed completion offers:
   `expose --via` completes
   `local|lan|cloudflared|tailscale`
 - file paths only where meaningful, such as `ca export --out`
+
+On Linux, daemon completion additionally offers `setup` and its
+`--check`, `--yes`, and `--json` flags. It is omitted on macOS.
 
 Completion stops offering gate arguments after `gate run <service> --`, because
 everything after `--` belongs to the child command.
@@ -1254,6 +1319,10 @@ curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/uninstal
 > remove gate's trusted root CA from OS/browser trust stores. Use `--keep-trust`
 > to leave trust store entries in place. Homebrew-managed symlinks are skipped,
 > so the script does not remove the Homebrew package itself.
+
+Linux low-port access is a file capability on the installed gate binary.
+Deleting or replacing that binary removes the capability with it; uninstall
+does not need to remove a service, sudo policy, or system-wide port setting.
 
 The built-in uninstaller blocks routes and stops persisted external exposures,
 then stops every known daemon before deleting state. Any stop failure aborts
