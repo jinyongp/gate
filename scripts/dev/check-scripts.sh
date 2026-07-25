@@ -3,6 +3,7 @@ set -euo pipefail
 
 sh -n scripts/install.sh scripts/uninstall.sh scripts/lib/*.sh scripts/release/build-gate.sh
 bash -n .github/scripts/*.sh scripts/dev/*.sh scripts/release/*.sh
+bash scripts/dev/test-install-low-ports.sh
 node scripts/node/check-publish-packages.mjs
 if command -v actionlint >/dev/null 2>&1; then
   actionlint

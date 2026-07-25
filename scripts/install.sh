@@ -92,6 +92,9 @@ cleanup() {
 	if [ -n "${TEMP_DEST:-}" ]; then
 		rm -f "$TEMP_DEST"
 	fi
+	if [ -n "${PREVIOUS_DEST:-}" ]; then
+		rm -f "$PREVIOUS_DEST"
+	fi
 }
 trap cleanup EXIT
 
@@ -206,6 +209,44 @@ if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
   ui_error "refusing to replace non-regular install target: ${DEST}"
   exit 1
 fi
+
+find_getcap() {
+  for candidate in /usr/sbin/getcap /sbin/getcap /usr/bin/getcap /bin/getcap; do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  command -v getcap 2>/dev/null || return 1
+}
+
+PREVIOUS_LOW_PORT_CAPABILITY=0
+if [ "$OS" = "linux" ] && [ -f "$DEST" ]; then
+  GETCAP_BIN="$(find_getcap || true)"
+  if [ -z "$GETCAP_BIN" ]; then
+    ui_error "getcap is required to safely replace an existing Linux gate binary."
+    ui_note_err "Install the libcap tools for your distribution, then retry."
+    exit 1
+  fi
+  if ! PREVIOUS_CAPABILITIES="$("$GETCAP_BIN" "$DEST" 2>/dev/null)"; then
+    ui_error "failed to inspect existing Linux capabilities: ${DEST}"
+    exit 1
+  fi
+  PREVIOUS_CAPABILITY_VALUE="$(printf '%s\n' "$PREVIOUS_CAPABILITIES" | awk 'NF { value=$NF } END { print value }')"
+  case "$PREVIOUS_CAPABILITY_VALUE" in
+    "")
+      ;;
+    cap_net_bind_service=ep)
+      PREVIOUS_LOW_PORT_CAPABILITY=1
+      ;;
+    *)
+      ui_error "existing gate binary has unexpected Linux capabilities: ${PREVIOUS_CAPABILITY_VALUE}"
+      ui_note_err "Refusing to replace it automatically."
+      exit 1
+      ;;
+  esac
+fi
+
 TEMP_DEST="$(mktemp "${DEST_DIR}/.gate.install.XXXXXX")"
 if command -v install >/dev/null 2>&1; then
   install -m 755 "$BINARY_PATH" "$TEMP_DEST"
@@ -213,7 +254,100 @@ else
   cp "$BINARY_PATH" "$TEMP_DEST"
   chmod 755 "$TEMP_DEST"
 fi
-mv -f "$TEMP_DEST" "$DEST"
+
+PREVIOUS_DEST=""
+if [ -f "$DEST" ]; then
+  PREVIOUS_DEST="$(mktemp "${DEST_DIR}/.gate.previous.XXXXXX")"
+  if ! mv -f "$DEST" "$PREVIOUS_DEST"; then
+    ui_error "failed to preserve existing gate binary before replacement."
+    exit 1
+  fi
+fi
+if ! mv -f "$TEMP_DEST" "$DEST"; then
+  ui_error "failed to install gate binary."
+  if [ -n "$PREVIOUS_DEST" ]; then
+    mv -f "$PREVIOUS_DEST" "$DEST" || true
+    PREVIOUS_DEST=""
+  fi
+  exit 1
+fi
+TEMP_DEST=""
+
+restore_previous_binary() {
+  if [ -z "$PREVIOUS_DEST" ]; then
+    return 1
+  fi
+  rm -f "$DEST"
+  if ! mv -f "$PREVIOUS_DEST" "$DEST"; then
+    recovery_path="$PREVIOUS_DEST"
+    PREVIOUS_DEST=""
+    ui_error "failed to restore previous gate binary; recover it from: ${recovery_path}"
+    return 1
+  fi
+  PREVIOUS_DEST=""
+  return 0
+}
+
+has_interactive_tty() {
+  { [ -t 1 ] || [ -t 2 ]; } && [ -r /dev/tty ] && [ -w /dev/tty ]
+}
+
+configure_linux_low_ports() {
+  if [ "$OS" != "linux" ]; then
+    return 0
+  fi
+
+  ui_section "Low-port setup"
+  if [ "$PREVIOUS_LOW_PORT_CAPABILITY" -eq 1 ]; then
+    ui_note "Preserving permission to bind HTTPS :443 and HTTP :80."
+    if "$DEST" daemon setup --yes; then
+      ui_ok "preserved Linux low-port capability."
+      return 0
+    fi
+    ui_error "failed to preserve Linux low-port capability on the replacement binary."
+    if restore_previous_binary; then
+      ui_note_err "Restored the previous gate binary."
+    fi
+    return 1
+  fi
+
+  if ! has_interactive_tty; then
+    ui_warn_err "Linux low-port access is not configured in this non-interactive install."
+    ui_note_err "Run after installation: gate daemon setup"
+    return 0
+  fi
+
+  ui_prompt "Allow gate to bind HTTPS :443 and HTTP :80 without running gate as root? [Y/n]:" > /dev/tty
+  response=""
+  if ! IFS= read -r response < /dev/tty; then
+    ui_warn_err "could not read low-port setup choice."
+    ui_note_err "Run after installation: gate daemon setup"
+    return 0
+  fi
+  case "$response" in
+    n|N|no|No|NO)
+      ui_warn_err "Linux low-port setup skipped."
+      ui_note_err "Run later: gate daemon setup"
+      return 0
+      ;;
+  esac
+
+  if "$DEST" daemon setup --yes; then
+    ui_ok "configured Linux low-port capability."
+    return 0
+  fi
+  ui_warn_err "gate installed, but Linux low-port setup failed."
+  ui_note_err "Fix the reported issue, then run: gate daemon setup"
+  return 0
+}
+
+if ! configure_linux_low_ports; then
+  exit 1
+fi
+if [ -n "$PREVIOUS_DEST" ]; then
+  rm -f "$PREVIOUS_DEST"
+  PREVIOUS_DEST=""
+fi
 
 path_entry_expr() {
 	printf '%s\n' "$DEST_DIR"
