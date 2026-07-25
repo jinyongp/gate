@@ -40,6 +40,8 @@ var daemonReadyTimeout = 3 * time.Second
 const (
 	defaultDaemonHTTPSAddr = ":443"
 	defaultDaemonHTTPAddr  = ":80"
+	lowPortBindErrorCode   = "low_port_bind_permission"
+	lowPortBindHint        = "hint: run `gate daemon setup`, then retry; do not run gate with sudo"
 )
 
 // Daemon dispatches `gate daemon status|start|stop|restart|logs`.
@@ -269,8 +271,7 @@ func daemonStart(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	activity.Stop()
-	result.Message = daemonStartConflictMessage(result.Message, pair, ref)
-	return fail(stderr, false, result.Code, "start", result.Message)
+	return failDaemonStart(stderr, false, result, pair, ref, "start")
 }
 
 func daemonRestart(args []string, stdout, stderr io.Writer) int {
@@ -314,8 +315,7 @@ func daemonRestart(args []string, stdout, stderr io.Writer) int {
 	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), pair.HTTPSAddr, pair.HTTPAddr), client, ref)
 	if result.Code != ExitOK {
 		activity.Stop()
-		result.Message = daemonStartConflictMessage(result.Message, pair, ref)
-		return fail(stderr, false, result.Code, "restart", result.Message)
+		return failDaemonStart(stderr, false, result, pair, ref, "restart")
 	}
 	activity.Complete()
 	if err := setListenerRoutesWithActivity(ref, stderr, false, "reloading routes"); err != nil {
@@ -860,6 +860,37 @@ func daemonStartConflictMessage(msg string, pair listener.Pair, ref listenerDaem
 		return msg
 	}
 	return msg + "\n" + hint
+}
+
+func failDaemonStart(
+	stderr io.Writer,
+	jsonOut bool,
+	result daemonStartResult,
+	pair listener.Pair,
+	ref listenerDaemonRef,
+	fallbackCode string,
+) int {
+	message := daemonStartConflictMessage(result.Message, pair, ref)
+	code := fallbackCode
+	if isLinuxLowPortBindPermission(message) {
+		code = lowPortBindErrorCode
+		if !jsonOut {
+			message += "\n" + lowPortBindHint
+		}
+	}
+	return fail(stderr, jsonOut, result.Code, code, message)
+}
+
+func isLinuxLowPortBindPermission(msg string) bool {
+	if runtimeGOOS() != "linux" {
+		return false
+	}
+	lower := strings.ToLower(msg)
+	if !strings.Contains(lower, "permission denied") {
+		return false
+	}
+	port, err := strconv.Atoi(failedListenPortFromMessage(lower))
+	return err == nil && port > 0 && port < 1024
 }
 
 func gateDaemonConflictHint(pair listener.Pair, currentRef listenerDaemonRef) string {

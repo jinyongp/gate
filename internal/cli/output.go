@@ -141,6 +141,7 @@ func errorHint(code string) string {
 	case "permission":
 		return "Run the suggested gate command outside the sandbox or with the required privilege."
 	case "low_port_capability_missing",
+		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
 		"setcap_failed", "setcap_not_found", "getcap_failed", "getcap_not_found", "sudo_not_found":
 		return "Run `gate daemon setup` on Linux to configure ports 80 and 443."
@@ -162,6 +163,7 @@ func errorNextActions(code string) []nextAction {
 	case "permission":
 		return []nextAction{{Label: "Check setup", Command: "gate doctor --json"}}
 	case "low_port_capability_missing",
+		lowPortBindErrorCode,
 		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
 		"setcap_failed", "setcap_not_found", "getcap_failed", "getcap_not_found", "sudo_not_found":
 		return []nextAction{{Label: "Configure low-port access", Command: "gate daemon setup"}}

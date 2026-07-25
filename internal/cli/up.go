@@ -586,8 +586,7 @@ func reloadUpRoutes(ref listenerDaemonRef, startDaemon bool, pair listener.Pair,
 			result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), pair.HTTPSAddr, pair.HTTPAddr), client, ref)
 			if result.Code != ExitOK {
 				activity.Stop()
-				result.Message = daemonStartConflictMessage(result.Message, pair, ref)
-				return reloadUpResult{Code: fail(stderr, jsonOut, result.Code, "daemon_start", result.Message)}
+				return reloadUpResult{Code: failDaemonStart(stderr, jsonOut, result, pair, ref, "daemon_start")}
 			}
 			activity.Complete()
 			startedPID = result.PID

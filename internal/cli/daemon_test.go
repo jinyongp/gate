@@ -25,7 +25,12 @@ func TestDaemonStartReportsChildStderr(t *testing.T) {
 	isolate(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	oldNewDaemonServeCommand := newDaemonServeCommand
-	t.Cleanup(func() { newDaemonServeCommand = oldNewDaemonServeCommand })
+	oldGOOS := runtimeGOOS
+	t.Cleanup(func() {
+		newDaemonServeCommand = oldNewDaemonServeCommand
+		runtimeGOOS = oldGOOS
+	})
+	runtimeGOOS = func() string { return "linux" }
 	newDaemonServeCommand = func(_, _, _, _ string) *exec.Cmd {
 		exe, err := os.Executable()
 		if err != nil {
@@ -45,9 +50,67 @@ func TestDaemonStartReportsChildStderr(t *testing.T) {
 	if got := errb.String(); !strings.Contains(got, "listen tcp :443: bind: permission denied") {
 		t.Fatalf("stderr missing child failure: %q", got)
 	}
+	for _, want := range []string{"gate daemon setup", "do not run gate with sudo"} {
+		if !strings.Contains(errb.String(), want) {
+			t.Fatalf("stderr missing %q: %q", want, errb.String())
+		}
+	}
 	assertNoIndicatorBytes(t, "daemon start failure stderr", errb.String())
 	if strings.Contains(errb.String(), "exit status") {
 		t.Fatalf("stderr should prefer child failure over wait status: %q", errb.String())
+	}
+}
+
+func TestDaemonStartLinuxLowPortPermissionJSONAction(t *testing.T) {
+	isolate(t)
+	oldGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+	runtimeGOOS = func() string { return "linux" }
+
+	pair := listener.FromFlags("[::]:443", "[::]:80")
+	result := daemonStartResult{
+		Code:    ExitPerm,
+		Message: "listen tcp [::]:443: bind: permission denied",
+	}
+	var errb bytes.Buffer
+	if code := failDaemonStart(&errb, true, result, pair, listenerRefFor(pair), "daemon_start"); code != ExitPerm {
+		t.Fatalf("exit = %d, want %d", code, ExitPerm)
+	}
+
+	var envelope errEnvelope
+	if err := json.Unmarshal(errb.Bytes(), &envelope); err != nil {
+		t.Fatalf("stderr is not JSON: %v\n%s", err, errb.String())
+	}
+	body := envelope.Error
+	if body.Code != lowPortBindErrorCode || body.Hint == "" {
+		t.Fatalf("error body = %+v", body)
+	}
+	if len(body.NextActions) != 1 || body.NextActions[0].Command != "gate daemon setup" {
+		t.Fatalf("next actions = %+v", body.NextActions)
+	}
+	if strings.Contains(body.Message, "do not run gate with sudo") {
+		t.Fatalf("JSON message should use structured recovery fields: %+v", body)
+	}
+}
+
+func TestDaemonStartLowPortPermissionClassificationIsLinuxOnly(t *testing.T) {
+	oldGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+
+	runtimeGOOS = func() string { return "linux" }
+	if isLinuxLowPortBindPermission("listen tcp :8443: bind: permission denied") {
+		t.Fatal("high-port permission failure classified as low-port setup issue")
+	}
+	if isLinuxLowPortBindPermission("open daemon.log: permission denied") {
+		t.Fatal("unrelated permission failure classified as low-port setup issue")
+	}
+	if isLinuxLowPortBindPermission("listen tcp :443: bind: address already in use") {
+		t.Fatal("address conflict classified as permission failure")
+	}
+
+	runtimeGOOS = func() string { return "darwin" }
+	if isLinuxLowPortBindPermission("listen tcp :443: bind: permission denied") {
+		t.Fatal("macOS permission failure classified as Linux setup issue")
 	}
 }
 
