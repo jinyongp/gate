@@ -36,13 +36,20 @@ func stubDoctorAfterUpgrade(t *testing.T, report doctorReport) {
 	}
 }
 
+func stubUpgradeRuntimeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	oldGOOS := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = oldGOOS })
+	runtimeGOOS = func() string { return goos }
+}
+
 func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
 	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 
 	var restarted []daemon.Status
-	restartDaemonAfterUpgradeFunc = func(st daemon.Status, _ io.Writer, _ io.Writer) int {
+	restartDaemonAfterUpgradeFunc = func(_ string, st daemon.Status, _ io.Writer, _ io.Writer) int {
 		restarted = append(restarted, st)
 		return ExitOK
 	}
@@ -52,7 +59,7 @@ func TestCompleteUpgradeRestartsRunningDaemon(t *testing.T) {
 		{Scope: "global", PID: 123, HTTPSAddr: "[::]:443", HTTPAddr: "[::]:80"},
 		{Scope: "project:demo", PID: 124, HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"},
 	}
-	code := completeUpgrade(&out, &errb, before)
+	code := completeUpgrade(&out, &errb, before, "/opt/gate/bin/gate")
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -72,13 +79,13 @@ func TestCompleteUpgradeSkipsRestartWhenDaemonWasStopped(t *testing.T) {
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 
-	restartDaemonAfterUpgradeFunc = func(daemon.Status, io.Writer, io.Writer) int {
+	restartDaemonAfterUpgradeFunc = func(string, daemon.Status, io.Writer, io.Writer) int {
 		t.Fatal("restart should not be called")
 		return ExitError
 	}
 
 	var out, errb bytes.Buffer
-	code := completeUpgrade(&out, &errb, nil)
+	code := completeUpgrade(&out, &errb, nil, "/opt/gate/bin/gate")
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -95,13 +102,13 @@ func TestCompleteUpgradePrintsDoctorIssuesWithoutFailingUpgrade(t *testing.T) {
 	}}})
 	oldRestart := restartDaemonAfterUpgradeFunc
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
-	restartDaemonAfterUpgradeFunc = func(daemon.Status, io.Writer, io.Writer) int {
+	restartDaemonAfterUpgradeFunc = func(string, daemon.Status, io.Writer, io.Writer) int {
 		t.Fatal("restart should not be called")
 		return ExitError
 	}
 
 	var out, errb bytes.Buffer
-	code := completeUpgrade(&out, &errb, nil)
+	code := completeUpgrade(&out, &errb, nil, "/opt/gate/bin/gate")
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -123,7 +130,7 @@ func TestCompleteUpgradeWarnsAndContinuesAfterRestartFailure(t *testing.T) {
 	t.Cleanup(func() { restartDaemonAfterUpgradeFunc = oldRestart })
 
 	var restarted []int
-	restartDaemonAfterUpgradeFunc = func(st daemon.Status, _ io.Writer, _ io.Writer) int {
+	restartDaemonAfterUpgradeFunc = func(_ string, st daemon.Status, _ io.Writer, _ io.Writer) int {
 		restarted = append(restarted, st.PID)
 		if st.PID == 123 {
 			return ExitError
@@ -132,7 +139,7 @@ func TestCompleteUpgradeWarnsAndContinuesAfterRestartFailure(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}, {PID: 456}})
+	code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}, {PID: 456}}, "/opt/gate/bin/gate")
 	if code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
@@ -148,6 +155,7 @@ func TestCompleteUpgradeWarnsAndContinuesAfterRestartFailure(t *testing.T) {
 }
 
 func TestRunUpgradeInstallUsesHomebrewForHomebrewInstall(t *testing.T) {
+	stubUpgradeRuntimeGOOS(t, "darwin")
 	oldExecutable := upgradeExecutablePathFunc
 	oldHomebrewUpdate := upgradeHomebrewUpdateFunc
 	oldHomebrewCommand := upgradeHomebrewCommandFunc
@@ -177,7 +185,7 @@ func TestRunUpgradeInstallUsesHomebrewForHomebrewInstall(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+	if _, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
 		t.Fatalf("runUpgradeInstall: %v", err)
 	}
 	if strings.Contains(out.String(), "brew upgrade gate") || strings.Contains(errb.String(), "brew upgrade gate") {
@@ -215,9 +223,9 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 	})
 
 	var events []string
-	lowPortCapabilityTargetFunc = func(path string) (string, error) {
+	lowPortCapabilityTargetFunc = func(path string) (*lowPortCapabilityTarget, error) {
 		events = append(events, "inspect:"+path)
-		return path, nil
+		return &lowPortCapabilityTarget{Path: path}, nil
 	}
 	upgradeExecutablePathFunc = func() string {
 		return "/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.3/bin/gate"
@@ -238,16 +246,17 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 		events = append(events, "version:"+path)
 		return helperUpgradeCommand(t, "v1.1.4", 0)
 	}
-	restartDaemonAfterUpgradeFunc = func(daemon.Status, io.Writer, io.Writer) int {
-		events = append(events, "restart")
+	restartDaemonAfterUpgradeFunc = func(path string, _ daemon.Status, _ io.Writer, _ io.Writer) int {
+		events = append(events, "restart:"+path)
 		return ExitOK
 	}
 
 	var out, errb bytes.Buffer
-	if err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+	upgradedExecutable, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
+	if err != nil {
 		t.Fatalf("runUpgradeInstall: %v", err)
 	}
-	if code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}}); code != ExitOK {
+	if code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}}, upgradedExecutable); code != ExitOK {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
 
@@ -258,7 +267,7 @@ func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
 		"setup:/home/linuxbrew/.linuxbrew/bin/gate",
 		"inspect:/home/linuxbrew/.linuxbrew/bin/gate",
 		"version:/home/linuxbrew/.linuxbrew/bin/gate",
-		"restart",
+		"restart:/home/linuxbrew/.linuxbrew/bin/gate",
 	}
 	if !slices.Equal(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)
@@ -302,7 +311,7 @@ func TestLinuxHomebrewUpgradeStopsBeforeVersionAndRestartWhenSetupFails(t *testi
 	}
 
 	var out, errb bytes.Buffer
-	err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
+	_, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
 	if err == nil {
 		t.Fatal("runUpgradeInstall should fail when low-port setup fails")
 	}
@@ -336,9 +345,9 @@ func TestLinuxStandaloneUpgradeVerifiesPreservedLowPortAccessBeforeVersion(t *te
 	})
 
 	var events []string
-	lowPortCapabilityTargetFunc = func(path string) (string, error) {
+	lowPortCapabilityTargetFunc = func(path string) (*lowPortCapabilityTarget, error) {
 		events = append(events, "inspect")
-		return path, nil
+		return &lowPortCapabilityTarget{Path: path}, nil
 	}
 	upgradeExecutablePathFunc = func() string { return "/opt/gate/bin/gate" }
 	upgradeInstallScriptCommandFunc = func(context.Context, string, string, string) *exec.Cmd {
@@ -364,7 +373,7 @@ func TestLinuxStandaloneUpgradeVerifiesPreservedLowPortAccessBeforeVersion(t *te
 	}
 
 	var out, errb bytes.Buffer
-	if err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+	if _, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
 		t.Fatalf("runUpgradeInstall: %v", err)
 	}
 	if want := []string{"inspect", "install", "inspect", "version"}; !slices.Equal(events, want) {
@@ -411,7 +420,7 @@ func TestLinuxStandaloneUpgradeStopsWhenCapabilityVerificationFails(t *testing.T
 	}
 
 	var out, errb bytes.Buffer
-	err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
+	_, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
 	if err == nil {
 		t.Fatal("runUpgradeInstall should reject a replacement without the capability")
 	}
@@ -436,6 +445,7 @@ func TestHomebrewLinkedGatePath(t *testing.T) {
 }
 
 func TestRunUpgradeInstallRejectsHomebrewNoop(t *testing.T) {
+	stubUpgradeRuntimeGOOS(t, "darwin")
 	oldExecutable := upgradeExecutablePathFunc
 	oldHomebrewUpdate := upgradeHomebrewUpdateFunc
 	oldHomebrewCommand := upgradeHomebrewCommandFunc
@@ -461,7 +471,7 @@ func TestRunUpgradeInstallRejectsHomebrewNoop(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	err := runUpgradeInstall(context.Background(), &out, &errb, "v2.0.1")
+	_, err := runUpgradeInstall(context.Background(), &out, &errb, "v2.0.1")
 	if err == nil {
 		t.Fatal("runUpgradeInstall should reject a no-op Homebrew upgrade")
 	}
@@ -471,6 +481,7 @@ func TestRunUpgradeInstallRejectsHomebrewNoop(t *testing.T) {
 }
 
 func TestRunUpgradeInstallStopsWhenHomebrewUpdateFails(t *testing.T) {
+	stubUpgradeRuntimeGOOS(t, "darwin")
 	oldExecutable := upgradeExecutablePathFunc
 	oldHomebrewUpdate := upgradeHomebrewUpdateFunc
 	oldHomebrewCommand := upgradeHomebrewCommandFunc
@@ -498,7 +509,7 @@ func TestRunUpgradeInstallStopsWhenHomebrewUpdateFails(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	err := runUpgradeInstall(context.Background(), &out, &errb, "v2.0.1")
+	_, err := runUpgradeInstall(context.Background(), &out, &errb, "v2.0.1")
 	if err == nil {
 		t.Fatal("runUpgradeInstall should fail when brew update fails")
 	}
@@ -508,6 +519,7 @@ func TestRunUpgradeInstallStopsWhenHomebrewUpdateFails(t *testing.T) {
 }
 
 func TestRunUpgradeInstallUsesInstallerForNonHomebrewInstall(t *testing.T) {
+	stubUpgradeRuntimeGOOS(t, "darwin")
 	oldExecutable := upgradeExecutablePathFunc
 	oldHomebrewUpdate := upgradeHomebrewUpdateFunc
 	oldHomebrewCommand := upgradeHomebrewCommandFunc
@@ -546,7 +558,7 @@ func TestRunUpgradeInstallUsesInstallerForNonHomebrewInstall(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+	if _, err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
 		t.Fatalf("runUpgradeInstall: %v", err)
 	}
 	if strings.Contains(out.String(), "installer upgrade") || strings.Contains(errb.String(), "installer upgrade") {
@@ -590,7 +602,7 @@ func TestCompleteUpToDateSkipsRestartAndDoctor(t *testing.T) {
 		doctorAfterUpgradeFunc = oldDoctor
 	})
 
-	restartDaemonAfterUpgradeFunc = func(daemon.Status, io.Writer, io.Writer) int {
+	restartDaemonAfterUpgradeFunc = func(string, daemon.Status, io.Writer, io.Writer) int {
 		t.Fatal("restart should not be called when already up to date")
 		return ExitError
 	}
@@ -662,7 +674,9 @@ func TestRestartDaemonAfterUpgradeReloadsListenerRoutes(t *testing.T) {
 	})
 
 	oldCmd := startHelperAdminDaemon(t, ref)
-	newDaemonServeCommand = func(_, socketPath, _, _ string) *exec.Cmd {
+	var restartedExecutable string
+	newDaemonServeCommand = func(executable, socketPath, _, _ string) *exec.Cmd {
+		restartedExecutable = executable
 		return helperAdminCommand(t, socketPath)
 	}
 	var reloadedRef listenerDaemonRef
@@ -675,7 +689,7 @@ func TestRestartDaemonAfterUpgradeReloadsListenerRoutes(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	st := daemon.Status{Scope: ref.String(), ScopeKey: ref.fileKey(), PID: oldCmd.Process.Pid, HTTPSAddr: "[::]:18443", HTTPAddr: "[::]:18080"}
-	if code := restartDaemonAfterUpgrade(st, &out, &errb); code != ExitOK {
+	if code := restartDaemonAfterUpgrade("/new/gate", st, &out, &errb); code != ExitOK {
 		t.Fatalf("restartDaemonAfterUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
 	if got := out.String(); strings.Contains(got, " · ") || !strings.Contains(got, "daemon restarted") || !strings.Contains(got, "https") || !strings.Contains(got, "http") {
@@ -683,6 +697,9 @@ func TestRestartDaemonAfterUpgradeReloadsListenerRoutes(t *testing.T) {
 	}
 	if reloadedRef.fileKey() != ref.fileKey() {
 		t.Fatalf("reload ref = %+v, want %+v", reloadedRef, ref)
+	}
+	if restartedExecutable != "/new/gate" {
+		t.Fatalf("restart executable = %q, want /new/gate", restartedExecutable)
 	}
 	if len(reloadedRoutes) != 1 || reloadedRoutes[0].Domain != "web.localhost" {
 		t.Fatalf("reloaded routes = %+v", reloadedRoutes)
@@ -714,7 +731,7 @@ func TestRestartDaemonAfterUpgradeStartFailurePrintsRecoveryHint(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	st := daemon.Status{PID: 999999, HTTPSAddr: "127.0.0.1:0", HTTPAddr: "127.0.0.1:0"}
-	if code := restartDaemonAfterUpgrade(st, &out, &errb); code != ExitOK {
+	if code := restartDaemonAfterUpgrade("/new/gate", st, &out, &errb); code != ExitOK {
 		t.Fatalf("restartDaemonAfterUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
 	got := errb.String()

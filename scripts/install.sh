@@ -93,10 +93,23 @@ cleanup() {
 		rm -f "$TEMP_DEST"
 	fi
 	if [ -n "${PREVIOUS_DEST:-}" ]; then
-		rm -f "$PREVIOUS_DEST"
+		if [ "${REPLACEMENT_ACTIVE:-0}" -eq 1 ]; then
+			if mv -f "$PREVIOUS_DEST" "$DEST"; then
+				ui_warn_err "interrupted install restored the previous gate binary."
+			else
+				ui_error "failed to restore the previous gate binary; recover it from: ${PREVIOUS_DEST}"
+				PREVIOUS_DEST=""
+			fi
+		else
+			rm -f "$PREVIOUS_DEST"
+		fi
+	fi
+	if [ "${INSTALL_LOCK_HELD:-0}" -eq 1 ]; then
+		rmdir "$INSTALL_LOCK_DIR" 2>/dev/null || true
 	fi
 }
 trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 BINARY_NAME="gate-${OS}-${ARCH}"
 BINARY_PATH="${TMP_DIR}/${BINARY_NAME}"
@@ -210,7 +223,26 @@ if [ -L "$DEST" ] || { [ -e "$DEST" ] && [ ! -f "$DEST" ]; }; then
   exit 1
 fi
 
+INSTALL_LOCK_DIR="${DEST}.install.lock"
+INSTALL_LOCK_HELD=0
+if ! mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
+  ui_error "another gate installation or upgrade is already using: ${DEST}"
+  exit 1
+fi
+INSTALL_LOCK_HELD=1
+
 find_getcap() {
+  if [ -n "${GATE_INSTALL_TEST_GETCAP:-}" ]; then
+    case "$GATE_INSTALL_TEST_GETCAP" in
+      /*)
+        if [ -x "$GATE_INSTALL_TEST_GETCAP" ]; then
+          printf '%s\n' "$GATE_INSTALL_TEST_GETCAP"
+          return 0
+        fi
+        ;;
+    esac
+    return 1
+  fi
   for candidate in /usr/sbin/getcap /sbin/getcap /usr/bin/getcap /bin/getcap; do
     if [ -x "$candidate" ]; then
       printf '%s\n' "$candidate"
@@ -256,28 +288,32 @@ else
 fi
 
 PREVIOUS_DEST=""
+REPLACEMENT_ACTIVE=0
 if [ -f "$DEST" ]; then
   PREVIOUS_DEST="$(mktemp "${DEST_DIR}/.gate.previous.XXXXXX")"
-  if ! mv -f "$DEST" "$PREVIOUS_DEST"; then
+  rm -f "$PREVIOUS_DEST"
+  if ! ln "$DEST" "$PREVIOUS_DEST"; then
     ui_error "failed to preserve existing gate binary before replacement."
     exit 1
   fi
 fi
+if [ -n "$PREVIOUS_DEST" ]; then
+  REPLACEMENT_ACTIVE=1
+fi
 if ! mv -f "$TEMP_DEST" "$DEST"; then
   ui_error "failed to install gate binary."
-  if [ -n "$PREVIOUS_DEST" ]; then
-    mv -f "$PREVIOUS_DEST" "$DEST" || true
-    PREVIOUS_DEST=""
-  fi
   exit 1
 fi
 TEMP_DEST=""
+if [ "${GATE_INSTALL_TEST_FAIL_AFTER_REPLACE:-0}" = "1" ]; then
+  ui_error "injected failure after gate replacement."
+  exit 97
+fi
 
 restore_previous_binary() {
   if [ -z "$PREVIOUS_DEST" ]; then
     return 1
   fi
-  rm -f "$DEST"
   if ! mv -f "$PREVIOUS_DEST" "$DEST"; then
     recovery_path="$PREVIOUS_DEST"
     PREVIOUS_DEST=""
@@ -285,6 +321,7 @@ restore_previous_binary() {
     return 1
   fi
   PREVIOUS_DEST=""
+  REPLACEMENT_ACTIVE=0
   return 0
 }
 
@@ -344,6 +381,7 @@ configure_linux_low_ports() {
 if ! configure_linux_low_ports; then
   exit 1
 fi
+REPLACEMENT_ACTIVE=0
 if [ -n "$PREVIOUS_DEST" ]; then
   rm -f "$PREVIOUS_DEST"
   PREVIOUS_DEST=""

@@ -45,6 +45,8 @@ jobs:
       - name: scripts
         id: scripts
         run: scripts/dev/check-scripts.sh
+        env:
+          GATE_REQUIRE_INSTALL_PTY_TEST: ${{ runner.os == 'Linux' && '1' || '0' }}
       - name: Linux low-port capability
         id: linux_low_port
         if: runner.os == 'Linux'

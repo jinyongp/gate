@@ -98,52 +98,59 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 
 	daemonsBefore := daemonStatusesBeforeUpgrade()
 
-	if err := runUpgradeInstall(ctx, stdout, stderr, latestTag); err != nil {
+	upgradedExecutable, err := runUpgradeInstall(ctx, stdout, stderr, latestTag)
+	if err != nil {
 		return fail(stderr, false, ExitError, "upgrade", err.Error())
 	}
-	return completeUpgrade(stdout, stderr, daemonsBefore)
+	return completeUpgrade(stdout, stderr, daemonsBefore, upgradedExecutable)
 }
 
-func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVersion string) error {
+func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVersion string) (string, error) {
 	_ = stdout
 	previousExecutable := upgradeExecutablePathFunc()
 	preserveLowPorts, err := inspectUpgradeLowPortIntent(previousExecutable)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if isHomebrewGatePath(previousExecutable) {
 		if err := runUpgradeCommand(stderr, "updating Homebrew taps", "brew update", upgradeHomebrewUpdateFunc(ctx)); err != nil {
-			return err
+			return "", err
 		}
 		if err := runUpgradeCommand(stderr, "upgrading Homebrew package", "brew upgrade jinyongp/tap/gate", upgradeHomebrewCommandFunc(ctx)); err != nil {
-			return err
+			return "", err
 		}
 		upgradedExecutable, err := homebrewLinkedGatePath(previousExecutable)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if err := preserveUpgradeLowPortAccess(ctx, stderr, upgradedExecutable, preserveLowPorts, true); err != nil {
-			return err
+			return "", err
 		}
-		return verifyUpgradedVersion(ctx, upgradedExecutable, expectedVersion)
+		if err := verifyUpgradedVersion(ctx, upgradedExecutable, expectedVersion); err != nil {
+			return "", err
+		}
+		return upgradedExecutable, nil
 	}
 
 	scriptPath, err := prepareUpgradeScript(ctx, stderr, expectedVersion)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		_ = os.Remove(scriptPath)
 	}()
 
 	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommandFunc(ctx, scriptPath, previousExecutable, expectedVersion)); err != nil {
-		return err
+		return "", err
 	}
 	if err := preserveUpgradeLowPortAccess(ctx, stderr, previousExecutable, preserveLowPorts, false); err != nil {
-		return err
+		return "", err
 	}
-	return verifyUpgradedVersion(ctx, previousExecutable, expectedVersion)
+	if err := verifyUpgradedVersion(ctx, previousExecutable, expectedVersion); err != nil {
+		return "", err
+	}
+	return previousExecutable, nil
 }
 
 func upgradeInstallScriptCommand(ctx context.Context, scriptPath, currentExecutable, expectedVersion string) *exec.Cmd {
@@ -165,7 +172,8 @@ func inspectUpgradeLowPortIntent(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect low-port access before upgrade: %w", err)
 	}
-	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
+	defer target.Close()
+	inspection, err := lowPortCapabilityManagerFunc().Inspect(target.operationPath())
 	if err != nil {
 		return false, fmt.Errorf("inspect low-port access before upgrade: %w", err)
 	}
@@ -206,7 +214,8 @@ func preserveUpgradeLowPortAccess(
 	if err != nil {
 		return incompleteLowPortUpgradeError(err)
 	}
-	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
+	defer target.Close()
+	inspection, err := lowPortCapabilityManagerFunc().Inspect(target.operationPath())
 	if err != nil {
 		return incompleteLowPortUpgradeError(err)
 	}
@@ -363,14 +372,14 @@ func daemonStatusesBeforeUpgrade() []daemon.Status {
 	return statuses
 }
 
-func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status) int {
+func completeUpgrade(stdout, stderr io.Writer, daemonsBefore []daemon.Status, executable string) int {
 	if len(daemonsBefore) > 0 {
 		unlock, err := lockStateMutation()
 		if err != nil {
 			printUpgradeDaemonRestartWarning(stderr, "failed to lock gate state for daemon restart: "+err.Error())
 		} else {
 			for _, st := range daemonsBefore {
-				if nextCode := restartDaemonAfterUpgradeFunc(st, stdout, stderr); nextCode != ExitOK {
+				if nextCode := restartDaemonAfterUpgradeFunc(executable, st, stdout, stderr); nextCode != ExitOK {
 					printUpgradeDaemonRestartWarning(stderr, "daemon restart after upgrade failed")
 				}
 			}
@@ -405,7 +414,7 @@ func printDoctorAfterUpgrade(stdout io.Writer) {
 	printDoctorReport(stdout, report, false)
 }
 
-func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
+func restartDaemonAfterUpgrade(executable string, st daemon.Status, stdout, stderr io.Writer) int {
 	ref := listenerRefFromDaemonStatus(st)
 	client := daemonClientForRef(ref)
 	activity := startActivity(stderr, false, "restarting daemon")
@@ -420,7 +429,7 @@ func restartDaemonAfterUpgrade(st daemon.Status, stdout, stderr io.Writer) int {
 	pair := listener.FromFlags(httpsAddr, httpAddr)
 	ref = listenerRefFor(pair)
 	client = daemonClientForRef(ref)
-	result := startDaemonCommand(newDaemonServeCommand(executablePath(), ref.socketPath(), httpsAddr, httpAddr), client, ref)
+	result := startDaemonCommand(newDaemonServeCommand(executable, ref.socketPath(), httpsAddr, httpAddr), client, ref)
 	if result.Code != ExitOK {
 		activity.Stop()
 		printUpgradeDaemonRestartWarning(stderr, "failed to restart daemon after upgrade: "+result.Message)
