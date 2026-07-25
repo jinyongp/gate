@@ -209,8 +209,12 @@ func TestResolveLowPortCapabilityTargetCanonicalizesExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != target {
-		t.Fatalf("target = %q, want %q", got, target)
+	want, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("target = %q, want %q", got, want)
 	}
 }
 
