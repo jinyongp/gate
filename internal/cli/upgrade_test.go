@@ -188,6 +188,253 @@ func TestRunUpgradeInstallUsesHomebrewForHomebrewInstall(t *testing.T) {
 	}
 }
 
+func TestLinuxHomebrewUpgradePreservesLowPortAccessBeforeRestart(t *testing.T) {
+	isolate(t)
+	manager := &fakeLowPortCapabilityManager{
+		inspections: []lowPortCapabilityInspection{
+			{State: lowPortCapabilityConfigured, Raw: lowPortCapability},
+			{State: lowPortCapabilityConfigured, Raw: lowPortCapability},
+		},
+	}
+	stubLowPortCapabilitySetup(t, manager)
+	stubDoctorAfterUpgrade(t, doctorReport{OK: true})
+
+	oldExecutable := upgradeExecutablePathFunc
+	oldHomebrewUpdate := upgradeHomebrewUpdateFunc
+	oldHomebrewCommand := upgradeHomebrewCommandFunc
+	oldSetupCommand := upgradeLowPortSetupCommandFunc
+	oldVersionCommand := upgradeVersionCommandFunc
+	oldRestart := restartDaemonAfterUpgradeFunc
+	t.Cleanup(func() {
+		upgradeExecutablePathFunc = oldExecutable
+		upgradeHomebrewUpdateFunc = oldHomebrewUpdate
+		upgradeHomebrewCommandFunc = oldHomebrewCommand
+		upgradeLowPortSetupCommandFunc = oldSetupCommand
+		upgradeVersionCommandFunc = oldVersionCommand
+		restartDaemonAfterUpgradeFunc = oldRestart
+	})
+
+	var events []string
+	lowPortCapabilityTargetFunc = func(path string) (string, error) {
+		events = append(events, "inspect:"+path)
+		return path, nil
+	}
+	upgradeExecutablePathFunc = func() string {
+		return "/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.3/bin/gate"
+	}
+	upgradeHomebrewUpdateFunc = func(context.Context) *exec.Cmd {
+		events = append(events, "brew-update")
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeHomebrewCommandFunc = func(context.Context) *exec.Cmd {
+		events = append(events, "brew-upgrade")
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeLowPortSetupCommandFunc = func(_ context.Context, path string) *exec.Cmd {
+		events = append(events, "setup:"+path)
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeVersionCommandFunc = func(_ context.Context, path string) *exec.Cmd {
+		events = append(events, "version:"+path)
+		return helperUpgradeCommand(t, "v1.1.4", 0)
+	}
+	restartDaemonAfterUpgradeFunc = func(daemon.Status, io.Writer, io.Writer) int {
+		events = append(events, "restart")
+		return ExitOK
+	}
+
+	var out, errb bytes.Buffer
+	if err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+		t.Fatalf("runUpgradeInstall: %v", err)
+	}
+	if code := completeUpgrade(&out, &errb, []daemon.Status{{PID: 123}}); code != ExitOK {
+		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
+	}
+
+	want := []string{
+		"inspect:/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.3/bin/gate",
+		"brew-update",
+		"brew-upgrade",
+		"setup:/home/linuxbrew/.linuxbrew/bin/gate",
+		"inspect:/home/linuxbrew/.linuxbrew/bin/gate",
+		"version:/home/linuxbrew/.linuxbrew/bin/gate",
+		"restart",
+	}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestLinuxHomebrewUpgradeStopsBeforeVersionAndRestartWhenSetupFails(t *testing.T) {
+	manager := &fakeLowPortCapabilityManager{
+		inspections: []lowPortCapabilityInspection{{State: lowPortCapabilityConfigured, Raw: lowPortCapability}},
+	}
+	stubLowPortCapabilitySetup(t, manager)
+
+	oldExecutable := upgradeExecutablePathFunc
+	oldHomebrewUpdate := upgradeHomebrewUpdateFunc
+	oldHomebrewCommand := upgradeHomebrewCommandFunc
+	oldSetupCommand := upgradeLowPortSetupCommandFunc
+	oldVersionCommand := upgradeVersionCommandFunc
+	t.Cleanup(func() {
+		upgradeExecutablePathFunc = oldExecutable
+		upgradeHomebrewUpdateFunc = oldHomebrewUpdate
+		upgradeHomebrewCommandFunc = oldHomebrewCommand
+		upgradeLowPortSetupCommandFunc = oldSetupCommand
+		upgradeVersionCommandFunc = oldVersionCommand
+	})
+
+	upgradeExecutablePathFunc = func() string {
+		return "/home/linuxbrew/.linuxbrew/Cellar/gate/1.1.3/bin/gate"
+	}
+	upgradeHomebrewUpdateFunc = func(context.Context) *exec.Cmd {
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeHomebrewCommandFunc = func(context.Context) *exec.Cmd {
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeLowPortSetupCommandFunc = func(context.Context, string) *exec.Cmd {
+		return helperUpgradeCommand(t, "sudo denied", 1)
+	}
+	upgradeVersionCommandFunc = func(context.Context, string) *exec.Cmd {
+		t.Fatal("version verification must not run after setup failure")
+		return nil
+	}
+
+	var out, errb bytes.Buffer
+	err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
+	if err == nil {
+		t.Fatal("runUpgradeInstall should fail when low-port setup fails")
+	}
+	for _, want := range []string{"could not preserve low-port access", "daemon was not restarted", "gate daemon setup", "sudo denied"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestLinuxStandaloneUpgradeVerifiesPreservedLowPortAccessBeforeVersion(t *testing.T) {
+	manager := &fakeLowPortCapabilityManager{
+		inspections: []lowPortCapabilityInspection{
+			{State: lowPortCapabilityConfigured, Raw: lowPortCapability},
+			{State: lowPortCapabilityConfigured, Raw: lowPortCapability},
+		},
+	}
+	stubLowPortCapabilitySetup(t, manager)
+
+	oldExecutable := upgradeExecutablePathFunc
+	oldInstallCommand := upgradeInstallScriptCommandFunc
+	oldSetupCommand := upgradeLowPortSetupCommandFunc
+	oldVersionCommand := upgradeVersionCommandFunc
+	oldClient := http.DefaultClient
+	t.Cleanup(func() {
+		upgradeExecutablePathFunc = oldExecutable
+		upgradeInstallScriptCommandFunc = oldInstallCommand
+		upgradeLowPortSetupCommandFunc = oldSetupCommand
+		upgradeVersionCommandFunc = oldVersionCommand
+		http.DefaultClient = oldClient
+	})
+
+	var events []string
+	lowPortCapabilityTargetFunc = func(path string) (string, error) {
+		events = append(events, "inspect")
+		return path, nil
+	}
+	upgradeExecutablePathFunc = func() string { return "/opt/gate/bin/gate" }
+	upgradeInstallScriptCommandFunc = func(context.Context, string, string, string) *exec.Cmd {
+		events = append(events, "install")
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeLowPortSetupCommandFunc = func(context.Context, string) *exec.Cmd {
+		t.Fatal("standalone installer owns capability reapplication")
+		return nil
+	}
+	upgradeVersionCommandFunc = func(context.Context, string) *exec.Cmd {
+		events = append(events, "version")
+		return helperUpgradeCommand(t, "v1.1.4", 0)
+	}
+	http.DefaultClient = &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader("exit 0\n")),
+			}, nil
+		}),
+	}
+
+	var out, errb bytes.Buffer
+	if err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4"); err != nil {
+		t.Fatalf("runUpgradeInstall: %v", err)
+	}
+	if want := []string{"inspect", "install", "inspect", "version"}; !slices.Equal(events, want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+}
+
+func TestLinuxStandaloneUpgradeStopsWhenCapabilityVerificationFails(t *testing.T) {
+	manager := &fakeLowPortCapabilityManager{
+		inspections: []lowPortCapabilityInspection{
+			{State: lowPortCapabilityConfigured, Raw: lowPortCapability},
+			{State: lowPortCapabilityMissing},
+		},
+	}
+	stubLowPortCapabilitySetup(t, manager)
+
+	oldExecutable := upgradeExecutablePathFunc
+	oldInstallCommand := upgradeInstallScriptCommandFunc
+	oldVersionCommand := upgradeVersionCommandFunc
+	oldClient := http.DefaultClient
+	t.Cleanup(func() {
+		upgradeExecutablePathFunc = oldExecutable
+		upgradeInstallScriptCommandFunc = oldInstallCommand
+		upgradeVersionCommandFunc = oldVersionCommand
+		http.DefaultClient = oldClient
+	})
+
+	upgradeExecutablePathFunc = func() string { return "/opt/gate/bin/gate" }
+	upgradeInstallScriptCommandFunc = func(context.Context, string, string, string) *exec.Cmd {
+		return helperUpgradeCommand(t, "", 0)
+	}
+	upgradeVersionCommandFunc = func(context.Context, string) *exec.Cmd {
+		t.Fatal("version verification must not run after capability verification failure")
+		return nil
+	}
+	http.DefaultClient = &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Body:       io.NopCloser(strings.NewReader("exit 0\n")),
+			}, nil
+		}),
+	}
+
+	var out, errb bytes.Buffer
+	err := runUpgradeInstall(context.Background(), &out, &errb, "v1.1.4")
+	if err == nil {
+		t.Fatal("runUpgradeInstall should reject a replacement without the capability")
+	}
+	for _, want := range []string{"could not preserve low-port access", "daemon was not restarted", "gate daemon setup"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestHomebrewLinkedGatePath(t *testing.T) {
+	got, err := homebrewLinkedGatePath("/opt/homebrew/Cellar/gate/2.3.4/bin/gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/opt/homebrew/bin/gate" {
+		t.Fatalf("path = %q, want /opt/homebrew/bin/gate", got)
+	}
+	if _, err := homebrewLinkedGatePath("/usr/local/bin/gate"); err == nil {
+		t.Fatal("non-Cellar path should be rejected")
+	}
+}
+
 func TestRunUpgradeInstallRejectsHomebrewNoop(t *testing.T) {
 	oldExecutable := upgradeExecutablePathFunc
 	oldHomebrewUpdate := upgradeHomebrewUpdateFunc

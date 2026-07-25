@@ -42,6 +42,10 @@ var (
 	upgradeVersionCommandFunc = func(ctx context.Context, path string) *exec.Cmd {
 		return exec.CommandContext(ctx, path, "--version")
 	}
+	upgradeInstallScriptCommandFunc = upgradeInstallScriptCommand
+	upgradeLowPortSetupCommandFunc  = func(ctx context.Context, path string) *exec.Cmd {
+		return exec.CommandContext(ctx, path, "daemon", "setup", "--yes")
+	}
 )
 
 // SetVersion stores the currently running gate version for upgrade decisions.
@@ -102,14 +106,27 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 
 func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVersion string) error {
 	_ = stdout
-	if isHomebrewGatePath(upgradeExecutablePathFunc()) {
+	previousExecutable := upgradeExecutablePathFunc()
+	preserveLowPorts, err := inspectUpgradeLowPortIntent(previousExecutable)
+	if err != nil {
+		return err
+	}
+
+	if isHomebrewGatePath(previousExecutable) {
 		if err := runUpgradeCommand(stderr, "updating Homebrew taps", "brew update", upgradeHomebrewUpdateFunc(ctx)); err != nil {
 			return err
 		}
 		if err := runUpgradeCommand(stderr, "upgrading Homebrew package", "brew upgrade jinyongp/tap/gate", upgradeHomebrewCommandFunc(ctx)); err != nil {
 			return err
 		}
-		return verifyUpgradedVersion(ctx, expectedVersion)
+		upgradedExecutable, err := homebrewLinkedGatePath(previousExecutable)
+		if err != nil {
+			return err
+		}
+		if err := preserveUpgradeLowPortAccess(ctx, stderr, upgradedExecutable, preserveLowPorts, true); err != nil {
+			return err
+		}
+		return verifyUpgradedVersion(ctx, upgradedExecutable, expectedVersion)
 	}
 
 	scriptPath, err := prepareUpgradeScript(ctx, stderr, expectedVersion)
@@ -120,10 +137,13 @@ func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVe
 		_ = os.Remove(scriptPath)
 	}()
 
-	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommand(ctx, scriptPath, upgradeExecutablePathFunc(), expectedVersion)); err != nil {
+	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommandFunc(ctx, scriptPath, previousExecutable, expectedVersion)); err != nil {
 		return err
 	}
-	return verifyUpgradedVersion(ctx, expectedVersion)
+	if err := preserveUpgradeLowPortAccess(ctx, stderr, previousExecutable, preserveLowPorts, false); err != nil {
+		return err
+	}
+	return verifyUpgradedVersion(ctx, previousExecutable, expectedVersion)
 }
 
 func upgradeInstallScriptCommand(ctx context.Context, scriptPath, currentExecutable, expectedVersion string) *exec.Cmd {
@@ -137,12 +157,92 @@ func upgradeInstallScriptCommand(ctx context.Context, scriptPath, currentExecuta
 	return cmd
 }
 
-func verifyUpgradedVersion(ctx context.Context, expectedVersion string) error {
+func inspectUpgradeLowPortIntent(path string) (bool, error) {
+	if runtimeGOOS() != "linux" {
+		return false, nil
+	}
+	target, err := lowPortCapabilityTargetFunc(path)
+	if err != nil {
+		return false, fmt.Errorf("inspect low-port access before upgrade: %w", err)
+	}
+	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
+	if err != nil {
+		return false, fmt.Errorf("inspect low-port access before upgrade: %w", err)
+	}
+	switch inspection.State {
+	case lowPortCapabilityMissing:
+		return false, nil
+	case lowPortCapabilityConfigured:
+		return true, nil
+	case lowPortCapabilityUnexpected:
+		return false, fmt.Errorf("refusing to replace gate with unexpected Linux capabilities: %s", inspection.Raw)
+	default:
+		return false, fmt.Errorf("inspect low-port access before upgrade: unknown capability state")
+	}
+}
+
+func preserveUpgradeLowPortAccess(
+	ctx context.Context,
+	stderr io.Writer,
+	path string,
+	required bool,
+	apply bool,
+) error {
+	if !required {
+		return nil
+	}
+	if apply {
+		if err := runUpgradeCommand(
+			stderr,
+			"restoring low-port access",
+			"gate daemon setup --yes",
+			upgradeLowPortSetupCommandFunc(ctx, path),
+		); err != nil {
+			return incompleteLowPortUpgradeError(err)
+		}
+	}
+
+	target, err := lowPortCapabilityTargetFunc(path)
+	if err != nil {
+		return incompleteLowPortUpgradeError(err)
+	}
+	inspection, err := lowPortCapabilityManagerFunc().Inspect(target)
+	if err != nil {
+		return incompleteLowPortUpgradeError(err)
+	}
+	if inspection.State != lowPortCapabilityConfigured {
+		return incompleteLowPortUpgradeError(fmt.Errorf("replacement gate binary does not have %s", lowPortCapability))
+	}
+	return nil
+}
+
+func incompleteLowPortUpgradeError(err error) error {
+	return fmt.Errorf(
+		"upgrade replaced gate but could not preserve low-port access: %w; "+
+			"the daemon was not restarted; run `gate daemon setup`, verify `gate --version`, then retry `gate daemon restart`",
+		err,
+	)
+}
+
+func homebrewLinkedGatePath(previousExecutable string) (string, error) {
+	path := previousExecutable
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	cleaned := filepath.Clean(path)
+	marker := string(filepath.Separator) + filepath.Join("Cellar", "gate") + string(filepath.Separator)
+	index := strings.Index(cleaned, marker)
+	if index <= 0 || !strings.HasSuffix(cleaned, filepath.Join("bin", "gate")) {
+		return "", fmt.Errorf("cannot resolve upgraded Homebrew gate path from %s", previousExecutable)
+	}
+	return filepath.Join(cleaned[:index], "bin", "gate"), nil
+}
+
+func verifyUpgradedVersion(ctx context.Context, path, expectedVersion string) error {
 	expected := normalizedVersion(expectedVersion)
 	if expected == "" {
 		return nil
 	}
-	path := upgradeExecutablePathFunc()
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("failed to verify upgraded version: current executable path is empty")
 	}
