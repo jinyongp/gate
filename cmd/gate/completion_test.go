@@ -322,6 +322,19 @@ func TestCompletionStaticSubcommands(t *testing.T) {
 	assertKeepOrderDirective(t, completion)
 }
 
+func TestCompletionDaemonSetupIsLinuxOnly(t *testing.T) {
+	isolateCompletion(t)
+	oldGOOS := completionRuntimeGOOS
+	t.Cleanup(func() { completionRuntimeGOOS = oldGOOS })
+
+	completionRuntimeGOOS = func() string { return "darwin" }
+	assertCompletionExcludes(t, completeGate(t, "daemon", ""), "setup")
+
+	completionRuntimeGOOS = func() string { return "linux" }
+	assertCompletionContains(t, completeGate(t, "daemon", ""), "setup", "configure Linux low-port access")
+	assertCompletionContains(t, completeGate(t, "daemon", "setup", "--"), "--check", "--yes", "--json", "--help")
+}
+
 func TestCompletionRootHidesInternalCommands(t *testing.T) {
 	isolateCompletion(t)
 

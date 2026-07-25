@@ -3,6 +3,7 @@
 .claude
 .DS_Store
 .taskwarrior
+/.tasks/
 node_modules
 .pnpm-store
 

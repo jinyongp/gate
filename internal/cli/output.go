@@ -140,6 +140,10 @@ func errorHint(code string) string {
 		return "Use one of --config, --project, --global, or --all where supported."
 	case "permission":
 		return "Run the suggested gate command outside the sandbox or with the required privilege."
+	case "low_port_capability_missing",
+		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
+		"setcap_failed", "setcap_not_found", "getcap_failed", "getcap_not_found", "sudo_not_found":
+		return "Run `gate daemon setup` on Linux to configure ports 80 and 443."
 	case "daemon_start":
 		return "Check the requested listener addresses or stop the conflicting daemon first."
 	case "reload_failed":
@@ -157,6 +161,10 @@ func errorNextActions(code string) []nextAction {
 		return []nextAction{{Label: "List services"}}
 	case "permission":
 		return []nextAction{{Label: "Check setup", Command: "gate doctor --json"}}
+	case "low_port_capability_missing",
+		"capability_apply", "capability_inspect", "capability_verify", "capability_target_changed",
+		"setcap_failed", "setcap_not_found", "getcap_failed", "getcap_not_found", "sudo_not_found":
+		return []nextAction{{Label: "Configure low-port access", Command: "gate daemon setup"}}
 	case "daemon_start", "reload_failed":
 		return []nextAction{{Label: "Inspect daemon", Command: "gate daemon status --json"}}
 	default:

@@ -59,6 +59,8 @@ func specFor(name string) CmdSpec {
 		}
 	}
 	switch name {
+	case "daemon setup":
+		return CmdSpec{Name: name, Summary: "configure Linux low-port access"}
 	case "expose ls":
 		return CmdSpec{Name: name, Summary: "list exposure records"}
 	case "expose stop":
@@ -70,13 +72,17 @@ func specFor(name string) CmdSpec {
 func commandsFor(name string) []CommandInfo {
 	switch name {
 	case "daemon":
-		return []CommandInfo{
+		commands := []CommandInfo{
 			{Name: "status", Summary: "show listener daemon status"},
 			{Name: "start", Summary: "start or reuse the default listener daemon"},
 			{Name: "stop", Summary: "stop listener daemon(s)"},
 			{Name: "restart", Summary: "restart the default listener daemon"},
 			{Name: "logs", Summary: "print listener daemon logs"},
 		}
+		if runtimeGOOS() == "linux" {
+			commands = append(commands, CommandInfo{Name: "setup", Summary: "configure Linux low-port access"})
+		}
+		return commands
 	case "expose":
 		return []CommandInfo{
 			{Name: "ls", Summary: "list exposure records"},

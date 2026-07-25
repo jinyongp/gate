@@ -1,6 +1,12 @@
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"runtime"
+
+	"github.com/spf13/cobra"
+)
+
+var completionRuntimeGOOS = func() string { return runtime.GOOS }
 
 type completionFlagGroup string
 
@@ -79,13 +85,7 @@ func completionSpecs() []completionSpec {
 			boolFlag("up", "", "bring up the selected scope before running the child command"),
 			boolFlag("quiet", "", "suppress gate route/status hints"),
 		}, Args: scopedService, DisableFileCompletion: true, StopAfterDashDash: true},
-		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: []completionSpec{
-			{Command: "status", Summary: "show listener daemon status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "start", Summary: "start or reuse the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "stop", Summary: "stop listener daemon(s)", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "restart", Summary: "restart the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
-			{Command: "logs", Summary: "print listener daemon logs", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
-		}},
+		{Command: "daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true, Children: daemonCompletionChildren(noArgs)},
 		{Command: "doctor", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{
 			boolFlag("fix", "", "repair issues that can be fixed without sudo"),
 		}, Args: noArgs, DisableFileCompletion: true},
@@ -122,6 +122,28 @@ func completionSpecs() []completionSpec {
 			{Command: "print", Summary: "print the bundled agent skill", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
 		}},
 	}
+}
+
+func daemonCompletionChildren(noArgs func(*completionContext) []string) []completionSpec {
+	children := []completionSpec{
+		{Command: "status", Summary: "show listener daemon status", FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+		{Command: "start", Summary: "start or reuse the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+		{Command: "stop", Summary: "stop listener daemon(s)", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+		{Command: "restart", Summary: "restart the default listener daemon", FlagGroups: []completionFlagGroup{flagsHelp}, Args: noArgs, DisableFileCompletion: true},
+		{Command: "logs", Summary: "print listener daemon logs", FlagGroups: []completionFlagGroup{flagsHelp}, Flags: []completionFlagSpec{boolFlag("all", "a", "target all known listener daemons")}, Args: noArgs, DisableFileCompletion: true},
+	}
+	if completionRuntimeGOOS() == "linux" {
+		children = append(children, completionSpec{
+			Command:    "setup",
+			Summary:    "configure Linux low-port access",
+			FlagGroups: []completionFlagGroup{flagsHelp, flagsJSON, flagsYes},
+			Flags: []completionFlagSpec{
+				boolFlag("check", "", "check low-port capability without changing it"),
+			},
+			Args: noArgs, DisableFileCompletion: true,
+		})
+	}
+	return children
 }
 
 func boolFlag(name, short, usage string) completionFlagSpec {

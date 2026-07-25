@@ -57,6 +57,8 @@ func Daemon(args []string, stdout, stderr io.Writer) int {
 	switch sub {
 	case "status":
 		return daemonStatus(rest, stdout, stderr)
+	case "setup":
+		return daemonSetup(rest, stdout, stderr)
 	case "start":
 		return daemonStart(rest, stdout, stderr)
 	case "stop":
