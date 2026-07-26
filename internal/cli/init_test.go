@@ -277,7 +277,7 @@ func TestPromptOptionalPortConfirmsOccupiedPort(t *testing.T) {
 		return registry.Open(filepath.Join(t.TempDir(), "registry.json"))
 	}
 
-	reader := bufio.NewReader(strings.NewReader("4312\nno\n4313\nyes\n"))
+	reader := bufio.NewReader(strings.NewReader("4312\nx\n4313\n\n"))
 	var out bytes.Buffer
 	got, err := promptOptionalPort(reader, &out, "Fixed port for web", "demo", "web")
 	if err != nil {
@@ -313,7 +313,7 @@ func TestPromptOptionalPortAllowsLowPortWithOccupiedConfirmation(t *testing.T) {
 		return registry.Open(filepath.Join(t.TempDir(), "registry.json"))
 	}
 
-	reader := bufio.NewReader(strings.NewReader("80\nyes\n"))
+	reader := bufio.NewReader(strings.NewReader("80\n\n"))
 	var out bytes.Buffer
 	got, err := promptOptionalPort(reader, &out, "Fixed port for web", "demo", "web")
 	if err != nil {

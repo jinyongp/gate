@@ -855,13 +855,13 @@ func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {
 	}
 }
 
-func TestConfirmUpgradeFallbackAcceptsChoices(t *testing.T) {
+func TestConfirmUpgradeFallbackContinuesOnlyOnEnter(t *testing.T) {
 	cases := []struct {
 		input string
 		want  bool
 	}{
 		{input: "\n", want: true},
-		{input: "yes\n", want: true},
+		{input: "yes\n", want: false},
 		{input: "no\n", want: false},
 	}
 	for _, tc := range cases {
@@ -873,8 +873,8 @@ func TestConfirmUpgradeFallbackAcceptsChoices(t *testing.T) {
 		if got != tc.want {
 			t.Fatalf("confirmUpgradePrompt(%q) = %v, want %v", tc.input, got, tc.want)
 		}
-		if strings.Contains(out.String(), "[Y/n]") {
-			t.Fatalf("upgrade prompt used legacy y/n prompt: %q", out.String())
+		if !strings.Contains(out.String(), "[Enter to continue; any other input cancels]") {
+			t.Fatalf("upgrade prompt lacks Enter-only confirmation hint: %q", out.String())
 		}
 		if !strings.Contains(out.String(), "A newer gate release is available.") {
 			t.Fatalf("missing upgrade explanation: %q", out.String())
@@ -885,14 +885,14 @@ func TestConfirmUpgradeFallbackAcceptsChoices(t *testing.T) {
 	}
 }
 
-func TestConfirmUpgradeFallbackExplainsInvalidAnswer(t *testing.T) {
+func TestConfirmUpgradeFallbackCancelsOnAnyInput(t *testing.T) {
 	var out bytes.Buffer
-	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("later\nno\n")), &out, "v1.1.3", "v1.2.2")
+	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("later\n")), &out, "v1.1.3", "v1.2.2")
 	if err != nil {
 		t.Fatalf("confirmUpgradePrompt: %v", err)
 	}
 	if got {
-		t.Fatal("invalid answer followed by no should decline upgrade")
+		t.Fatal("non-empty input should decline upgrade")
 	}
 	if !strings.Contains(out.String(), "Current version: v1.1.3") {
 		t.Fatalf("missing current version explanation: %q", out.String())
@@ -900,8 +900,8 @@ func TestConfirmUpgradeFallbackExplainsInvalidAnswer(t *testing.T) {
 	if !strings.Contains(out.String(), "Latest version: v1.2.2") {
 		t.Fatalf("missing latest version explanation: %q", out.String())
 	}
-	if !strings.Contains(out.String(), "Choose one of: yes, no") {
-		t.Fatalf("missing invalid answer guidance: %q", out.String())
+	if strings.Contains(out.String(), "Choose one of:") {
+		t.Fatalf("confirmation retried as a choice prompt: %q", out.String())
 	}
 }
 
@@ -912,12 +912,12 @@ func TestConfirmUpgradeRichPromptIsStyled(t *testing.T) {
 	t.Setenv("CLICOLOR_FORCE", "")
 
 	var out bytes.Buffer
-	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("yes\n")), &out, "v1.1.3", "v1.2.2")
+	got, err := confirmUpgradePrompt(bufio.NewReader(strings.NewReader("\n")), &out, "v1.1.3", "v1.2.2")
 	if err != nil {
 		t.Fatalf("confirmUpgradePrompt: %v", err)
 	}
 	if !got {
-		t.Fatal("yes should confirm upgrade")
+		t.Fatal("enter should confirm upgrade")
 	}
 	if !strings.Contains(out.String(), "! upgrade available") {
 		t.Fatalf("missing rich upgrade heading: %q", out.String())

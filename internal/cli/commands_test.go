@@ -1761,7 +1761,7 @@ func TestClearJSONOutputIncludesScopeAndReservations(t *testing.T) {
 	}
 }
 
-func TestConfirmClearAcceptsYes(t *testing.T) {
+func TestConfirmClearAcceptsEnter(t *testing.T) {
 	oldTTY := stdinIsTTYFunc
 	oldStdin := os.Stdin
 	t.Cleanup(func() {
@@ -1774,7 +1774,7 @@ func TestConfirmClearAcceptsYes(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdin = reader
-	if _, err := writer.WriteString("yes\n"); err != nil {
+	if _, err := writer.WriteString("\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

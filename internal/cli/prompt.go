@@ -23,6 +23,10 @@ func promptString(reader *bufio.Reader, stdout io.Writer, label, def string) (st
 	})
 }
 
+func promptConfirm(reader *bufio.Reader, stdout io.Writer, label string) (bool, error) {
+	return ui.PromptConfirm(reader, stdout, label)
+}
+
 func renderPromptLabel(stdout io.Writer, label string) string {
 	return ui.PromptLabel(stdout, label)
 }

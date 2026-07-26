@@ -244,11 +244,7 @@ func confirmFixedPort(reader *bufio.Reader, stdout io.Writer, fixedPort int) (bo
 	if label == "" {
 		return true, nil
 	}
-	answer, err := promptChoice(reader, stdout, label, "no", []string{"no", "yes"})
-	if err != nil {
-		return false, err
-	}
-	return answer == "yes", nil
+	return promptConfirm(reader, stdout, label)
 }
 
 func reservedPortError(fixedPort int, projectName, serviceName string) error {

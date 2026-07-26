@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -57,6 +58,140 @@ func PromptEnabledFor(input *os.File, w io.Writer) bool {
 		return false
 	}
 	return term.IsTerminal(int(input.Fd())) && term.IsTerminal(int(output.Fd()))
+}
+
+func PromptConfirm(reader *bufio.Reader, output io.Writer, label string) (bool, error) {
+	return PromptConfirmContext(context.Background(), reader, output, label)
+}
+
+func PromptConfirmContext(
+	ctx context.Context,
+	reader *bufio.Reader,
+	output io.Writer,
+	label string,
+) (bool, error) {
+	if PromptEnabled(output) {
+		return promptConfirmKey(ctx, os.Stdin, reader, output, label)
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	confirmed, err := promptConfirmLine(output, label, func() (string, error) {
+		return reader.ReadString('\n')
+	})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	return confirmed, err
+}
+
+func PromptConfirmFileContext(
+	ctx context.Context,
+	input *os.File,
+	reader *bufio.Reader,
+	output io.Writer,
+	label string,
+) (bool, error) {
+	if PromptEnabledFor(input, output) {
+		return promptConfirmKey(ctx, input, reader, output, label)
+	}
+	return promptConfirmLine(output, label, func() (string, error) {
+		return ReadLineFileContext(ctx, input, reader)
+	})
+}
+
+func promptConfirmLine(
+	output io.Writer,
+	label string,
+	readLine func() (string, error),
+) (bool, error) {
+	fmt.Fprint(output, promptConfirmLabel(output, label, false))
+	line, err := readLine()
+	if err != nil && line == "" {
+		return false, err
+	}
+	return line == "\n" || line == "\r\n", nil
+}
+
+func promptConfirmKey(
+	ctx context.Context,
+	inputFile *os.File,
+	reader *bufio.Reader,
+	output io.Writer,
+	label string,
+) (bool, error) {
+	oldState, err := term.MakeRaw(int(inputFile.Fd()))
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = term.Restore(int(inputFile.Fd()), oldState)
+	}()
+
+	if _, err := fmt.Fprint(output, promptConfirmLabel(output, label, true)); err != nil {
+		return false, err
+	}
+	for {
+		r, err := readRuneContext(ctx, inputFile, reader)
+		if err != nil {
+			return false, err
+		}
+		switch r {
+		case '\r', '\n':
+			fmt.Fprint(output, "\r\n")
+			return true, nil
+		case 0x03:
+			fmt.Fprint(output, "\r\n")
+			return false, ErrPromptInterrupted
+		case 0x04:
+			fmt.Fprint(output, "\r\n")
+			return false, nil
+		case 0x1b:
+			sequence, err := promptEscapeSequenceContinues(ctx, inputFile, reader)
+			if err != nil {
+				return false, err
+			}
+			if sequence {
+				continue
+			}
+			fmt.Fprint(output, "\r\n")
+			return false, nil
+		}
+	}
+}
+
+func promptEscapeSequenceContinues(
+	ctx context.Context,
+	inputFile *os.File,
+	reader *bufio.Reader,
+) (bool, error) {
+	sequenceCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	_, err := readRuneContext(sequenceCtx, inputFile, reader)
+	if errors.Is(err, context.DeadlineExceeded) {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func promptConfirmLabel(output io.Writer, label string, compact bool) string {
+	hint := "[Enter to continue; any other input cancels]"
+	if compact {
+		hint = "↵ continue · esc cancel"
+	}
+	if Enabled(output) {
+		hint = Dim.Render(hint)
+	}
+	if compact {
+		return PromptHeading(output, label) + "  " + hint
+	}
+	return PromptLabel(output, label) + hint + ": "
 }
 
 func PromptChoice(reader *bufio.Reader, output io.Writer, label, defaultValue string, allowed []string) (string, error) {

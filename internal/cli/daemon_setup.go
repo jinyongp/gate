@@ -217,14 +217,11 @@ func resolveLowPortCapabilityTarget(path string) (*lowPortCapabilityTarget, erro
 }
 
 func confirmLowPortSetup(stdout io.Writer) (bool, error) {
-	answer, err := promptChoice(
-		bufio.NewReader(os.Stdin),
-		stdout,
-		"Allow gate to bind local ports 80 and 443?",
-		"no",
-		[]string{"no", "yes"},
-	)
-	return answer == "yes", err
+	return confirmLowPortSetupPrompt(bufio.NewReader(os.Stdin), stdout)
+}
+
+func confirmLowPortSetupPrompt(reader *bufio.Reader, stdout io.Writer) (bool, error) {
+	return promptConfirm(reader, stdout, "Allow gate to bind local ports 80 and 443?")
 }
 
 func writeDaemonSetupSuccess(stdout io.Writer, jsonOut bool, target string, changed bool) int {

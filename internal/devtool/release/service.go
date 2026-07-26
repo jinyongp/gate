@@ -318,7 +318,7 @@ func (service *Service) confirmDirty(ctx context.Context, options Options, dirty
 	if options.AutoPush || service.Getenv("CI") != "" {
 		return errors.New("dirty working tree requires interactive confirmation; aborting release")
 	}
-	confirmed, err := service.confirm(ctx, "Continue with dirty working tree? [y/N]", false)
+	confirmed, err := service.confirm(ctx, "Continue with dirty working tree?")
 	if err != nil {
 		return fmt.Errorf("no response; aborting release: %w", err)
 	}
@@ -515,32 +515,21 @@ func (service *Service) confirmPush(ctx context.Context, tag string, options Opt
 	if service.Getenv("CI") != "" {
 		return false, nil
 	}
-	return service.confirm(ctx, "Push branch main and tag "+tag+" now? [Y/n]", true)
+	return service.confirm(ctx, "Push branch main and tag "+tag+" now?")
 }
 
-func (service *Service) confirm(ctx context.Context, label string, defaultYes bool) (bool, error) {
-	fmt.Fprint(service.Out, ui.PromptLabel(service.Out, label))
-	var line string
-	var err error
+func (service *Service) confirm(ctx context.Context, label string) (bool, error) {
 	if input, ok := service.In.(*os.File); ok {
-		line, err = ui.ReadLineFileContext(ctx, input, service.reader)
-	} else {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
-		}
-		line, err = service.reader.ReadString('\n')
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, ctxErr
-		}
+		return ui.PromptConfirmFileContext(ctx, input, service.reader, service.Out, label)
 	}
-	if err != nil && line == "" {
-		return false, err
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
 	}
-	value := strings.ToLower(strings.TrimSpace(line))
-	if value == "" {
-		return defaultYes, nil
+	confirmed, err := ui.PromptConfirmContext(ctx, service.reader, service.Out, label)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
 	}
-	return value == "y" || value == "yes", nil
+	return confirmed, err
 }
 
 func (service *Service) gitOutput(ctx context.Context, args ...string) (string, error) {

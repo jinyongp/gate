@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -143,6 +144,23 @@ func TestDaemonSetupAppliesAndVerifies(t *testing.T) {
 	}
 	if !result.Changed || manager.applied != 1 {
 		t.Fatalf("result = %+v, applied=%d", result, manager.applied)
+	}
+}
+
+func TestConfirmLowPortSetupContinuesOnEnter(t *testing.T) {
+	var out bytes.Buffer
+	confirmed, err := confirmLowPortSetupPrompt(
+		bufio.NewReader(strings.NewReader("\n")),
+		&out,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed {
+		t.Fatal("empty confirmation should allow setup")
+	}
+	if got := out.String(); got != "› Allow gate to bind local ports 80 and 443? [Enter to continue; any other input cancels]: " {
+		t.Fatalf("output = %q", got)
 	}
 }
 

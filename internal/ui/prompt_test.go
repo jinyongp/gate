@@ -30,6 +30,179 @@ func TestPromptChoiceFallbackRetriesAndMatchesCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestPromptConfirmContinuesOnlyOnEmptyLine(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader("\n"))
+	var output bytes.Buffer
+	confirmed, err := PromptConfirm(reader, &output, "Continue?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !confirmed {
+		t.Fatal("empty line should continue")
+	}
+	if got := output.String(); got != "› Continue? [Enter to continue; any other input cancels]: " {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestPromptConfirmCancelsOnAnyNonEmptyInput(t *testing.T) {
+	for name, input := range map[string]string{
+		"letter": "yes\n",
+		"space":  " \n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			reader := bufio.NewReader(strings.NewReader(input))
+			var output bytes.Buffer
+			confirmed, err := PromptConfirm(reader, &output, "Continue?")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if confirmed {
+				t.Fatal("non-empty input should cancel")
+			}
+			if got := output.String(); got != "› Continue? [Enter to continue; any other input cancels]: " {
+				t.Fatalf("output = %q", got)
+			}
+		})
+	}
+}
+
+func TestPromptConfirmContextStopsBeforePromptWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output bytes.Buffer
+	_, err := PromptConfirmContext(
+		ctx,
+		bufio.NewReader(strings.NewReader("\n")),
+		&output,
+		"Continue?",
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestPromptConfirmUsesCompactTerminalHint(t *testing.T) {
+	if got := promptConfirmLabel(&bytes.Buffer{}, "Continue?", true); got != "› Continue?  ↵ continue · esc cancel" {
+		t.Fatalf("label = %q", got)
+	}
+}
+
+func TestPromptConfirmFileContextUsesSingleKey(t *testing.T) {
+	for name, input := range map[string]struct {
+		value string
+		want  bool
+	}{
+		"enter continues": {value: "\r", want: true},
+		"escape cancels":  {value: "\x1b", want: false},
+		"ctrl-d cancels":  {value: "\x04", want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			primary, terminal, err := pty.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = primary.Close()
+				_ = terminal.Close()
+			})
+			before, err := term.GetState(int(terminal.Fd()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			type promptResult struct {
+				confirmed bool
+				err       error
+			}
+			result := make(chan promptResult, 1)
+			go func() {
+				confirmed, promptErr := PromptConfirmFileContext(
+					context.Background(),
+					terminal,
+					bufio.NewReader(terminal),
+					terminal,
+					"Continue?",
+				)
+				result <- promptResult{confirmed: confirmed, err: promptErr}
+			}()
+			time.Sleep(50 * time.Millisecond)
+			if _, err := primary.WriteString(input.value); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-result:
+				if got.err != nil {
+					t.Fatal(got.err)
+				}
+				if got.confirmed != input.want {
+					t.Fatalf("confirmed = %v, want %v", got.confirmed, input.want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("confirmation did not return after one key")
+			}
+			after, err := term.GetState(int(terminal.Fd()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *before != *after {
+				t.Fatal("terminal state was not restored after confirmation")
+			}
+		})
+	}
+}
+
+func TestPromptConfirmFileContextIgnoresOtherKeys(t *testing.T) {
+	primary, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = primary.Close()
+		_ = terminal.Close()
+	})
+	type promptResult struct {
+		confirmed bool
+		err       error
+	}
+	result := make(chan promptResult, 1)
+	go func() {
+		confirmed, promptErr := PromptConfirmFileContext(
+			context.Background(),
+			terminal,
+			bufio.NewReader(terminal),
+			terminal,
+			"Continue?",
+		)
+		result <- promptResult{confirmed: confirmed, err: promptErr}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if _, err := primary.WriteString("x\x1b[A"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-result:
+		t.Fatalf("confirmation returned for ignored key: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if _, err := primary.WriteString("\r"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if !got.confirmed {
+			t.Fatal("enter should continue after ignored key")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("confirmation did not accept enter after ignored key")
+	}
+}
+
 func TestPromptChoiceFallbackUsesDefault(t *testing.T) {
 	got, err := PromptChoice(
 		bufio.NewReader(strings.NewReader("\n")),

@@ -462,7 +462,7 @@ func TestServiceCancellationUnblocksConfirmationWithoutMutation(t *testing.T) {
 	if _, err := reader.Stat(); err != nil {
 		t.Fatalf("cancellation closed prompt input before terminal restoration: %v", err)
 	}
-	if _, err := writer.WriteString("n\n"); err != nil {
+	if _, err := writer.WriteString("x\n"); err != nil {
 		t.Fatalf("prompt input is unusable after cancellation: %v", err)
 	}
 }
@@ -510,7 +510,7 @@ func TestServiceDryRunDirtyTreeRequiresInteractiveConsent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fixture.work, "dirty.txt"), []byte("dirty\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service, _, _ := testService(fixture.work, "y\n")
+	service, _, _ := testService(fixture.work, "\n")
 	if code := service.Run(context.Background(), []string{"--dry-run", "--since", "v1.0.0", "patch"}); code != 0 {
 		t.Fatalf("Run = %d", code)
 	}

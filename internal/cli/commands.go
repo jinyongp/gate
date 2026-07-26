@@ -1168,11 +1168,11 @@ func confirmClear(sel registryScopeSelection, count int, stdout, stderr io.Write
 		return fail(stderr, jsonOut, ExitUsage, "confirmation_required", "pass -y to clear reservations")
 	}
 	label := fmt.Sprintf("Remove %s (%d reservations)?", clearScopeLabel(sel.Scope), count)
-	answer, err := promptChoice(bufio.NewReader(os.Stdin), stdout, label, "no", []string{"no", "yes"})
+	confirmed, err := promptConfirm(bufio.NewReader(os.Stdin), stdout, label)
 	if err != nil {
 		return fail(stderr, false, ExitError, "confirm_failed", err.Error())
 	}
-	if answer != "yes" {
+	if !confirmed {
 		return fail(stderr, false, ExitError, "cancelled", "clear cancelled")
 	}
 	return ExitOK

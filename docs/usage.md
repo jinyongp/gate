@@ -49,6 +49,11 @@ Global flags:
 | `gate skill path\|print`                                                                                                                                                                  | locate or print the bundled agent skill                                      |
 | `gate uninstall [--keep-trust] [--keep-brew] [-y\|--yes]`                                                                                                                                 | remove gate state, binaries, and Homebrew package when applicable            |
 
+Interactive boolean confirmations continue when Enter is pressed and cancel
+with Escape, Ctrl-D, or EOF. Ctrl-C interrupts the command; other keys are
+ignored. Commands with `-y` or `--yes` can skip the confirmation. Prompts that
+choose among multiple values keep their selection menu.
+
 ## Install
 
 ```bash

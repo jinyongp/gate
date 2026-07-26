@@ -587,11 +587,7 @@ func confirmUpgradePrompt(reader *bufio.Reader, stdout io.Writer, current, lates
 	if _, err := fmt.Fprint(stdout, renderUpgradePromptIntro(stdout, current, latest)); err != nil {
 		return false, err
 	}
-	value, err := promptChoice(reader, stdout, "Upgrade now?", "yes", []string{"yes", "no"})
-	if err != nil {
-		return false, err
-	}
-	return value == "yes", nil
+	return promptConfirm(reader, stdout, "Upgrade now?")
 }
 
 func renderUpgradePromptIntro(stdout io.Writer, current, latest string) string {
