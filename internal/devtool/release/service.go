@@ -195,6 +195,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		return nil
 	}
 
+	fmt.Fprintln(service.Out)
 	dispatchAccessStatus := service.startActivityStatus("checking GitHub release access")
 	repository, err := service.PrepareReleaseDispatch(ctx)
 	if err != nil {

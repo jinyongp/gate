@@ -116,17 +116,21 @@ func TestStartActivityCompleteKeepsDoneLine(t *testing.T) {
 	a.Complete()
 	a.Complete()
 	got := buf.String()
-	if !strings.Contains(got, "\r\033[Kok work\n") {
+	if !strings.Contains(got, "\r\033[Kok work ") ||
+		!strings.HasSuffix(got, "\n") {
 		t.Fatalf("activity did not leave completion line: %q", got)
 	}
 }
 
 func TestActivityStatusFallsBackToStableCompletionLine(t *testing.T) {
 	var buf bytes.Buffer
-	status := StartActivityStatus(&buf, "checking repository", ActivityOptions{Enabled: false})
+	status := StartActivityStatus(&buf, "checking repository", ActivityOptions{
+		Enabled: false,
+		Now:     activityTestClock(1200 * time.Millisecond),
+	})
 	status.Complete()
 	status.Complete()
-	if got := buf.String(); got != "ok: checking repository\n" {
+	if got := buf.String(); got != "ok: checking repository 1.2s\n" {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -137,9 +141,10 @@ func TestActivityStatusShowsFastTerminalCompletion(t *testing.T) {
 		Enabled:  true,
 		Delay:    time.Hour,
 		Renderer: ActivityASCII,
+		Now:      activityTestClock(1200 * time.Millisecond),
 	})
 	status.Complete()
-	if got := buf.String(); got != "ok checking repository\n" {
+	if got := buf.String(); got != "ok checking repository 1.2s\n" {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -151,6 +156,43 @@ func TestActivityStatusStopSuppressesFallback(t *testing.T) {
 	status.Complete()
 	if buf.Len() != 0 {
 		t.Fatalf("output = %q", buf.String())
+	}
+}
+
+func TestActivityShowsElapsedTimeWhileRunning(t *testing.T) {
+	var buf lockedBuffer
+	a := StartActivity(&buf, "checking repository", ActivityOptions{
+		Enabled:  true,
+		Delay:    time.Nanosecond,
+		Interval: time.Millisecond,
+		Renderer: ActivityASCII,
+		Now:      activityTestClock(1200 * time.Millisecond),
+	})
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) && !strings.Contains(buf.String(), "checking repository 1.2s") {
+		time.Sleep(time.Millisecond)
+	}
+	a.Stop()
+	if got := buf.String(); !strings.Contains(got, "checking repository 1.2s") {
+		t.Fatalf("activity did not show elapsed time: %q", got)
+	}
+}
+
+func TestFormatActivityDuration(t *testing.T) {
+	tests := []struct {
+		elapsed time.Duration
+		want    string
+	}{
+		{elapsed: 0, want: "0ms"},
+		{elapsed: 44 * time.Millisecond, want: "40ms"},
+		{elapsed: 1250 * time.Millisecond, want: "1.3s"},
+		{elapsed: 62*time.Second + 340*time.Millisecond, want: "1m 2.3s"},
+		{elapsed: time.Hour + 2*time.Minute + 3400*time.Millisecond, want: "1h 2m 3.4s"},
+	}
+	for _, test := range tests {
+		if got := formatActivityDuration(test.elapsed); got != test.want {
+			t.Errorf("formatActivityDuration(%s) = %q, want %q", test.elapsed, got, test.want)
+		}
 	}
 }
 
@@ -223,6 +265,21 @@ func TestDotStackFramesFallFillAndRelease(t *testing.T) {
 	}
 	if frames[len(frames)-1] != brailleCell() {
 		t.Fatalf("last frame = %q, want blank", frames[len(frames)-1])
+	}
+}
+
+func activityTestClock(elapsed time.Duration) func() time.Time {
+	var mu sync.Mutex
+	calls := 0
+	started := time.Unix(100, 0)
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls == 1 {
+			return started
+		}
+		return started.Add(elapsed)
 	}
 }
 

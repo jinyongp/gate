@@ -25,6 +25,7 @@ type ActivityOptions struct {
 	Delay    time.Duration
 	Interval time.Duration
 	Renderer ActivityRenderer
+	Now      func() time.Time
 }
 
 type Activity struct {
@@ -37,6 +38,8 @@ type Activity struct {
 	mu       sync.Mutex
 	wrote    bool
 	enabled  bool
+	now      func() time.Time
+	started  time.Time
 }
 
 // ActivityStatus renders the standard activity indicator on a terminal and
@@ -63,7 +66,11 @@ func ActivityEnabled(w io.Writer, jsonOut bool) bool {
 }
 
 func StartActivity(w io.Writer, label string, opts ActivityOptions) *Activity {
-	a := &Activity{w: w, label: label}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	a := &Activity{w: w, label: label, now: now, started: now()}
 	if !opts.Enabled || w == nil {
 		return a
 	}
@@ -118,11 +125,16 @@ func (status *ActivityStatus) Complete() {
 			doneMark := status.activity.doneMark
 			status.activity.mu.Unlock()
 			if !wrote {
-				_, _ = io.WriteString(status.w, doneMark+" "+status.label+"\n")
+				_, _ = io.WriteString(
+					status.w,
+					activityLine(status.w, doneMark, status.label, status.activity.elapsed())+"\n",
+				)
 			}
 			return
 		}
-		NewConsole(status.w, status.w).StatusOK(status.label)
+		NewConsole(status.w, status.w).StatusOK(
+			status.label + " " + activityElapsed(status.w, status.activity.elapsed()),
+		)
 	})
 }
 
@@ -145,7 +157,10 @@ func (a *Activity) finish(complete bool) {
 		defer a.mu.Unlock()
 		if a.wrote {
 			if complete {
-				_, _ = io.WriteString(a.w, "\r\033[K"+a.doneMark+" "+a.label+"\n")
+				_, _ = io.WriteString(
+					a.w,
+					"\r\033[K"+activityLine(a.w, a.doneMark, a.label, a.elapsed())+"\n",
+				)
 			} else {
 				_, _ = io.WriteString(a.w, "\r\033[K")
 			}
@@ -167,7 +182,7 @@ func (a *Activity) run(label string, frames []string, delay, interval time.Durat
 	defer ticker.Stop()
 	i := 0
 	for {
-		a.render(frames[i%len(frames)], label)
+		a.render(frames[i%len(frames)], label, a.elapsed())
 		i++
 		select {
 		case <-a.stopc:
@@ -177,11 +192,61 @@ func (a *Activity) run(label string, frames []string, delay, interval time.Durat
 	}
 }
 
-func (a *Activity) render(frame, label string) {
+func (a *Activity) render(frame, label string, elapsed time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, _ = io.WriteString(a.w, "\r"+frame+" "+label)
+	_, _ = io.WriteString(a.w, "\r"+activityLine(a.w, frame, label, elapsed))
 	a.wrote = true
+}
+
+func (a *Activity) elapsed() time.Duration {
+	elapsed := a.now().Sub(a.started)
+	if elapsed < 0 {
+		return 0
+	}
+	return elapsed
+}
+
+func activityLine(w io.Writer, marker, label string, elapsed time.Duration) string {
+	return marker + " " + label + " " + activityElapsed(w, elapsed)
+}
+
+func activityElapsed(w io.Writer, elapsed time.Duration) string {
+	value := formatActivityDuration(elapsed)
+	if ColorEnabled(w) {
+		return Dim.Render(value)
+	}
+	return value
+}
+
+func formatActivityDuration(elapsed time.Duration) string {
+	if elapsed <= 0 {
+		return "0ms"
+	}
+	precision := 100 * time.Millisecond
+	if elapsed < time.Second {
+		precision = 10 * time.Millisecond
+	}
+	rounded := elapsed.Round(precision)
+	if rounded == 0 {
+		return "0ms"
+	}
+	return spaceDurationUnits(rounded.String())
+}
+
+func spaceDurationUnits(value string) string {
+	var spaced strings.Builder
+	spaced.Grow(len(value) + 2)
+	for i := range value {
+		spaced.WriteByte(value[i])
+		if (value[i] == 'h' || value[i] == 'm') &&
+			i+1 < len(value) &&
+			value[i+1] >= '0' &&
+			value[i+1] <= '9' {
+			spaced.WriteByte(' ')
+		}
+	}
+	return spaced.String()
 }
 
 func activityFrames(renderer ActivityRenderer) []string {
