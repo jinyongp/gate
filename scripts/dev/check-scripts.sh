@@ -5,6 +5,7 @@ sh -n scripts/install.sh scripts/uninstall.sh scripts/lib/*.sh scripts/release/b
 bash -n .github/scripts/*.sh scripts/dev/*.sh scripts/release/*.sh
 bash scripts/dev/test-install-low-ports.sh
 bash scripts/dev/test-wait-for-ci.sh
+bash scripts/dev/test-check-progress.sh
 node scripts/node/check-publish-packages.mjs
 if command -v actionlint >/dev/null 2>&1; then
   actionlint
@@ -46,6 +47,11 @@ if grep -Eq '^  check:' .github/workflows/release.yml ||
     .github/workflows/release.yml ||
   ! grep -Fq 'needs: [release_tag, ci_gate]' .github/workflows/release.yml; then
   echo "Release must gate publishing on the exact commit's CI result without rerunning checks" >&2
+  exit 1
+fi
+if ! grep -Fq 'if just check; then' scripts/release/publish.sh ||
+  grep -Fq 'out="$(just check' scripts/release/publish.sh; then
+  echo "Release checks must stream staged progress from the repository check command" >&2
   exit 1
 fi
 

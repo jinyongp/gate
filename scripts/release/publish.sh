@@ -473,17 +473,12 @@ select_bump() {
   fi
 }
 
-# run_checks runs the full gate quietly, collapsing its output to a single
-# status line on success and only surfacing the detail when something fails.
 run_checks() {
   ui_section "Checks"
-  ui_note "Running test, lint, vuln"
-  local out
-  if out="$(just check 2>&1)"; then
+  if just check; then
     ui_ok "checks passed"
   else
     ui_error "checks failed"
-    printf '\n%s\n\n' "$out"
     ui_note_err "Checks failed; aborting release."
     exit 1
   fi
