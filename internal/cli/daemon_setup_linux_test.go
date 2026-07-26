@@ -161,7 +161,7 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 	target := openLinuxCapabilityTarget(t)
 	linuxCapabilityEUID = func() int { return 1000 }
 	linuxCapabilityTool = func(name string) (string, error) {
-		if name != "sudo" {
+		if name != "sudo" && name != "true" {
 			t.Fatalf("unexpected tool = %q", name)
 		}
 		return "/trusted/" + name, nil
@@ -182,7 +182,7 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 	}
 	stat, _ := selfInfoSys(target.Info)
 	wantCalls := [][]string{
-		{"-v"},
+		{"-n", "--", "/trusted/true"},
 		{
 			"-n", "--", "/tmp/.gate-capability-helper-test",
 			lowPortCapabilityHelperName,
@@ -204,6 +204,31 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 	}
 	if !strings.HasPrefix(target.operationPath(), "/proc/") || !strings.Contains(target.operationPath(), "/fd/") {
 		t.Fatalf("helper target is not the stable gate descriptor: %q", target.operationPath())
+	}
+}
+
+func TestLinuxCapabilityApplyFallsBackToInteractiveSudoAuthorization(t *testing.T) {
+	isolateLinuxCapabilityManager(t)
+	target := openLinuxCapabilityTarget(t)
+	linuxCapabilityEUID = func() int { return 1000 }
+	linuxCapabilityTool = func(name string) (string, error) { return "/trusted/" + name, nil }
+
+	var calls [][]string
+	linuxCapabilityCommand = func(_ string, commandArgs ...string) *exec.Cmd {
+		calls = append(calls, append([]string{}, commandArgs...))
+		if len(calls) == 1 {
+			return exec.Command("/bin/sh", "-c", "echo 'sudo: a password is required' >&2; exit 1")
+		}
+		return successfulLinuxCapabilityCommand()
+	}
+
+	if err := (linuxLowPortCapabilityManager{}).Apply(target); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 3 ||
+		!slices.Equal(calls[0], []string{"-n", "--", "/trusted/true"}) ||
+		!slices.Equal(calls[1], []string{"-v"}) {
+		t.Fatalf("sudo calls = %q", calls)
 	}
 }
 

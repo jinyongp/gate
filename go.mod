@@ -13,7 +13,10 @@ require (
 
 require golang.org/x/term v0.43.0
 
-require github.com/charmbracelet/lipgloss v1.1.0
+require (
+	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/creack/pty v1.1.24
+)
 
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect

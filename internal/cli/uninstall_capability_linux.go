@@ -40,7 +40,11 @@ func platformCleanupLowPortCapabilityArtifacts(stdout, stderr io.Writer) uninsta
 		var sudo string
 		sudo, err = linuxCapabilityTool("sudo")
 		if err == nil {
-			err = runLinuxCapabilitySudo(sudo, "-v")
+			var authorizationProbe string
+			authorizationProbe, err = linuxCapabilityTool("true")
+			if err == nil {
+				err = authorizeLinuxCapabilitySudo(sudo, authorizationProbe)
+			}
 			if err != nil {
 				printError(stderr, "failed to authorize interrupted low-port setup cleanup: "+err.Error())
 				return uninstallStepPermission

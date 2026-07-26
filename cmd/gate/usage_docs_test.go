@@ -166,6 +166,9 @@ func expectedUsageCommandPaths(t *testing.T) []string {
 			paths[base+" "+child] = true
 		}
 	}
+	// Usage documents the full supported CLI, including commands hidden from
+	// the current host's help. Keep Linux-only setup covered on every CI host.
+	paths["gate daemon setup"] = true
 	return sortedKeys(paths)
 }
 

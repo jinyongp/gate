@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -211,8 +212,12 @@ func TestCompleteUpgradeSkipsRestartWhenPinnedExecutableChanges(t *testing.T) {
 	if code != ExitError {
 		t.Fatalf("completeUpgrade exit = %d, stderr=%s", code, errb.String())
 	}
+	recovery := "reinstall gate"
+	if runtime.GOOS == "linux" {
+		recovery = "gate daemon setup"
+	}
 	if !strings.Contains(errb.String(), "changed before daemon restart") ||
-		!strings.Contains(errb.String(), "reinstall gate") ||
+		!strings.Contains(errb.String(), recovery) ||
 		!strings.Contains(errb.String(), "gate --version") {
 		t.Fatalf("stderr lacks pinned-executable warning: %q", errb.String())
 	}

@@ -122,12 +122,16 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 	if err != nil {
 		return err
 	}
+	authorizationProbe, err := linuxCapabilityTool("true")
+	if err != nil {
+		return err
+	}
 	setupLock, err := linuxCapabilitySetupLock()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = setupLock.Close() }()
-	if err := runLinuxCapabilitySudo(sudo, "-v"); err != nil {
+	if err := authorizeLinuxCapabilitySudo(sudo, authorizationProbe); err != nil {
 		return &lowPortCapabilityError{
 			Code: "sudo_failed",
 			Err:  fmt.Errorf("authorize low-port capability setup: %w", err),
@@ -223,6 +227,13 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 		Code: "capability_helper_copy",
 		Err:  fmt.Errorf("no executable trusted temporary directory is available"),
 	}
+}
+
+func authorizeLinuxCapabilitySudo(sudo, probe string) error {
+	if err := runLinuxCapabilitySudo(sudo, "-n", "--", probe); err == nil {
+		return nil
+	}
+	return runLinuxCapabilitySudo(sudo, "-v")
 }
 
 func runLinuxCapabilitySudo(sudo string, args ...string) error {
@@ -803,6 +814,7 @@ func unsupportedCapabilityFilesystemError(path string, err error) error {
 func trustedLinuxCapabilityTool(name string) (string, error) {
 	candidates, ok := map[string][]string{
 		"sudo":    {"/usr/bin/sudo", "/bin/sudo"},
+		"true":    {"/usr/bin/true", "/bin/true"},
 		"mktemp":  {"/usr/bin/mktemp", "/bin/mktemp"},
 		"install": {"/usr/bin/install", "/bin/install"},
 		"rm":      {"/usr/bin/rm", "/bin/rm"},

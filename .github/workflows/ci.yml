@@ -45,13 +45,12 @@ jobs:
       - name: scripts
         id: scripts
         run: scripts/dev/check-scripts.sh
-        env:
-          GATE_REQUIRE_INSTALL_PTY_TEST: ${{ runner.os == 'Linux' && '1' || '0' }}
       - name: Linux low-port capability
         id: linux_low_port
         if: runner.os == 'Linux'
-        run: scripts/dev/test-linux-low-ports.sh
+        run: go test ./internal/integrationtest -run '^TestLinuxLowPortIntegration$' -count=1 -v
         env:
+          GATE_RUN_LINUX_LOW_PORT_TEST: "1"
           GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"
       - name: enable corepack
         run: corepack enable
@@ -63,6 +62,8 @@ jobs:
       - name: test
         id: test
         run: '"$RUNNER_TEMP/gate-dev" cover'
+        env:
+          GATE_REQUIRE_INSTALL_PTY_TEST: ${{ runner.os == 'Linux' && '1' || '0' }}
       - name: cross-build release targets
         if: runner.os == 'Linux'
         run: '"$RUNNER_TEMP/gate-dev" build-all ci "$RUNNER_TEMP/gate-cross"'

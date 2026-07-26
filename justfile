@@ -55,7 +55,7 @@ scripts-check:
 
 [doc('test Linux low-port capability and child non-inheritance when supported')]
 linux-low-port-test:
-  bash scripts/dev/test-linux-low-ports.sh
+  GATE_RUN_LINUX_LOW_PORT_TEST=1 go test ./internal/integrationtest -run '^TestLinuxLowPortIntegration$' -count=1 -v
 
 [doc('check documentation boundaries')]
 docs-check:
