@@ -188,27 +188,15 @@ func errorNextActions(code string) []nextAction {
 }
 
 func printSuccess(stdout io.Writer, msg string) {
-	if richOut(stdout, false) {
-		fmt.Fprintf(stdout, "%s %s\n", ui.Tint(ui.Success, "✓"), msg)
-		return
-	}
-	fmt.Fprintln(stdout, msg)
+	ui.NewConsole(stdout, io.Discard).Success(msg)
 }
 
 func printOK(stdout io.Writer, msg string) {
-	if richOut(stdout, false) {
-		fmt.Fprintf(stdout, "%s %s\n", ui.Tint(ui.Success, "ok:"), msg)
-		return
-	}
-	fmt.Fprintln(stdout, msg)
+	ui.NewConsole(stdout, io.Discard).OK(msg)
 }
 
 func printInfo(stdout io.Writer, msg string) {
-	if richOut(stdout, false) {
-		fmt.Fprintln(stdout, ui.Dim.Render(msg))
-		return
-	}
-	fmt.Fprintln(stdout, msg)
+	ui.NewConsole(stdout, io.Discard).Info(msg)
 }
 
 func printEmpty(stdout io.Writer, richMsg, plainMsg string) {
@@ -220,27 +208,15 @@ func printEmpty(stdout io.Writer, richMsg, plainMsg string) {
 }
 
 func printWarning(stderr io.Writer, msg string) {
-	if richOut(stderr, false) {
-		fmt.Fprintf(stderr, "%s %s\n", ui.Tint(ui.Warn, "!"), msg)
-		return
-	}
-	fmt.Fprintf(stderr, "warning: %s\n", msg)
+	ui.NewConsole(io.Discard, stderr).Warning(msg)
 }
 
 func printError(stderr io.Writer, msg string) {
-	if richOut(stderr, false) {
-		fmt.Fprintln(stderr, ui.Tint(ui.Danger, "error:")+" "+msg)
-		return
-	}
-	fmt.Fprintf(stderr, "error: %s\n", msg)
+	ui.NewConsole(io.Discard, stderr).Error(msg)
 }
 
 func printKV(stdout io.Writer, label, value string) {
-	if richOut(stdout, false) {
-		fmt.Fprintf(stdout, "  %s  %s\n", ui.Dim.Render(label), value)
-		return
-	}
-	fmt.Fprintf(stdout, "  %s: %s\n", label, value)
+	ui.NewConsole(stdout, io.Discard).KV(label, value)
 }
 
 func statusDot(status string, color bool) string {
@@ -257,10 +233,5 @@ func statusDot(status string, color bool) string {
 }
 
 func printCancelled(stdout io.Writer, action string) {
-	msg := strings.TrimSpace(action) + " cancelled"
-	if richOut(stdout, false) {
-		fmt.Fprintf(stdout, "\n%s %s\n", ui.Tint(ui.Danger, "✗"), msg)
-		return
-	}
-	fmt.Fprintf(stdout, "\n✗ %s\n", msg)
+	ui.NewConsole(stdout, io.Discard).Cancelled(action)
 }

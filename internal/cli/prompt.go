@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +13,7 @@ import (
 	"golang.org/x/term"
 )
 
-var errPromptInterrupted = errors.New("interrupted")
+var errPromptInterrupted = ui.ErrPromptInterrupted
 
 func promptString(reader *bufio.Reader, stdout io.Writer, label, def string) (string, error) {
 	return promptInput(reader, stdout, promptInputSpec{
@@ -24,43 +23,20 @@ func promptString(reader *bufio.Reader, stdout io.Writer, label, def string) (st
 	})
 }
 
-func promptLabel(label string) string {
-	label = strings.TrimSpace(label)
-	if strings.HasSuffix(label, "?") {
-		return label + " "
-	}
-	return label + ": "
-}
-
-func renderPromptMarker(stdout io.Writer) string {
-	marker := "›"
-	if ui.Enabled(stdout) {
-		marker = ui.Tint(ui.Brand, marker)
-	}
-	return marker + " "
-}
-
 func renderPromptLabel(stdout io.Writer, label string) string {
-	return renderPromptMarker(stdout) + promptLabel(label)
+	return ui.PromptLabel(stdout, label)
 }
 
 func renderPromptHeading(stdout io.Writer, label string) string {
-	return strings.TrimSpace(renderPromptLabel(stdout, label))
+	return ui.PromptHeading(stdout, label)
 }
 
 func renderPromptValue(stdout io.Writer, value string) string {
-	if ui.Enabled(stdout) {
-		return ui.Header.Render(value)
-	}
-	return value
+	return ui.PromptValue(stdout, value)
 }
 
 func placeholderPromptEnabled(stdout io.Writer) bool {
-	stdoutFile, ok := stdout.(*os.File)
-	if !ok {
-		return false
-	}
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(stdoutFile.Fd()))
+	return ui.PromptEnabled(stdout)
 }
 
 type promptInputSpec struct {
@@ -301,146 +277,7 @@ func trimLastRune(s string) string {
 }
 
 func promptChoice(reader *bufio.Reader, stdout io.Writer, label, def string, allowed []string) (string, error) {
-	if placeholderPromptEnabled(stdout) {
-		return promptChoiceRadio(stdout, label, def, allowed)
-	}
-	for {
-		value, err := promptString(reader, stdout, label, def)
-		if err != nil {
-			return "", err
-		}
-		value = strings.ToLower(strings.TrimSpace(value))
-		for _, item := range allowed {
-			if value == item {
-				return value, nil
-			}
-		}
-		fmt.Fprintf(stdout, "Choose one of: %s\n", strings.Join(allowed, ", "))
-	}
-}
-
-func promptChoiceRadio(stdout io.Writer, label, def string, allowed []string) (string, error) {
-	selected := choiceIndex(def, allowed)
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		showCursor(stdout)
-		_ = term.Restore(int(os.Stdin.Fd()), oldState)
-	}()
-	hideCursor(stdout)
-
-	if _, err := fmt.Fprintf(stdout, "%s\r\n", renderPromptHeading(stdout, label)); err != nil {
-		return "", err
-	}
-	if err := renderChoiceMenu(stdout, allowed, selected); err != nil {
-		return "", err
-	}
-
-	input := bufio.NewReader(os.Stdin)
-	for {
-		previous := selected
-		r, _, err := input.ReadRune()
-		if err != nil {
-			return "", err
-		}
-		switch {
-		case r == '\r' || r == '\n':
-			fmt.Fprint(stdout, "\r\n")
-			return allowed[selected], nil
-		case r == 0x03:
-			return "", errPromptInterrupted
-		case r == 0x1b:
-			next, _, err := input.ReadRune()
-			if err != nil {
-				return "", err
-			}
-			if next != '[' {
-				continue
-			}
-			arrow, _, err := input.ReadRune()
-			if err != nil {
-				return "", err
-			}
-			switch arrow {
-			case 'A':
-				selected = (selected + len(allowed) - 1) % len(allowed)
-			case 'B':
-				selected = (selected + 1) % len(allowed)
-			}
-		case r == 'j':
-			selected = (selected + 1) % len(allowed)
-		case r == 'k':
-			selected = (selected + len(allowed) - 1) % len(allowed)
-		case r >= '1' && r <= '9':
-			index := int(r - '1')
-			if index >= len(allowed) {
-				continue
-			}
-			selected = index
-			if err := updateChoiceMenu(stdout, allowed, selected); err != nil {
-				return "", err
-			}
-			fmt.Fprint(stdout, "\r\n")
-			return allowed[selected], nil
-		}
-		if selected != previous {
-			if err := updateChoiceMenu(stdout, allowed, selected); err != nil {
-				return "", err
-			}
-		}
-	}
-}
-
-func choiceIndex(def string, allowed []string) int {
-	for i, item := range allowed {
-		if item == def {
-			return i
-		}
-	}
-	return 0
-}
-
-func renderChoiceMenu(stdout io.Writer, allowed []string, selected int) error {
-	for i, item := range allowed {
-		if err := renderChoiceOption(stdout, item, i == selected); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func updateChoiceMenu(stdout io.Writer, allowed []string, selected int) error {
-	if _, err := fmt.Fprintf(stdout, "\x1b[%dA", len(allowed)); err != nil {
-		return err
-	}
-	return renderChoiceMenu(stdout, allowed, selected)
-}
-
-func renderChoiceOption(stdout io.Writer, label string, selected bool) error {
-	marker := "○"
-	if selected {
-		marker = "●"
-	}
-	if ui.Enabled(stdout) {
-		if selected {
-			marker = ui.Tint(ui.Brand, marker)
-			label = ui.Header.Render(label)
-		} else {
-			marker = ui.Dim.Render(marker)
-		}
-	}
-	_, err := fmt.Fprintf(stdout, "  %s  %s\x1b[K\r\n", marker, label)
-	return err
-}
-
-func hideCursor(stdout io.Writer) {
-	_, _ = fmt.Fprint(stdout, "\x1b[?25l")
-}
-
-func showCursor(stdout io.Writer) {
-	_, _ = fmt.Fprint(stdout, "\x1b[?25h")
+	return ui.PromptChoice(reader, stdout, label, def, allowed)
 }
 
 func clearPromptStatus(stdout io.Writer, frame *promptInputFrame) error {
