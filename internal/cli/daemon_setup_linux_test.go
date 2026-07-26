@@ -59,12 +59,21 @@ func isolateLinuxCapabilityManager(t *testing.T) {
 	})
 }
 
+func writeExecutableLinuxCapabilityFixture(t *testing.T, path string, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // Capability targets must be executable; the fixture remains owner-only.
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func openLinuxCapabilityTarget(t *testing.T) *lowPortCapabilityTarget {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "gate")
-	if err := os.WriteFile(path, []byte("fixture"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutableLinuxCapabilityFixture(t, path, []byte("fixture"))
 	target, err := resolveLowPortCapabilityTarget(path)
 	if err != nil {
 		t.Fatal(err)
@@ -255,9 +264,7 @@ func TestLinuxCapabilityApplyRejectsExecutableOtherThanRunningGate(t *testing.T)
 	isolateLinuxCapabilityManager(t)
 	target := openLinuxCapabilityTarget(t)
 	otherPath := filepath.Join(t.TempDir(), "other")
-	if err := os.WriteFile(otherPath, []byte("other"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutableLinuxCapabilityFixture(t, otherPath, []byte("other"))
 	other, err := os.Stat(otherPath)
 	if err != nil {
 		t.Fatal(err)
@@ -298,9 +305,7 @@ func TestLinuxCapabilityApplyDetectsPathReplacement(t *testing.T) {
 	isolateLinuxCapabilityManager(t)
 	target := openLinuxCapabilityTarget(t)
 	replacement := filepath.Join(filepath.Dir(target.Path), "replacement")
-	if err := os.WriteFile(replacement, []byte("replacement"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutableLinuxCapabilityFixture(t, replacement, []byte("replacement"))
 	linuxCapabilityEUID = func() int { return 1000 }
 	linuxCapabilityTool = func(string) (string, error) { return "/trusted/sudo", nil }
 	linuxCapabilityCommand = func(string, ...string) *exec.Cmd {
@@ -477,9 +482,7 @@ func TestTrustedRootExecutableRejectsWritableAncestor(t *testing.T) {
 
 func TestHashOpenFileIncludesContentAppendedAfterInitialStat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "gate")
-	if err := os.WriteFile(path, []byte("before"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutableLinuxCapabilityFixture(t, path, []byte("before"))
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)

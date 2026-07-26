@@ -105,7 +105,7 @@ func platformAcquireStandaloneInstallLocks(gatePaths []string) ([]io.Closer, err
 		info, statErr := file.Stat()
 		stat, ok := selfInfoSys(info)
 		if statErr != nil || !ok || !info.Mode().IsRegular() ||
-			stat.Uid != uint32(os.Getuid()) || info.Mode().Perm()&0o077 != 0 {
+			stat.Uid != currentLinuxUID() || info.Mode().Perm()&0o077 != 0 {
 			_ = file.Close()
 			closeLocks()
 			return nil, fmt.Errorf("unsafe standalone install lock: %s", lockPath)

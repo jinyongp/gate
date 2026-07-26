@@ -4,6 +4,7 @@ set -euo pipefail
 sh -n scripts/install.sh scripts/uninstall.sh scripts/lib/*.sh scripts/release/build-gate.sh
 bash -n .github/scripts/*.sh scripts/dev/*.sh scripts/release/*.sh
 bash scripts/dev/test-install-low-ports.sh
+bash scripts/dev/test-wait-for-ci.sh
 node scripts/node/check-publish-packages.mjs
 if command -v actionlint >/dev/null 2>&1; then
   actionlint
@@ -18,11 +19,33 @@ if ! [[ "$go_minor" =~ ^[0-9]+\.[0-9]+$ ]]; then
   echo "go.mod must declare a major.minor Go language version" >&2
   exit 1
 fi
-setup_go_count="$(rg -N 'uses: actions/setup-go@' .github/workflows | wc -l | tr -d ' ')"
-go_version_count="$(rg -N -F "go-version: \"${go_minor}.x\"" .github/workflows | wc -l | tr -d ' ')"
-check_latest_count="$(rg -N 'check-latest: true' .github/workflows | wc -l | tr -d ' ')"
+setup_go_count="$(grep -RhE 'uses: actions/setup-go@' .github/workflows | wc -l | tr -d ' ')"
+go_version_count="$(grep -RhF "go-version: \"${go_minor}.x\"" .github/workflows | wc -l | tr -d ' ')"
+check_latest_count="$(grep -RhE 'check-latest: true' .github/workflows | wc -l | tr -d ' ')"
 if [ "$setup_go_count" -eq 0 ] || [ "$setup_go_count" -ne "$go_version_count" ] || [ "$setup_go_count" -ne "$check_latest_count" ]; then
   echo "GitHub Actions must use the current Go minor's latest patch release" >&2
+  exit 1
+fi
+setup_node_count="$(grep -RhE 'uses: actions/setup-node@' .github/workflows | wc -l | tr -d ' ')"
+node_version_file_count="$(grep -RhF 'node-version-file: .node-version' .github/workflows | wc -l | tr -d ' ')"
+if [ "$setup_node_count" -eq 0 ] || [ "$setup_node_count" -ne "$node_version_file_count" ]; then
+  echo "GitHub Actions must use the repository .node-version" >&2
+  exit 1
+fi
+if ! grep -Fq 'scripts/dev/golangci-lint.sh darwin' scripts/dev/lint.sh ||
+  ! grep -Fq 'scripts/dev/golangci-lint.sh linux' scripts/dev/lint.sh; then
+  echo "lint must cover every supported OS target from any development host" >&2
+  exit 1
+fi
+if ! grep -Fq 'run: scripts/dev/lint.sh' .github/workflows/ci.yml; then
+  echo "CI must use the repository lint command" >&2
+  exit 1
+fi
+if grep -Eq '^  check:' .github/workflows/release.yml ||
+  ! grep -Fq 'bash .github/scripts/wait-for-ci.sh "${{ needs.release_tag.outputs.target }}"' \
+    .github/workflows/release.yml ||
+  ! grep -Fq 'needs: [release_tag, ci_gate]' .github/workflows/release.yml; then
+  echo "Release must gate publishing on the exact commit's CI result without rerunning checks" >&2
   exit 1
 fi
 

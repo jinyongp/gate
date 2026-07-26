@@ -234,7 +234,7 @@ fi
 grep -F "daemon setup --yes" "$upgrade/setup.log" >/dev/null
 test "$(cat "$upgrade/setup.log")" = "daemon setup --yes"
 test "$(head -n 1 "$upgrade/bin/gate")" = "#!/bin/sh"
-if rg -F "printf old" "$upgrade/bin/gate" >/dev/null; then
+if grep -F "printf old" "$upgrade/bin/gate" >/dev/null; then
   echo "configured upgrade kept the old binary" >&2
   exit 1
 fi
@@ -319,7 +319,7 @@ if ! run_installer "$stale" GATE_TEST_GETCAP_STATE=configured >"$stale/output.lo
 fi
 grep -F "recovered the previous gate binary" "$stale/output.log" >/dev/null
 test "$(cat "$stale/setup.log")" = "daemon setup --yes"
-if rg -F "printf old" "$stale/bin/gate" >/dev/null; then
+if grep -F "printf old" "$stale/bin/gate" >/dev/null; then
   echo "stale-lock recovery did not commit the replacement" >&2
   exit 1
 fi
@@ -339,7 +339,7 @@ if ! run_installer "$stale_before_replace" \
   exit 1
 fi
 test "$(cat "$stale_before_replace/setup.log")" = "daemon setup --yes"
-if rg -F "recovered the previous gate binary" "$stale_before_replace/output.log" >/dev/null; then
+if grep -F "recovered the previous gate binary" "$stale_before_replace/output.log" >/dev/null; then
   echo "pre-replacement crash was misclassified as a completed replacement" >&2
   exit 1
 fi
@@ -372,7 +372,7 @@ fi
 grep -F "another gate installation or upgrade" "$concurrent/second.log" >/dev/null
 wait "$first_installer_pid"
 test "$(cat "$concurrent/setup.log")" = "daemon setup --yes"
-if rg -F "printf old" "$concurrent/bin/gate" >/dev/null; then
+if grep -F "printf old" "$concurrent/bin/gate" >/dev/null; then
   echo "concurrent install did not commit the replacement" >&2
   exit 1
 fi

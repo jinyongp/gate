@@ -9,6 +9,8 @@ args=(run ./...)
 case "$mode" in
   text)
     ;;
+  darwin|linux)
+    ;;
   json)
     args+=(
       --output.text.path=stderr
@@ -17,9 +19,16 @@ case "$mode" in
     )
     ;;
   *)
-    echo "usage: scripts/dev/golangci-lint.sh [text|json]" >&2
+    echo "usage: scripts/dev/golangci-lint.sh [text|json|darwin|linux]" >&2
     exit 2
     ;;
 esac
 
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 "${args[@]}" "$@"
+if [ "$mode" = "darwin" ] || [ "$mode" = "linux" ]; then
+  go run -exec "/usr/bin/env GOOS=${mode} GOARCH=amd64" \
+    github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 \
+    "${args[@]}" "$@"
+else
+  go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 \
+    "${args[@]}" "$@"
+fi

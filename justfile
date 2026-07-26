@@ -36,7 +36,7 @@ fmt-check:
 vet:
   scripts/dev/vet.sh
 
-[doc('lint (text output)')]
+[doc('lint all supported OS targets (text output)')]
 lint:
   scripts/dev/lint.sh
 

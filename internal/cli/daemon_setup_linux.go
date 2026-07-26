@@ -68,6 +68,11 @@ var (
 	linuxCapabilityCleanupHelpers = cleanupLowPortCapabilityHelpers
 )
 
+func currentLinuxUID() uint32 {
+	// Linux exposes getuid(2) as uid_t, an unsigned 32-bit value.
+	return uint32(os.Getuid()) //nolint:gosec // The kernel UID cannot exceed uint32.
+}
+
 func platformLowPortCapabilityManager() lowPortCapabilityManager {
 	return linuxLowPortCapabilityManager{}
 }
@@ -293,7 +298,6 @@ func createLowPortCapabilityHelperCopy(
 		}
 		path = strings.TrimSpace(output)
 		if !validLowPortCapabilityHelperPathForUID(path, strconv.Itoa(os.Getuid())) {
-			path = ""
 			err = fmt.Errorf("mktemp returned an invalid helper path")
 			continue
 		}
@@ -304,7 +308,6 @@ func createLowPortCapabilityHelperCopy(
 				return nil, cleanupErr
 			}
 			err = runErr
-			path = ""
 			continue
 		}
 		helper, openErr := os.Open(path)
@@ -313,7 +316,6 @@ func createLowPortCapabilityHelperCopy(
 				return nil, cleanupErr
 			}
 			err = openErr
-			path = ""
 			continue
 		}
 		info, statErr := helper.Stat()
@@ -327,7 +329,6 @@ func createLowPortCapabilityHelperCopy(
 			} else {
 				err = fmt.Errorf("temporary directory does not allow helper execution: %s", dir)
 			}
-			path = ""
 			continue
 		}
 		return &lowPortCapabilityHelperCopy{
@@ -436,7 +437,7 @@ func acquireLowPortCapabilitySetupLock() (io.Closer, error) {
 	dirInfo, err := dirFile.Stat()
 	dirStat, dirOK := selfInfoSys(dirInfo)
 	if err != nil || !dirOK || !dirInfo.IsDir() ||
-		dirStat.Uid != uint32(os.Getuid()) || dirInfo.Mode().Perm() != 0o700 {
+		dirStat.Uid != currentLinuxUID() || dirInfo.Mode().Perm() != 0o700 {
 		return nil, &lowPortCapabilityError{
 			Code: "capability_setup_lock",
 			Err:  fmt.Errorf("low-port setup lock directory is unsafe"),
@@ -460,7 +461,7 @@ func acquireLowPortCapabilitySetupLock() (io.Closer, error) {
 	info, statErr := file.Stat()
 	stat, ok := selfInfoSys(info)
 	if statErr != nil || !ok || !info.Mode().IsRegular() ||
-		stat.Uid != uint32(os.Getuid()) || info.Mode().Perm()&0o077 != 0 {
+		stat.Uid != currentLinuxUID() || info.Mode().Perm()&0o077 != 0 {
 		_ = file.Close()
 		return nil, &lowPortCapabilityError{
 			Code: "capability_setup_lock",
