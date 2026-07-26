@@ -24,15 +24,15 @@ var retainedShellFiles = append(append([]string(nil), summaryShellFiles...),
 	"scripts/uninstall.sh",
 )
 
-const linuxLowPortCIContract = `      - name: Linux low-port capability
-        id: linux_low_port
-        if: runner.os == 'Linux'
-        run: just linux-low-port-test
-        env:
-          GATE_RUN_LINUX_LOW_PORT_TEST: "1"
-          GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"`
-
-const releaseCIWaitContract = `"$RUNNER_TEMP/gate-dev" ci wait-for-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"`
+const linuxLowPortCIContract = `    - name: Linux low-port capability
+      id: linux_low_port
+      if: runner.os == 'Linux'
+      working-directory: ${{ inputs.source-path }}
+      shell: bash
+      run: just linux-low-port-test
+      env:
+        GATE_RUN_LINUX_LOW_PORT_TEST: "1"
+        GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"`
 
 func (service *Service) scriptsCheck(ctx context.Context) error {
 	if err := service.stream(ctx, runner.Command{
@@ -123,16 +123,21 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	workflows := ci + "\n" + release
-	setupGoCount := strings.Count(workflows, "uses: actions/setup-go@")
+	preflight, err := service.readContractFile(".github/actions/preflight/action.yml")
+	if err != nil {
+		return err
+	}
+	automation := ci + "\n" + release + "\n" + preflight
+	setupGoCount := strings.Count(automation, "uses: actions/setup-go@")
 	if setupGoCount == 0 ||
-		setupGoCount != strings.Count(workflows, `go-version: "`+goMinor+`.x"`) ||
-		setupGoCount != strings.Count(workflows, "check-latest: true") {
+		setupGoCount != strings.Count(automation, `go-version: "`+goMinor+`.x"`) ||
+		setupGoCount != strings.Count(automation, "check-latest: true") {
 		return fmt.Errorf("GitHub Actions must use the current Go minor's latest patch release")
 	}
-	setupNodeCount := strings.Count(workflows, "uses: actions/setup-node@")
-	nodeVersionCount := strings.Count(workflows, "node-version-file: .node-version") +
-		strings.Count(workflows, "node-version-file: source/.node-version")
+	setupNodeCount := strings.Count(automation, "uses: actions/setup-node@")
+	nodeVersionCount := strings.Count(automation, "node-version-file: .node-version") +
+		strings.Count(automation, "node-version-file: source/.node-version") +
+		strings.Count(automation, "node-version-file: ${{ inputs.source-path }}/.node-version")
 	if setupNodeCount == 0 ||
 		setupNodeCount != nodeVersionCount {
 		return fmt.Errorf("GitHub Actions must use the repository .node-version")
@@ -158,13 +163,29 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 			label:   "CI",
 			content: ci,
 			fragments: []string{
-				`run-name: CI ${{ inputs.checkout_ref || github.sha }} ${{ inputs.request_id || '' }}`,
-				"checkout_ref:",
-				"group: ci-${{ github.workflow }}-${{ inputs.request_id || inputs.checkout_ref || github.ref }}",
+				`run-name: CI · PR #${{ github.event.pull_request.number }}`,
+				"pull_request:",
+				"group: ci-pr-${{ github.event.pull_request.number }}",
+				"fail-fast: false",
+				"ref: ${{ github.sha }}",
+				"uses: ./tooling/.github/actions/preflight",
+				`cross-build: "true"`,
+			},
+		},
+		{
+			label:   "preflight action",
+			content: preflight,
+			fragments: []string{
 				"uses: extractions/setup-just@",
-				"ref: ${{ inputs.checkout_ref || github.sha }}",
+				"run: just fmt-check",
+				"run: just vet",
 				"run: just lint",
+				"run: just vuln",
 				"run: just scripts-check",
+				"run: just linux-low-port-test",
+				"run: just node-check",
+				"run: just cover",
+				"run: just build-all ci",
 				"GATE_REQUIRE_INSTALL_PTY_TEST",
 			},
 		},
@@ -172,6 +193,7 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 			label:   "release workflow",
 			content: release,
 			fragments: []string{
+				`run-name: Release · ${{ github.event.client_payload.tag }}`,
 				"repository_dispatch:",
 				"- release",
 				"GATE_RELEASE_TAG: ${{ github.event.client_payload.tag }}",
@@ -184,7 +206,6 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 				"GATE_RELEASE_TARGET_SHA: ${{ needs.release_tag.outputs.target }}",
 				"GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}",
 				`"$RUNNER_TEMP/gate-dev" ci detect-release-tag`,
-				`"$RUNNER_TEMP/gate-dev" ci dispatch-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"`,
 				`"$RUNNER_TEMP/gate-dev" ci build-release-artifacts`,
 				`"$RUNNER_TEMP/gate-dev" ci checksums`,
 				`"$RUNNER_TEMP/gate-dev" ci publish-release`,
@@ -192,7 +213,12 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 				`"$RUNNER_TEMP/gate-dev" ci wait-release-assets`,
 				`"$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula`,
 				`node ../tooling/scripts/node/publish-packages.mjs "${VERSION_TAG}" bin`,
-				"needs: [release_tag, ci_gate]",
+				"preflight:",
+				"fail-fast: false",
+				"os: [ubuntu-latest, macos-15]",
+				"uses: ./tooling/.github/actions/preflight",
+				"source-sha: ${{ needs.release_tag.outputs.target }}",
+				"needs: [release_tag, preflight]",
 			},
 		},
 	}
@@ -203,14 +229,18 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 			}
 		}
 	}
-	if !strings.Contains(ci, linuxLowPortCIContract) {
-		return fmt.Errorf("CI is missing the required Linux low-port contract")
+	if !strings.Contains(preflight, linuxLowPortCIContract) {
+		return fmt.Errorf("preflight action is missing the required Linux low-port contract")
 	}
-	if !strings.Contains(release, releaseCIWaitContract) {
-		return fmt.Errorf("release workflow is missing the exact release-target CI wait contract")
+	for _, forbiddenTrigger := range []string{"workflow_dispatch:", "push:"} {
+		if strings.Contains(ci, forbiddenTrigger) {
+			return fmt.Errorf("CI workflow must run only for pull requests to main: %s", forbiddenTrigger)
+		}
 	}
-	if regexp.MustCompile(`(?m)^  check:`).MatchString(release) {
-		return fmt.Errorf("release workflow must not rerun the CI check job")
+	for _, forbiddenCommand := range []string{"dispatch-ci", "wait-for-ci"} {
+		if strings.Contains(release, forbiddenCommand) {
+			return fmt.Errorf("release workflow must run preflight directly, not %s", forbiddenCommand)
+		}
 	}
 	if strings.Contains(release, "workflow_dispatch:") {
 		return fmt.Errorf("privileged release workflow must not allow direct workflow_dispatch")

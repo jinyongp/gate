@@ -19,11 +19,9 @@ import (
 )
 
 var (
-	commitSHAPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	repoSlugPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	workflowPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
-	ciRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-	notFoundPattern    = regexp.MustCompile(`(^|[^0-9])404([^0-9]|$)`)
+	commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	repoSlugPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	notFoundPattern  = regexp.MustCompile(`(^|[^0-9])404([^0-9]|$)`)
 )
 
 type Service struct {
@@ -93,20 +91,6 @@ func (service *Service) execute(ctx context.Context, command string, args []stri
 			return usage("detect-release-tag does not accept arguments")
 		}
 		return service.detectReleaseTag(ctx)
-	case "wait-for-ci":
-		if len(args) < 1 || len(args) > 2 {
-			return usage("usage: gate-dev ci wait-for-ci <40-character commit SHA> [request-id]")
-		}
-		requestID := ""
-		if len(args) == 2 {
-			requestID = args[1]
-		}
-		return service.waitForCI(ctx, args[0], requestID)
-	case "dispatch-ci":
-		if len(args) != 2 {
-			return usage("usage: gate-dev ci dispatch-ci <40-character commit SHA> <request-id>")
-		}
-		return service.dispatchCI(ctx, args[0], args[1])
 	case "build-release-artifacts":
 		if len(args) > 1 {
 			return usage("usage: gate-dev ci build-release-artifacts [vX.Y.Z]")

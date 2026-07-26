@@ -51,7 +51,9 @@ func (service *Service) goFiles(ctx context.Context, includeUntracked bool) ([]s
 	}
 	var files []string
 	for _, file := range strings.Split(output, "\n") {
-		if file == "" || strings.HasPrefix(file, "internal/truststore/") {
+		if file == "" ||
+			strings.HasPrefix(file, "internal/truststore/") ||
+			!service.PathExists(service.repositoryPath(file)) {
 			continue
 		}
 		files = append(files, file)

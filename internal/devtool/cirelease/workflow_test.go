@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestReleaseWorkflowUsesGoDomainCommandsAndDeletedScriptsStayAbsent(t *testing.T) {
+func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate workflow fixture")
@@ -26,23 +26,46 @@ func TestReleaseWorkflowUsesGoDomainCommandsAndDeletedScriptsStayAbsent(t *testi
 	}
 	ciWorkflow := string(ciData)
 	for _, contract := range []string{
-		"run-name: CI ${{ inputs.checkout_ref || github.sha }} ${{ inputs.request_id || '' }}",
-		"workflow_dispatch:",
-		"checkout_ref:",
-		"group: ci-${{ github.workflow }}-${{ inputs.request_id || inputs.checkout_ref || github.ref }}",
-		"ref: ${{ inputs.checkout_ref || github.sha }}",
-		"uses: extractions/setup-just@",
-		"run: just lint",
-		"run: just linux-low-port-test",
+		"run-name: CI · PR #${{ github.event.pull_request.number }}",
+		"pull_request:",
+		"group: ci-pr-${{ github.event.pull_request.number }}",
+		"fail-fast: false",
+		"ref: ${{ github.sha }}",
+		"uses: ./tooling/.github/actions/preflight",
+		`cross-build: "true"`,
 	} {
 		if !strings.Contains(ciWorkflow, contract) {
-			t.Errorf("CI workflow is missing exact-SHA recovery contract %q", contract)
+			t.Errorf("CI workflow is missing pull-request contract %q", contract)
+		}
+	}
+	for _, forbiddenTrigger := range []string{"workflow_dispatch:", "push:", "repository_dispatch:"} {
+		if strings.Contains(ciWorkflow, forbiddenTrigger) {
+			t.Errorf("CI workflow allows non-PR trigger %q", forbiddenTrigger)
+		}
+	}
+
+	preflightData, err := os.ReadFile(filepath.Join(root, ".github", "actions", "preflight", "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preflight := string(preflightData)
+	for _, contract := range []string{
+		"run: just fmt-check",
+		"run: just vet",
+		"run: just lint",
+		"run: just vuln",
+		"run: just scripts-check",
+		"run: just linux-low-port-test",
+		"run: just node-check",
+		"run: just cover",
+		"run: just build-all ci",
+	} {
+		if !strings.Contains(preflight, contract) {
+			t.Errorf("shared preflight action is missing %q", contract)
 		}
 	}
 	commands := []string{
 		"detect-release-tag",
-		"dispatch-ci",
-		"wait-for-ci",
 		"build-release-artifacts",
 		"checksums",
 		"publish-release",
@@ -67,11 +90,20 @@ func TestReleaseWorkflowUsesGoDomainCommandsAndDeletedScriptsStayAbsent(t *testi
 		"ref: ${{ needs.release_tag.outputs.target }}",
 		"GATE_RELEASE_TARGET_SHA: ${{ needs.release_tag.outputs.target }}",
 		"GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}",
-		`wait-for-ci "${{ needs.release_tag.outputs.target }}"`,
-		`CI_REQUEST_ID: release-${{ github.run_id }}-${{ github.run_attempt }}`,
+		"preflight:",
+		"fail-fast: false",
+		"os: [ubuntu-latest, macos-15]",
+		"uses: ./tooling/.github/actions/preflight",
+		"source-sha: ${{ needs.release_tag.outputs.target }}",
+		"needs: [release_tag, preflight]",
 	} {
 		if !strings.Contains(workflow, contract) {
-			t.Errorf("release recovery workflow is missing %q", contract)
+			t.Errorf("release workflow is missing %q", contract)
+		}
+	}
+	for _, forbiddenCommand := range []string{"dispatch-ci", "wait-for-ci"} {
+		if strings.Contains(workflow, forbiddenCommand) {
+			t.Errorf("release workflow still uses %q", forbiddenCommand)
 		}
 	}
 	for _, forbiddenTrigger := range []string{"workflow_dispatch:", "workflow_run:", "push:"} {
@@ -79,16 +111,16 @@ func TestReleaseWorkflowUsesGoDomainCommandsAndDeletedScriptsStayAbsent(t *testi
 			t.Errorf("privileged release workflow allows unsafe trigger %q", forbiddenTrigger)
 		}
 	}
-	if strings.Count(workflow, "actions: write") != 1 {
-		t.Errorf("release workflow must grant actions:write only to the CI dispatch job")
+	if strings.Contains(workflow, "actions: write") {
+		t.Error("release workflow no longer needs actions:write")
 	}
-	ciGateStart := strings.Index(workflow, "\n  ci_gate:")
+	preflightStart := strings.Index(workflow, "\n  preflight:")
 	buildStart := strings.Index(workflow, "\n  build:")
-	if ciGateStart < 0 || buildStart <= ciGateStart {
-		t.Fatal("locate CI gate job")
+	if preflightStart < 0 || buildStart <= preflightStart {
+		t.Fatal("release preflight must precede build")
 	}
-	if strings.Contains(workflow[ciGateStart:buildStart], "actions: write") {
-		t.Error("CI wait job has write access to Actions")
+	if strings.Contains(workflow[preflightStart:buildStart], "contents: write") {
+		t.Error("release preflight has write access to repository contents")
 	}
 
 	deleted := []string{

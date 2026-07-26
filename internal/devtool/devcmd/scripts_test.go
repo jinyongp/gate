@@ -82,7 +82,7 @@ func TestRepositoryContractsRejectMissingReleaseCommand(t *testing.T) {
 	}
 }
 
-func TestRepositoryContractsRequireExactReleaseSHAAndRequiredLowPortMode(t *testing.T) {
+func TestRepositoryContractsRequireReleasePreflightAndRequiredLowPortMode(t *testing.T) {
 	tests := []struct {
 		name        string
 		pathSuffix  string
@@ -93,13 +93,13 @@ func TestRepositoryContractsRequireExactReleaseSHAAndRequiredLowPortMode(t *test
 		{
 			name:        "release target",
 			pathSuffix:  ".github/workflows/release.yml",
-			old:         releaseCIWaitContract,
-			replacement: `"${GITHUB_SHA}"`,
-			want:        "exact release-target CI wait contract",
+			old:         "source-sha: ${{ needs.release_tag.outputs.target }}",
+			replacement: "source-sha: ${{ github.sha }}",
+			want:        "source-sha",
 		},
 		{
 			name:       "required low port",
-			pathSuffix: ".github/workflows/ci.yml",
+			pathSuffix: ".github/actions/preflight/action.yml",
 			old:        linuxLowPortCIContract,
 			replacement: strings.Replace(
 				linuxLowPortCIContract,

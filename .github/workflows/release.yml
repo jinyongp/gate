@@ -1,4 +1,5 @@
 name: Release
+run-name: Release · ${{ github.event.client_payload.tag }}
 
 on:
   repository_dispatch:
@@ -48,75 +49,41 @@ jobs:
           GATE_RELEASE_TAG_OBJECT: ${{ github.event.client_payload.tag_object }}
           GATE_REQUIRE_RELEASE_TAG: "1"
 
-  ci_dispatch:
+  preflight:
     needs: [release_tag]
     if: |
       needs.release_tag.outputs.tag != '' &&
       needs.release_tag.outputs.on_main == 'true'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
     permissions:
-      actions: write
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.workflow_sha }}
           path: tooling
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-          cache-dependency-path: tooling/go.sum
-      - name: build developer tool
-        working-directory: tooling
-        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
-      - name: dispatch exact release commit CI
-        working-directory: tooling
-        run: '"$RUNNER_TEMP/gate-dev" ci dispatch-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"'
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CI_REQUEST_ID: release-${{ github.run_id }}-${{ github.run_attempt }}
-
-  ci_gate:
-    needs: [release_tag, ci_dispatch]
-    if: |
-      always() &&
-      needs.release_tag.result == 'success' &&
-      (needs.ci_dispatch.result == 'success' || needs.ci_dispatch.result == 'skipped') &&
-      needs.release_tag.outputs.tag != '' &&
-      needs.release_tag.outputs.on_main == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    steps:
+          persist-credentials: false
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.workflow_sha }}
-          path: tooling
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+          ref: ${{ needs.release_tag.outputs.target }}
+          path: source
+          persist-credentials: false
+      - uses: ./tooling/.github/actions/preflight
         with:
-          go-version: "1.26.x"
-          check-latest: true
-          cache-dependency-path: tooling/go.sum
-      - name: build developer tool
-        working-directory: tooling
-        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
-      - name: wait for CI on release commit
-        working-directory: tooling
-        run: '"$RUNNER_TEMP/gate-dev" ci wait-for-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"'
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CI_REQUEST_ID: release-${{ github.run_id }}-${{ github.run_attempt }}
+          source-path: source
+          source-sha: ${{ needs.release_tag.outputs.target }}
+          runner-label: ${{ matrix.os }}
 
   build:
-    needs: [release_tag, ci_gate]
+    needs: [release_tag, preflight]
     if: |
       needs.release_tag.outputs.tag != '' &&
       needs.release_tag.outputs.on_main == 'true' &&
-      needs.ci_gate.result == 'success'
+      needs.preflight.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -360,7 +327,7 @@ jobs:
           NPM_PUBLISH_SUMMARY: source/npm-publish-summary.tsv
 
   release_summary:
-    needs: [release_tag, ci_dispatch, ci_gate, build, homebrew_tap, npm_publish]
+    needs: [release_tag, preflight, build, homebrew_tap, npm_publish]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -380,8 +347,7 @@ jobs:
           TAG_ON_MAIN: ${{ needs.release_tag.outputs.on_main || 'false' }}
           RELEASE_STATUS: ${{ needs.release_tag.outputs.release || 'unknown' }}
           RELEASE_TAG_JOB_RESULT: ${{ needs.release_tag.result }}
-          CI_DISPATCH_JOB_RESULT: ${{ needs.ci_dispatch.result }}
-          CI_GATE_JOB_RESULT: ${{ needs.ci_gate.result }}
+          PREFLIGHT_JOB_RESULT: ${{ needs.preflight.result }}
           BUILD_JOB_RESULT: ${{ needs.build.result }}
           HOMEBREW_TAP_JOB_RESULT: ${{ needs.homebrew_tap.result }}
           NPM_PUBLISH_JOB_RESULT: ${{ needs.npm_publish.result }}

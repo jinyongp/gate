@@ -176,12 +176,15 @@ func TestLintJSONUsesCurrentHostAndSplitOutputs(t *testing.T) {
 	}
 }
 
-func TestFormatCheckExcludesTruststoreAndReportsFiles(t *testing.T) {
+func TestFormatCheckExcludesTruststoreAndDeletedFiles(t *testing.T) {
 	fake := &fakeRunner{
 		run: func(command runner.Command) error {
 			switch command.Name {
 			case "git":
-				_, _ = io.WriteString(command.Stdout, "a.go\ninternal/truststore/generated.go\nb.go\n")
+				_, _ = io.WriteString(
+					command.Stdout,
+					"a.go\ninternal/truststore/generated.go\ndeleted.go\nb.go\n",
+				)
 			case "gofmt":
 				_, _ = io.WriteString(command.Stdout, "b.go\n")
 			}
@@ -189,6 +192,9 @@ func TestFormatCheckExcludesTruststoreAndReportsFiles(t *testing.T) {
 		},
 	}
 	service, out, _ := newTestService(fake, platform.Darwin{})
+	service.PathExists = func(path string) bool {
+		return path != filepath.Join("repo", "deleted.go")
+	}
 	if code := service.Run(context.Background(), []string{"fmt-check"}); code != 1 {
 		t.Fatalf("Run = %d", code)
 	}
@@ -308,29 +314,45 @@ go run ./cmd/gate-dev scripts-check
 go run ./cmd/gate-dev release
 `), nil
 	case "repo/.github/workflows/ci.yml":
+		return []byte(`run-name: CI · PR #${{ github.event.pull_request.number }}
+pull_request:
+branches:
+  - main
+group: ci-pr-${{ github.event.pull_request.number }}
+fail-fast: false
+ref: ${{ github.sha }}
+uses: ./tooling/.github/actions/preflight
+cross-build: "true"
+`), nil
+	case "repo/.github/actions/preflight/action.yml":
 		return []byte(`uses: actions/setup-go@sha
 go-version: "1.26.x"
 check-latest: true
 uses: actions/setup-node@sha
-node-version-file: .node-version
-run-name: CI ${{ inputs.checkout_ref || github.sha }} ${{ inputs.request_id || '' }}
-checkout_ref:
-group: ci-${{ github.workflow }}-${{ inputs.request_id || inputs.checkout_ref || github.ref }}
+node-version-file: ${{ inputs.source-path }}/.node-version
 uses: extractions/setup-just@sha
-ref: ${{ inputs.checkout_ref || github.sha }}
+run: just fmt-check
+run: just vet
 run: just lint
+run: just vuln
 run: just scripts-check
-      - name: Linux low-port capability
-        id: linux_low_port
-        if: runner.os == 'Linux'
-        run: just linux-low-port-test
-        env:
-          GATE_RUN_LINUX_LOW_PORT_TEST: "1"
-          GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"
+    - name: Linux low-port capability
+      id: linux_low_port
+      if: runner.os == 'Linux'
+      working-directory: ${{ inputs.source-path }}
+      shell: bash
+      run: just linux-low-port-test
+      env:
+        GATE_RUN_LINUX_LOW_PORT_TEST: "1"
+        GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"
+run: just node-check
+run: just cover
+run: just build-all ci
 GATE_REQUIRE_INSTALL_PTY_TEST
 `), nil
 	case "repo/.github/workflows/release.yml":
-		return []byte(`repository_dispatch:
+		return []byte(`run-name: Release · ${{ github.event.client_payload.tag }}
+repository_dispatch:
 - release
 GATE_RELEASE_TAG: ${{ github.event.client_payload.tag }}
 GATE_RELEASE_TARGET_SHA: ${{ github.event.client_payload.target_sha }}
@@ -342,8 +364,6 @@ ref: ${{ needs.release_tag.outputs.target }}
 GATE_RELEASE_TARGET_SHA: ${{ needs.release_tag.outputs.target }}
 GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}
 "$RUNNER_TEMP/gate-dev" ci detect-release-tag
-"$RUNNER_TEMP/gate-dev" ci dispatch-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"
-"$RUNNER_TEMP/gate-dev" ci wait-for-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"
 "$RUNNER_TEMP/gate-dev" ci build-release-artifacts
 "$RUNNER_TEMP/gate-dev" ci checksums
 "$RUNNER_TEMP/gate-dev" ci publish-release
@@ -351,7 +371,12 @@ GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}
 "$RUNNER_TEMP/gate-dev" ci wait-release-assets
 "$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula
 node ../tooling/scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
-needs: [release_tag, ci_gate]
+preflight:
+fail-fast: false
+os: [ubuntu-latest, macos-15]
+uses: ./tooling/.github/actions/preflight
+source-sha: ${{ needs.release_tag.outputs.target }}
+needs: [release_tag, preflight]
 `), nil
 	default:
 		return []byte("clean\n"), nil
