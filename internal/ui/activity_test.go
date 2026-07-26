@@ -183,7 +183,7 @@ func TestActivityClearsEachFrameBeforeRendering(t *testing.T) {
 	a := &Activity{w: &buf}
 	a.render("|", "checking repository", 990*time.Millisecond)
 	a.render("/", "checking repository", time.Second)
-	want := "\r\033[K| checking repository 990ms\r\033[K/ checking repository 1s"
+	want := "\r\033[K| checking repository 990ms\r\033[K/ checking repository 1.0s"
 	if got := buf.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -197,7 +197,9 @@ func TestFormatActivityDuration(t *testing.T) {
 		{elapsed: 0, want: "0ms"},
 		{elapsed: 44 * time.Millisecond, want: "40ms"},
 		{elapsed: 1250 * time.Millisecond, want: "1.3s"},
+		{elapsed: 5 * time.Second, want: "5.0s"},
 		{elapsed: 62*time.Second + 340*time.Millisecond, want: "1m 2.3s"},
+		{elapsed: 2 * time.Minute, want: "2m 0.0s"},
 		{elapsed: time.Hour + 2*time.Minute + 3400*time.Millisecond, want: "1h 2m 3.4s"},
 	}
 	for _, test := range tests {

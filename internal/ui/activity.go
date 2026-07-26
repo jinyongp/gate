@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -231,22 +232,21 @@ func formatActivityDuration(elapsed time.Duration) string {
 	if rounded == 0 {
 		return "0ms"
 	}
-	return spaceDurationUnits(rounded.String())
-}
-
-func spaceDurationUnits(value string) string {
-	var spaced strings.Builder
-	spaced.Grow(len(value) + 2)
-	for i := range value {
-		spaced.WriteByte(value[i])
-		if (value[i] == 'h' || value[i] == 'm') &&
-			i+1 < len(value) &&
-			value[i+1] >= '0' &&
-			value[i+1] <= '9' {
-			spaced.WriteByte(' ')
-		}
+	if rounded < time.Second {
+		return rounded.String()
 	}
-	return spaced.String()
+	if rounded < time.Minute {
+		return fmt.Sprintf("%.1fs", rounded.Seconds())
+	}
+	if rounded < time.Hour {
+		minutes := rounded / time.Minute
+		seconds := float64(rounded%time.Minute) / float64(time.Second)
+		return fmt.Sprintf("%dm %.1fs", minutes, seconds)
+	}
+	hours := rounded / time.Hour
+	minutes := (rounded % time.Hour) / time.Minute
+	seconds := float64(rounded%time.Minute) / float64(time.Second)
+	return fmt.Sprintf("%dh %dm %.1fs", hours, minutes, seconds)
 }
 
 func activityFrames(renderer ActivityRenderer) []string {
