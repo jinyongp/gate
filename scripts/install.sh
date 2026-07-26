@@ -272,6 +272,14 @@ if [ "$OS" = "linux" ]; then
   fi
 fi
 
+same_install_file() {
+  # The rollback file is a hard link below DEST_DIR, so both paths share a
+  # filesystem and their POSIX inode numbers are sufficient for identity.
+  first_inode="$(LC_ALL=C ls -di "$1" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  second_inode="$(LC_ALL=C ls -di "$2" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  [ -n "$first_inode" ] && [ "$first_inode" = "$second_inode" ]
+}
+
 recover_interrupted_install() {
   if [ ! -e "$INSTALL_TRANSACTION_DIR" ] && [ ! -L "$INSTALL_TRANSACTION_DIR" ]; then
     return 0
@@ -295,7 +303,7 @@ recover_interrupted_install() {
       ui_error "interrupted gate install contains an unsafe rollback target: ${stale_previous}"
       return 1
     fi
-    if [ "$stale_state" = "committed" ] || { [ -f "$DEST" ] && [ "$DEST" -ef "$stale_previous" ]; }; then
+    if [ "$stale_state" = "committed" ] || { [ -f "$DEST" ] && same_install_file "$DEST" "$stale_previous"; }; then
       rm -f "$stale_previous"
     elif mv -f "$stale_previous" "$DEST"; then
       ui_warn_err "recovered the previous gate binary from an interrupted install."
