@@ -64,6 +64,11 @@ if ! grep -Fq "GATE_RUN_LINUX_LOW_PORT_TEST=1 go test ./internal/integrationtest
   echo "Installer and Linux low-port integration must use the Go harness" >&2
   exit 1
 fi
+if ! grep -Fq 'node scripts/node/publish-packages.mjs "${VERSION_TAG}" bin' \
+  .github/workflows/release.yml; then
+  echo "npm publishing must use the tested Node entrypoint" >&2
+  exit 1
+fi
 
 for migrated_script in \
   scripts/dev/build.sh \
@@ -89,6 +94,7 @@ for migrated_script in \
   .github/scripts/checksums.sh \
   .github/scripts/detect-release-tag.sh \
   .github/scripts/generate-homebrew-binary-formula.sh \
+  .github/scripts/publish-npm.sh \
   .github/scripts/publish-release.sh \
   .github/scripts/verify-release-tag-target.sh \
   .github/scripts/wait-for-ci.sh \

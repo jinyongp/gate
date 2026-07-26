@@ -247,7 +247,7 @@ jobs:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: publish npm packages
         id: publish_npm
-        run: bash .github/scripts/publish-npm.sh "${VERSION_TAG}" bin
+        run: node scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
           NPM_PUBLISH_SUMMARY: npm-publish-summary.tsv
