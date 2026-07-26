@@ -68,6 +68,7 @@ commands:
   lint       lint current and alternate supported hosts
   lint-json  emit structured lint diagnostics
   vuln       run the Go vulnerability scan
+  scripts-check validate retained shell and workflow contracts
   docs-check enforce documentation boundaries
   fmt        format Go files
   check      run the full staged repository check

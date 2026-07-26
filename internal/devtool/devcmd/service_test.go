@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,7 +19,7 @@ import (
 func TestHandlesDevelopmentCommands(t *testing.T) {
 	for _, command := range []string{
 		"build", "run", "test", "cover", "fmt-check", "vet", "lint",
-		"lint-json", "vuln", "docs-check", "fmt", "check", "build-all",
+		"lint-json", "vuln", "docs-check", "fmt", "check", "build-all", "scripts-check",
 	} {
 		if !Handles(command) {
 			t.Fatalf("Handles(%q) = false", command)
@@ -272,9 +273,15 @@ func TestCheckProgressAndFailureDetail(t *testing.T) {
 }
 
 func TestCheckSuccessShowsAllEightStages(t *testing.T) {
-	fake := &fakeRunner{}
+	fake := &fakeRunner{run: func(command runner.Command) error {
+		if command.Name == "git" && len(command.Args) > 0 && command.Args[0] == "ls-files" {
+			_, _ = io.WriteString(command.Stdout, strings.Join(retainedShellFiles, "\x00")+"\x00")
+		}
+		return nil
+	}}
 	service, out, errOut := newTestService(fake, platform.Linux{})
-	service.ReadFile = func(string) ([]byte, error) { return []byte("clean\n"), nil }
+	service.ReadFile = validRepositoryContractFixture
+	service.LookPath = func(string) (string, error) { return "", os.ErrNotExist }
 	service.Now = advancingClock(time.Second)
 	if code := service.Run(context.Background(), []string{"check"}); code != 0 {
 		t.Fatalf("Run = %d", code)
@@ -286,6 +293,45 @@ func TestCheckSuccessShowsAllEightStages(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+func validRepositoryContractFixture(path string) ([]byte, error) {
+	switch filepath.ToSlash(path) {
+	case "repo/go.mod":
+		return []byte("module gate\n\ngo 1.26\n\ntoolchain go1.26.5\n"), nil
+	case "repo/justfile":
+		return []byte(`set positional-arguments
+go run ./cmd/gate-dev lint
+go run ./cmd/gate-dev run "$@"
+go run ./cmd/gate-dev scripts-check
+go run ./cmd/gate-dev release
+`), nil
+	case "repo/.github/workflows/ci.yml":
+		return []byte(`uses: actions/setup-go@sha
+go-version: "1.26.x"
+check-latest: true
+uses: actions/setup-node@sha
+node-version-file: .node-version
+"$RUNNER_TEMP/gate-dev" lint
+"$RUNNER_TEMP/gate-dev" scripts-check
+GATE_RUN_LINUX_LOW_PORT_TEST
+GATE_REQUIRE_INSTALL_PTY_TEST
+`), nil
+	case "repo/.github/workflows/release.yml":
+		return []byte(`"$RUNNER_TEMP/gate-dev" ci detect-release-tag
+"$RUNNER_TEMP/gate-dev" ci wait-for-ci
+"$RUNNER_TEMP/gate-dev" ci build-release-artifacts
+"$RUNNER_TEMP/gate-dev" ci checksums
+"$RUNNER_TEMP/gate-dev" ci publish-release
+"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target
+"$RUNNER_TEMP/gate-dev" ci wait-release-assets
+"$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula
+node scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
+needs: [release_tag, ci_gate]
+`), nil
+	default:
+		return []byte("clean\n"), nil
 	}
 }
 
@@ -326,6 +372,7 @@ func newTestService(
 	service.Getenv = func(string) string { return "" }
 	service.ReadFile = func(string) ([]byte, error) { return []byte{}, nil }
 	service.MkdirAll = func(string, os.FileMode) error { return nil }
+	service.PathExists = func(string) bool { return true }
 	return service, &out, &errOut
 }
 

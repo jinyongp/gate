@@ -66,7 +66,7 @@ func (service *Service) check(ctx context.Context) error {
 		{
 			label: "Shell and workflow checks",
 			run: func(ctx context.Context, child *Service) error {
-				return child.stream(ctx, runner.Command{Name: "scripts/dev/check-scripts.sh"})
+				return child.scriptsCheck(ctx)
 			},
 		},
 	}

@@ -44,7 +44,7 @@ jobs:
         run: '"$RUNNER_TEMP/gate-dev" vuln'
       - name: scripts
         id: scripts
-        run: scripts/dev/check-scripts.sh
+        run: '"$RUNNER_TEMP/gate-dev" scripts-check'
       - name: Linux low-port capability
         id: linux_low_port
         if: runner.os == 'Linux'

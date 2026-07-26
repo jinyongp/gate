@@ -51,7 +51,7 @@ vuln:
 
 [doc('shell script syntax/lint smoke checks')]
 scripts-check:
-  bash scripts/dev/check-scripts.sh
+  go run ./cmd/gate-dev scripts-check
 
 [doc('test Linux low-port capability and child non-inheritance when supported')]
 linux-low-port-test:
