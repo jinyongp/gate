@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"gate/internal/devtool/devcmd"
 	"gate/internal/devtool/platform"
 	"gate/internal/devtool/release"
 	"gate/internal/devtool/runner"
@@ -37,6 +38,9 @@ func (app *App) Run(ctx context.Context, args []string) int {
 	case args[0] == "release":
 		service := release.New(app.In, app.Out, app.Err, app.Runner)
 		return service.Run(ctx, args[1:])
+	case devcmd.Handles(args[0]):
+		service := devcmd.New(app.In, app.Out, app.Err, app.Runner, app.Platform)
+		return service.Run(ctx, args)
 	default:
 		ui.NewConsole(app.Out, app.Err).Error(fmt.Sprintf("unknown gate-dev command %q", args[0]))
 		app.usage()
@@ -51,6 +55,19 @@ usage:
   gate-dev <command> [args]
 
 commands:
-  release  create and atomically push a release tag
-  help     show this help`)
+  build      build gate for the current host
+  run        run gate from source
+  test       run race-enabled Go tests
+  cover      run race-enabled Go tests with coverage
+  fmt-check  report unformatted Go files
+  vet        run go vet
+  lint       lint current and alternate supported hosts
+  lint-json  emit structured lint diagnostics
+  vuln       run the Go vulnerability scan
+  docs-check enforce documentation boundaries
+  fmt        format Go files
+  check      run the full staged repository check
+  build-all  cross-build all release targets
+  release    create and atomically push a release tag
+  help       show this help`)
 }

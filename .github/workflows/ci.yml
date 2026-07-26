@@ -25,21 +25,23 @@ jobs:
         with:
           go-version: "1.26.x"
           check-latest: true
+      - name: build developer tool
+        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version-file: .node-version
       - name: gofmt
         id: gofmt
-        run: scripts/dev/fmt-check.sh
+        run: '"$RUNNER_TEMP/gate-dev" fmt-check'
       - name: vet
         id: vet
-        run: scripts/dev/vet.sh
+        run: '"$RUNNER_TEMP/gate-dev" vet'
       - name: golangci-lint
         id: golangci_lint
-        run: scripts/dev/lint.sh
+        run: '"$RUNNER_TEMP/gate-dev" lint'
       - name: govulncheck
         id: govulncheck
-        run: scripts/dev/vuln.sh
+        run: '"$RUNNER_TEMP/gate-dev" vuln'
       - name: scripts
         id: scripts
         run: scripts/dev/check-scripts.sh
@@ -60,10 +62,10 @@ jobs:
         run: pnpm node:check
       - name: test
         id: test
-        run: scripts/dev/cover.sh
+        run: '"$RUNNER_TEMP/gate-dev" cover'
       - name: cross-build release targets
         if: runner.os == 'Linux'
-        run: scripts/release/build-gate.sh ci "$RUNNER_TEMP/gate-cross"
+        run: '"$RUNNER_TEMP/gate-dev" build-all ci "$RUNNER_TEMP/gate-cross"'
       - name: job summary
         if: always()
         run: bash .github/scripts/check-summary.sh

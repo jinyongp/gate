@@ -1,5 +1,6 @@
 # Command runner is `just` (install: https://github.com/casey/just).
 set quiet
+set positional-arguments
 
 export GOCACHE := "/tmp/gate-gocache"
 export GOLANGCI_LINT_CACHE := "/tmp/gate-golangci-cache-gate"
@@ -10,11 +11,11 @@ default:
 
 [doc('build the binary')]
 build:
-  scripts/dev/build.sh
+  go run ./cmd/gate-dev build
 
 [doc('run gate from source, e.g. `just gate ls`, `just gate --help`')]
 gate *args:
-  scripts/dev/run-gate.sh {{args}}
+  go run ./cmd/gate-dev run "$@"
 
 # local smoke-test servers
 mod smoke 'smoke/.justfile'
@@ -22,31 +23,31 @@ mod smoke 'smoke/.justfile'
 
 [doc('run tests with the race detector')]
 test:
-  scripts/dev/test.sh
+  go run ./cmd/gate-dev test
 
 [doc('tests + coverage')]
 cover:
-  scripts/dev/cover.sh
+  go run ./cmd/gate-dev cover
 
 [doc('check gofmt without writing files')]
 fmt-check:
-  scripts/dev/fmt-check.sh
+  go run ./cmd/gate-dev fmt-check
 
 [doc('go vet all packages')]
 vet:
-  scripts/dev/vet.sh
+  go run ./cmd/gate-dev vet
 
 [doc('lint all supported OS targets (text output)')]
 lint:
-  scripts/dev/lint.sh
+  go run ./cmd/gate-dev lint
 
 [doc('lint for AI/scripts: text diagnostics -> stderr, JSON diagnostics -> stdout')]
 lint-json:
-  scripts/dev/lint-json.sh
+  go run ./cmd/gate-dev lint-json
 
 [doc('vulnerability scan (narrowed to actually-called code)')]
 vuln:
-  scripts/dev/vuln.sh
+  go run ./cmd/gate-dev vuln
 
 [doc('shell script syntax/lint smoke checks')]
 scripts-check:
@@ -58,15 +59,15 @@ linux-low-port-test:
 
 [doc('check documentation boundaries')]
 docs-check:
-  scripts/dev/docs-check.sh
+  go run ./cmd/gate-dev docs-check
 
 [doc('format with gofmt + goimports')]
 fmt:
-  scripts/dev/fmt.sh
+  go run ./cmd/gate-dev fmt
 
 [doc('full gate — run before opening a PR')]
 check:
-  scripts/dev/check.sh
+  go run ./cmd/gate-dev check
 
 [doc('release a new version: no arg => interactive patch/minor/major; patch/minor/major -> bump from latest tag; explicit vX.Y.Z')]
 release tag="":
@@ -74,7 +75,7 @@ release tag="":
 
 [doc('cross-compile all release targets into bin/')]
 build-all version="dev":
-  scripts/release/build-gate.sh "{{version}}" bin
+  go run ./cmd/gate-dev build-all {{quote(version)}} bin
 
 [doc('build Node API packages')]
 node-build:

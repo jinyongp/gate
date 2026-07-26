@@ -195,7 +195,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		}
 		return errors.New("checks failed; aborting release")
 	}
-	service.console.OK("checks passed")
+	service.console.StatusOK("checks passed")
 	confirmed, err := service.confirmPush(resolvedTag, options)
 	if err != nil {
 		return err
@@ -235,7 +235,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		}
 		return fmt.Errorf("push failed; removed the local tag created by this release attempt: %s", resolvedTag)
 	}
-	service.console.OK("created and pushed tag " + resolvedTag)
+	service.console.StatusOK("created and pushed tag " + resolvedTag)
 	return nil
 }
 

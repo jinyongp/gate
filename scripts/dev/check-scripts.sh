@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sh -n scripts/install.sh scripts/uninstall.sh scripts/lib/*.sh scripts/release/build-gate.sh
-bash -n .github/scripts/*.sh scripts/dev/*.sh scripts/release/*.sh
+sh -n scripts/install.sh scripts/uninstall.sh scripts/lib/*.sh
+bash -n .github/scripts/*.sh scripts/dev/*.sh
 bash scripts/dev/test-install-low-ports.sh
 bash scripts/dev/test-wait-for-ci.sh
-bash scripts/dev/test-check-progress.sh
 node scripts/node/check-publish-packages.mjs
 if command -v actionlint >/dev/null 2>&1; then
   actionlint
@@ -33,13 +32,19 @@ if [ "$setup_node_count" -eq 0 ] || [ "$setup_node_count" -ne "$node_version_fil
   echo "GitHub Actions must use the repository .node-version" >&2
   exit 1
 fi
-if ! grep -Fq 'scripts/dev/golangci-lint.sh darwin' scripts/dev/lint.sh ||
-  ! grep -Fq 'scripts/dev/golangci-lint.sh linux' scripts/dev/lint.sh; then
-  echo "lint must cover every supported OS target from any development host" >&2
+if ! grep -Fq 'go run ./cmd/gate-dev lint' justfile ||
+  ! grep -Fq "run: '\"\$RUNNER_TEMP/gate-dev\" lint'" .github/workflows/ci.yml; then
+  echo "Just and CI must use gate-dev lint so every supported OS target is covered" >&2
   exit 1
 fi
-if ! grep -Fq 'run: scripts/dev/lint.sh' .github/workflows/ci.yml; then
-  echo "CI must use the repository lint command" >&2
+if ! grep -Fq 'set positional-arguments' justfile ||
+  ! grep -Fq 'go run ./cmd/gate-dev run "$@"' justfile; then
+  echo "Just must forward gate arguments positionally without shell interpolation" >&2
+  exit 1
+fi
+if ! grep -Fq '"$GATE_DEV" build-all "$version"' .github/scripts/build-release-artifacts.sh ||
+  ! grep -Fq 'GATE_DEV: ${{ runner.temp }}/gate-dev' .github/workflows/release.yml; then
+  echo "Release artifact builds must use the job-local gate-dev binary" >&2
   exit 1
 fi
 if grep -Eq '^  check:' .github/workflows/release.yml ||
@@ -54,6 +59,28 @@ if [ -e scripts/release/publish.sh ] ||
   echo "Local releases must use gate-dev without retaining the legacy publish script" >&2
   exit 1
 fi
+for migrated_script in \
+  scripts/dev/build.sh \
+  scripts/dev/check.sh \
+  scripts/dev/cover.sh \
+  scripts/dev/docs-check.sh \
+  scripts/dev/fmt-check.sh \
+  scripts/dev/fmt.sh \
+  scripts/dev/go-test-format.sh \
+  scripts/dev/golangci-lint.sh \
+  scripts/dev/lint-json.sh \
+  scripts/dev/lint.sh \
+  scripts/dev/run-gate.sh \
+  scripts/dev/test-check-progress.sh \
+  scripts/dev/test.sh \
+  scripts/dev/vet.sh \
+  scripts/dev/vuln.sh \
+  scripts/release/build-gate.sh; do
+  if [ -e "$migrated_script" ]; then
+    echo "migrated development script still exists: $migrated_script" >&2
+    exit 1
+  fi
+done
 
 script_test_tmp="$(mktemp -d)"
 trap 'rm -rf "$script_test_tmp"' EXIT
@@ -191,9 +218,9 @@ else
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -S warning .github/scripts/*.sh scripts/*.sh scripts/dev/*.sh scripts/lib/*.sh scripts/release/*.sh
+  shellcheck -S warning .github/scripts/*.sh scripts/*.sh scripts/dev/*.sh scripts/lib/*.sh
 fi
 
 if command -v shfmt >/dev/null 2>&1; then
-  shfmt -d .github/scripts/*.sh scripts/*.sh scripts/dev/*.sh scripts/lib/*.sh scripts/release/*.sh
+  shfmt -d .github/scripts/*.sh scripts/*.sh scripts/dev/*.sh scripts/lib/*.sh
 fi

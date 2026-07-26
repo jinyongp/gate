@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"runtime"
 	"testing"
@@ -64,3 +65,15 @@ func TestOSRunnerRejectsEmptyName(t *testing.T) {
 		t.Fatal("expected empty command error")
 	}
 }
+
+func TestExitCodeSupportsWrappedExitCoder(t *testing.T) {
+	err := fmt.Errorf("wrapped: %w", testExitError(23))
+	if got := ExitCode(err); got != 23 {
+		t.Fatalf("ExitCode = %d, want 23", got)
+	}
+}
+
+type testExitError int
+
+func (code testExitError) Error() string { return "test exit" }
+func (code testExitError) ExitCode() int { return int(code) }

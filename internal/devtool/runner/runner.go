@@ -48,9 +48,11 @@ func ExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.ExitCode()
+	var exitCoder interface {
+		ExitCode() int
+	}
+	if errors.As(err, &exitCoder) {
+		return exitCoder.ExitCode()
 	}
 	return -1
 }

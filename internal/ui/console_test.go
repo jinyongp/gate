@@ -15,6 +15,7 @@ func TestConsolePlainContract(t *testing.T) {
 
 	console.Success("created")
 	console.OK("checked")
+	console.StatusOK("stage checked")
 	console.Info("next")
 	console.KV("tag", "v1.2.3")
 	console.Item("abc123 commit")
@@ -23,7 +24,7 @@ func TestConsolePlainContract(t *testing.T) {
 	console.Warning("careful")
 	console.Error("failed")
 
-	if got, want := out.String(), "created\nchecked\nnext\n  tag: v1.2.3\n  - abc123 commit\n\nChecks\n\n✗ release cancelled\n"; got != want {
+	if got, want := out.String(), "created\nchecked\nok: stage checked\nnext\n  tag: v1.2.3\n  - abc123 commit\n\nChecks\n\n✗ release cancelled\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	if got, want := errOut.String(), "warning: careful\nerror: failed\n"; got != want {

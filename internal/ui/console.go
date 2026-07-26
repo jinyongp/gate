@@ -34,6 +34,14 @@ func (c Console) OK(message string) {
 	fmt.Fprintln(c.Out, message)
 }
 
+func (c Console) StatusOK(message string) {
+	if ColorEnabled(c.Out) {
+		fmt.Fprintf(c.Out, "%s %s\n", Tint(Success, "ok:"), message)
+		return
+	}
+	fmt.Fprintf(c.Out, "ok: %s\n", message)
+}
+
 func (c Console) Info(message string) {
 	if ColorEnabled(c.Out) {
 		fmt.Fprintln(c.Out, Dim.Render(message))
