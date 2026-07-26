@@ -43,7 +43,7 @@ func (service *Service) prepareReleaseDispatch(ctx context.Context) (string, err
 	if err != nil {
 		return "", err
 	}
-	var permission bytes.Buffer
+	var permission, stderr bytes.Buffer
 	if err := service.Runner.Run(ctx, runner.Command{
 		Name: "gh",
 		Args: []string{
@@ -55,8 +55,11 @@ func (service *Service) prepareReleaseDispatch(ctx context.Context) (string, err
 		Dir:    service.Dir,
 		Env:    []string{"GH_PROMPT_DISABLED=1"},
 		Stdout: &permission,
-		Stderr: service.Err,
+		Stderr: &stderr,
 	}); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return "", fmt.Errorf("verify GitHub CLI access to %s: %w: %s", repo, err, detail)
+		}
 		return "", fmt.Errorf("verify GitHub CLI access to %s: %w", repo, err)
 	}
 	if strings.TrimSpace(permission.String()) != "true" {
@@ -72,7 +75,8 @@ func (service *Service) dispatchRelease(
 	targetSHA,
 	tagObject string,
 ) error {
-	return service.Runner.Run(ctx, runner.Command{
+	var stderr bytes.Buffer
+	err := service.Runner.Run(ctx, runner.Command{
 		Name: "gh",
 		Args: []string{
 			"api",
@@ -91,8 +95,15 @@ func (service *Service) dispatchRelease(
 		},
 		Dir:    service.Dir,
 		Env:    []string{"GH_PROMPT_DISABLED=1"},
-		Stderr: service.Err,
+		Stderr: &stderr,
 	})
+	if err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+		return err
+	}
+	return nil
 }
 
 func releaseDispatchRecoveryCommand(repo, tag, targetSHA, tagObject string) string {

@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"gate/internal/devtool/platform"
 	"gate/internal/devtool/runner"
@@ -247,7 +246,7 @@ func TestDocsCheckReportsEveryForbiddenMatchAndStillChecksHelp(t *testing.T) {
 	}
 }
 
-func TestCheckProgressAndFailureDetail(t *testing.T) {
+func TestCheckUsesActivityLabelsAndPreservesFailureDetail(t *testing.T) {
 	fake := &fakeRunner{
 		run: func(command runner.Command) error {
 			if command.Name == "git" {
@@ -262,23 +261,23 @@ func TestCheckProgressAndFailureDetail(t *testing.T) {
 	}
 	service, out, errOut := newTestService(fake, platform.Darwin{})
 	service.ReadFile = func(string) ([]byte, error) { return []byte("clean\n"), nil }
-	service.Now = advancingClock(time.Second)
 
 	if code := service.Run(context.Background(), []string{"check"}); code != 23 {
 		t.Fatalf("Run = %d", code)
 	}
-	if !strings.Contains(out.String(), "[1/8] Documentation boundaries") ||
-		!strings.Contains(out.String(), "ok: [2/8] Go formatting (1s)") ||
-		strings.Contains(out.String(), "[4/8]") {
+	if !strings.Contains(out.String(), "ok: checking documentation boundaries") ||
+		!strings.Contains(out.String(), "ok: checking Go formatting") ||
+		strings.Contains(out.String(), "running Go tests") ||
+		strings.Contains(out.String(), "[1/8]") {
 		t.Fatalf("stdout = %q", out.String())
 	}
-	if !strings.Contains(errOut.String(), "error: [3/8] Go vet (1s)") ||
+	if !strings.Contains(errOut.String(), "error: running Go vet") ||
 		!strings.Contains(errOut.String(), "injected check failure") {
 		t.Fatalf("stderr = %q", errOut.String())
 	}
 }
 
-func TestCheckSuccessShowsAllEightStages(t *testing.T) {
+func TestCheckSuccessShowsAllActivityStages(t *testing.T) {
 	fake := &fakeRunner{run: func(command runner.Command) error {
 		if command.Name == "git" && len(command.Args) > 0 && command.Args[0] == "ls-files" {
 			_, _ = io.WriteString(command.Stdout, strings.Join(retainedShellFiles, "\x00")+"\x00")
@@ -288,14 +287,25 @@ func TestCheckSuccessShowsAllEightStages(t *testing.T) {
 	service, out, errOut := newTestService(fake, platform.Linux{})
 	service.ReadFile = validRepositoryContractFixture
 	service.LookPath = func(string) (string, error) { return "", os.ErrNotExist }
-	service.Now = advancingClock(time.Second)
 	if code := service.Run(context.Background(), []string{"check"}); code != 0 {
 		t.Fatalf("Run = %d", code)
 	}
-	for index := 1; index <= 8; index++ {
-		if !strings.Contains(out.String(), "["+string(rune('0'+index))+"/8]") {
-			t.Fatalf("missing stage %d in %q", index, out.String())
+	for _, label := range []string{
+		"checking documentation boundaries",
+		"checking Go formatting",
+		"running Go vet",
+		"running Go tests and coverage",
+		"running Node checks",
+		"linting Go for Darwin and Linux",
+		"scanning Go vulnerabilities",
+		"checking scripts and workflows",
+	} {
+		if !strings.Contains(out.String(), "ok: "+label) {
+			t.Fatalf("missing stage %q in %q", label, out.String())
 		}
+	}
+	if strings.Contains(out.String(), "[1/8]") {
+		t.Fatalf("legacy progress output remains in %q", out.String())
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("stderr = %q", errOut.String())
@@ -431,14 +441,6 @@ func containsArg(args []string, wanted string) bool {
 		}
 	}
 	return false
-}
-
-func advancingClock(step time.Duration) func() time.Time {
-	current := time.Unix(0, 0).Add(-step)
-	return func() time.Time {
-		current = current.Add(step)
-		return current
-	}
 }
 
 type exitError int

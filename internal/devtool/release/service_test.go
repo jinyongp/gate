@@ -73,11 +73,20 @@ func TestServicePushesBranchAndAnnotatedTagAtomically(t *testing.T) {
 	if !strings.Contains(tagObject, "Release v1.0.1") || !strings.Contains(tagObject, "feat: second") {
 		t.Fatalf("tag object = %q", tagObject)
 	}
-	if !strings.Contains(out.String(), "created and pushed tag v1.0.1") {
-		t.Fatalf("stdout = %q", out.String())
+	for _, want := range []string{
+		"ok: checking GitHub release access",
+		"ok: creating release tag v1.0.1",
+		"ok: pushing main and v1.0.1",
+		"ok: dispatching release workflow for v1.0.1",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("stdout = %q, want %q", out.String(), want)
+		}
 	}
-	if !strings.Contains(out.String(), "dispatched release workflow for v1.0.1") {
-		t.Fatalf("stdout = %q", out.String())
+	for _, legacy := range []string{"Release dispatch", "\nChecks\n", "checks passed", "created and pushed tag"} {
+		if strings.Contains(out.String(), legacy) {
+			t.Fatalf("legacy release progress %q remains in %q", legacy, out.String())
+		}
 	}
 }
 
@@ -175,6 +184,30 @@ func TestServiceCheckFailureCreatesNoTag(t *testing.T) {
 		t.Fatal("failed check left a tag")
 	}
 	if !strings.Contains(errOut.String(), "checks failed; aborting release") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+func TestServiceRejectsUnsignedTargetWhenCommitSigningIsRequired(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	runGit(t, fixture.work, "config", "commit.gpgSign", "true")
+	service, _, errOut := testService(fixture.work, "")
+	checkCalled := false
+	service.Check = func(context.Context) error {
+		checkCalled = true
+		return nil
+	}
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+		t.Fatalf("Run = %d\nstderr:\n%s", code, errOut.String())
+	}
+	if checkCalled {
+		t.Fatal("unsigned release target executed checks")
+	}
+	if hasRef(fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("unsigned release target created a tag")
+	}
+	if !strings.Contains(errOut.String(), "is unsigned while commit.gpgSign=true") {
 		t.Fatalf("stderr = %q", errOut.String())
 	}
 }
@@ -306,23 +339,56 @@ func TestServiceTagInstallationRacePreservesForeignTag(t *testing.T) {
 	}
 }
 
-func TestServiceFailsClosedWhenAnnotatedTagSigningIsRequired(t *testing.T) {
+func TestServiceCreatesAndAtomicallyPushesSignedAnnotatedTag(t *testing.T) {
 	for _, policy := range []string{"tag.gpgSign", "tag.forceSignAnnotated"} {
 		t.Run(policy, func(t *testing.T) {
 			fixture := newReleaseRepository(t, true, true)
+			configureSSHSigning(t, fixture.work)
+			runGit(t, fixture.work, "config", "commit.gpgSign", "true")
+			runGit(t, fixture.work, "commit", "--amend", "--no-edit")
 			runGit(t, fixture.work, "config", policy, "true")
-			service, _, errOut := testService(fixture.work, "")
+			service, out, errOut := testService(fixture.work, "")
 
-			if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
-				t.Fatalf("Run = %d\nstderr:\n%s", code, errOut.String())
+			if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 0 {
+				t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
 			}
-			if hasRef(fixture.work, "refs/tags/v1.0.1") {
-				t.Fatal("unsupported signing policy created a tag")
+			if !hasRef(fixture.work, "refs/tags/v1.0.1") ||
+				!remoteHasRef(t, fixture.work, "refs/tags/v1.0.1") {
+				t.Fatal("signed tag was not created and pushed")
 			}
-			if !strings.Contains(errOut.String(), policy+"=true is not supported") {
-				t.Fatalf("stderr = %q", errOut.String())
+			commitObject := gitOutput(t, fixture.work, "cat-file", "commit", "HEAD")
+			if !strings.Contains(commitObject, "BEGIN SSH SIGNATURE") {
+				t.Fatalf("release commit is not SSH-signed:\n%s", commitObject)
+			}
+			tagObject := gitOutput(t, fixture.work, "cat-file", "-p", "refs/tags/v1.0.1")
+			if !strings.Contains(tagObject, "BEGIN SSH SIGNATURE") {
+				t.Fatalf("tag is not SSH-signed:\n%s", tagObject)
 			}
 		})
+	}
+}
+
+func TestServiceSignedTagPushFailureRemovesOwnedTag(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	configureSSHSigning(t, fixture.work)
+	runGit(t, fixture.work, "config", "tag.gpgSign", "true")
+	hook := filepath.Join(fixture.remote, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hook, 0o700); err != nil { //nolint:gosec // executable fixture hook must be runnable
+		t.Fatal(err)
+	}
+	service, _, errOut := testService(fixture.work, "")
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+		t.Fatalf("Run = %d\nstderr:\n%s", code, errOut.String())
+	}
+	if hasRef(fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("rejected signed-tag push left a local tag")
+	}
+	if remoteHasRef(t, fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("rejected signed-tag push created a remote tag")
 	}
 }
 
@@ -810,6 +876,26 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
+}
+
+func configureSSHSigning(t *testing.T, dir string) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "release-signing-key")
+	command := exec.Command( //nolint:gosec // test-owned key path and structured arguments
+		"ssh-keygen",
+		"-q",
+		"-t",
+		"ed25519",
+		"-N",
+		"",
+		"-f",
+		keyPath,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create SSH signing key: %v\n%s", err, output)
+	}
+	runGit(t, dir, "config", "gpg.format", "ssh")
+	runGit(t, dir, "config", "user.signingkey", keyPath)
 }
 
 func gitOutput(t *testing.T, dir string, args ...string) string {

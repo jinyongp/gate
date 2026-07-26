@@ -39,6 +39,16 @@ type Activity struct {
 	enabled  bool
 }
 
+// ActivityStatus renders the standard activity indicator on a terminal and
+// falls back to a stable completion line for redirected output.
+type ActivityStatus struct {
+	activity *Activity
+	w        io.Writer
+	label    string
+	enabled  bool
+	finish   sync.Once
+}
+
 var (
 	activityIsTerminal = func(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
 	activityGetenv     = os.Getenv
@@ -77,6 +87,43 @@ func StartActivity(w io.Writer, label string, opts ActivityOptions) *Activity {
 	a.donec = make(chan struct{})
 	go a.run(label, frames, delay, interval)
 	return a
+}
+
+func StartActivityStatus(w io.Writer, label string, opts ActivityOptions) *ActivityStatus {
+	activity := StartActivity(w, label, opts)
+	return &ActivityStatus{
+		activity: activity,
+		w:        w,
+		label:    label,
+		enabled:  activity.enabled,
+	}
+}
+
+func (status *ActivityStatus) Stop() {
+	if status == nil {
+		return
+	}
+	status.finish.Do(status.activity.Stop)
+}
+
+func (status *ActivityStatus) Complete() {
+	if status == nil {
+		return
+	}
+	status.finish.Do(func() {
+		if status.enabled {
+			status.activity.Complete()
+			status.activity.mu.Lock()
+			wrote := status.activity.wrote
+			doneMark := status.activity.doneMark
+			status.activity.mu.Unlock()
+			if !wrote {
+				_, _ = io.WriteString(status.w, doneMark+" "+status.label+"\n")
+			}
+			return
+		}
+		NewConsole(status.w, status.w).StatusOK(status.label)
+	})
 }
 
 func (a *Activity) Stop() {

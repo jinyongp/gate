@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"gate/internal/devtool/platform"
 	"gate/internal/devtool/runner"
@@ -27,7 +26,6 @@ type Service struct {
 	Getenv     func(string) string
 	ReadFile   func(string) ([]byte, error)
 	MkdirAll   func(string, os.FileMode) error
-	Now        func() time.Time
 	LookPath   func(string) (string, error)
 	PathExists func(string) bool
 }
@@ -48,7 +46,6 @@ func New(
 		Getenv:   os.Getenv,
 		ReadFile: os.ReadFile,
 		MkdirAll: os.MkdirAll,
-		Now:      time.Now,
 		LookPath: exec.LookPath,
 		PathExists: func(path string) bool {
 			_, err := os.Lstat(path)

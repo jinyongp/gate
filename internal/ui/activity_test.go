@@ -121,6 +121,39 @@ func TestStartActivityCompleteKeepsDoneLine(t *testing.T) {
 	}
 }
 
+func TestActivityStatusFallsBackToStableCompletionLine(t *testing.T) {
+	var buf bytes.Buffer
+	status := StartActivityStatus(&buf, "checking repository", ActivityOptions{Enabled: false})
+	status.Complete()
+	status.Complete()
+	if got := buf.String(); got != "ok: checking repository\n" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestActivityStatusShowsFastTerminalCompletion(t *testing.T) {
+	var buf bytes.Buffer
+	status := StartActivityStatus(&buf, "checking repository", ActivityOptions{
+		Enabled:  true,
+		Delay:    time.Hour,
+		Renderer: ActivityASCII,
+	})
+	status.Complete()
+	if got := buf.String(); got != "ok checking repository\n" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestActivityStatusStopSuppressesFallback(t *testing.T) {
+	var buf bytes.Buffer
+	status := StartActivityStatus(&buf, "checking repository", ActivityOptions{Enabled: false})
+	status.Stop()
+	status.Complete()
+	if buf.Len() != 0 {
+		t.Fatalf("output = %q", buf.String())
+	}
+}
+
 func TestActivityFrameSelection(t *testing.T) {
 	resetActivityHooks(t)
 	activityGetenv = func(key string) string {
