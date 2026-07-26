@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"gate/internal/devtool/runner"
 )
 
 var repoSlugPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -29,6 +32,75 @@ func originRepoSlug(remote string) (string, error) {
 		return "", fmt.Errorf("origin does not contain an owner/repository slug")
 	}
 	return slug, nil
+}
+
+func (service *Service) prepareReleaseDispatch(ctx context.Context) (string, error) {
+	remote, err := service.gitOutput(ctx, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("read origin remote: %w", err)
+	}
+	repo, err := originRepoSlug(remote)
+	if err != nil {
+		return "", err
+	}
+	var permission bytes.Buffer
+	if err := service.Runner.Run(ctx, runner.Command{
+		Name: "gh",
+		Args: []string{
+			"api",
+			"repos/" + repo,
+			"--jq",
+			".permissions.push",
+		},
+		Dir:    service.Dir,
+		Env:    []string{"GH_PROMPT_DISABLED=1"},
+		Stdout: &permission,
+		Stderr: service.Err,
+	}); err != nil {
+		return "", fmt.Errorf("verify GitHub CLI access to %s: %w", repo, err)
+	}
+	if strings.TrimSpace(permission.String()) != "true" {
+		return "", fmt.Errorf("authenticated GitHub account lacks push access to %s", repo)
+	}
+	return repo, nil
+}
+
+func (service *Service) dispatchRelease(
+	ctx context.Context,
+	repo,
+	tag,
+	targetSHA,
+	tagObject string,
+) error {
+	return service.Runner.Run(ctx, runner.Command{
+		Name: "gh",
+		Args: []string{
+			"api",
+			"--silent",
+			"--method",
+			"POST",
+			"repos/" + repo + "/dispatches",
+			"-f",
+			"event_type=release",
+			"-F",
+			"client_payload[tag]=" + tag,
+			"-F",
+			"client_payload[target_sha]=" + targetSHA,
+			"-F",
+			"client_payload[tag_object]=" + tagObject,
+		},
+		Dir:    service.Dir,
+		Env:    []string{"GH_PROMPT_DISABLED=1"},
+		Stderr: service.Err,
+	})
+}
+
+func releaseDispatchRecoveryCommand(repo, tag, targetSHA, tagObject string) string {
+	return "gh api --method POST repos/" + repo +
+		"/dispatches -f event_type=release" +
+		" -F 'client_payload[tag]=" + tag + "'" +
+		" -F 'client_payload[target_sha]=" + targetSHA + "'" +
+		" -F 'client_payload[tag_object]=" + tagObject + "'"
 }
 
 func latestReleaseTag(

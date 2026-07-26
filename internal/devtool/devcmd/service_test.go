@@ -313,21 +313,44 @@ go-version: "1.26.x"
 check-latest: true
 uses: actions/setup-node@sha
 node-version-file: .node-version
-"$RUNNER_TEMP/gate-dev" lint
-"$RUNNER_TEMP/gate-dev" scripts-check
-GATE_RUN_LINUX_LOW_PORT_TEST
+run-name: CI ${{ inputs.checkout_ref || github.sha }} ${{ inputs.request_id || '' }}
+checkout_ref:
+group: ci-${{ github.workflow }}-${{ inputs.request_id || inputs.checkout_ref || github.ref }}
+uses: extractions/setup-just@sha
+ref: ${{ inputs.checkout_ref || github.sha }}
+run: just lint
+run: just scripts-check
+      - name: Linux low-port capability
+        id: linux_low_port
+        if: runner.os == 'Linux'
+        run: just linux-low-port-test
+        env:
+          GATE_RUN_LINUX_LOW_PORT_TEST: "1"
+          GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"
 GATE_REQUIRE_INSTALL_PTY_TEST
 `), nil
 	case "repo/.github/workflows/release.yml":
-		return []byte(`"$RUNNER_TEMP/gate-dev" ci detect-release-tag
-"$RUNNER_TEMP/gate-dev" ci wait-for-ci
+		return []byte(`repository_dispatch:
+- release
+GATE_RELEASE_TAG: ${{ github.event.client_payload.tag }}
+GATE_RELEASE_TARGET_SHA: ${{ github.event.client_payload.target_sha }}
+GATE_RELEASE_TAG_OBJECT: ${{ github.event.client_payload.tag_object }}
+GATE_REQUIRE_RELEASE_TAG: "1"
+queue: max
+ref: ${{ github.workflow_sha }}
+ref: ${{ needs.release_tag.outputs.target }}
+GATE_RELEASE_TARGET_SHA: ${{ needs.release_tag.outputs.target }}
+GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}
+"$RUNNER_TEMP/gate-dev" ci detect-release-tag
+"$RUNNER_TEMP/gate-dev" ci dispatch-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"
+"$RUNNER_TEMP/gate-dev" ci wait-for-ci "${{ needs.release_tag.outputs.target }}" "$CI_REQUEST_ID"
 "$RUNNER_TEMP/gate-dev" ci build-release-artifacts
 "$RUNNER_TEMP/gate-dev" ci checksums
 "$RUNNER_TEMP/gate-dev" ci publish-release
 "$RUNNER_TEMP/gate-dev" ci verify-release-tag-target
 "$RUNNER_TEMP/gate-dev" ci wait-release-assets
 "$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula
-node scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
+node ../tooling/scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
 needs: [release_tag, ci_gate]
 `), nil
 	default:

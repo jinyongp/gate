@@ -82,6 +82,55 @@ func TestRepositoryContractsRejectMissingReleaseCommand(t *testing.T) {
 	}
 }
 
+func TestRepositoryContractsRequireExactReleaseSHAAndRequiredLowPortMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		pathSuffix  string
+		old         string
+		replacement string
+		want        string
+	}{
+		{
+			name:        "release target",
+			pathSuffix:  ".github/workflows/release.yml",
+			old:         releaseCIWaitContract,
+			replacement: `"${GITHUB_SHA}"`,
+			want:        "exact release-target CI wait contract",
+		},
+		{
+			name:       "required low port",
+			pathSuffix: ".github/workflows/ci.yml",
+			old:        linuxLowPortCIContract,
+			replacement: strings.Replace(
+				linuxLowPortCIContract,
+				`GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"`,
+				"",
+				1,
+			),
+			want: "required Linux low-port contract",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, _, _ := newTestService(&fakeRunner{}, platform.Linux{})
+			service.ReadFile = func(path string) ([]byte, error) {
+				data, err := validRepositoryContractFixture(path)
+				if err != nil {
+					return nil, err
+				}
+				if strings.HasSuffix(path, test.pathSuffix) {
+					data = []byte(strings.Replace(string(data), test.old, test.replacement, 1))
+				}
+				return data, nil
+			}
+			err := service.validateRepositoryContracts(context.Background())
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestScriptsCheckFallsBackToPinnedActionlintAndSkipsOptionalFormatters(t *testing.T) {
 	fake := &fakeRunner{run: func(command runner.Command) error {
 		if command.Name == "git" {

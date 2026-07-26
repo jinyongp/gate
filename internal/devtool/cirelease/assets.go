@@ -38,12 +38,38 @@ func (service *Service) waitReleaseAssets(ctx context.Context, tag string) error
 	baseURL := strings.TrimRight(service.GitHubWeb, "/") +
 		"/" + repository + "/releases/download/" + tag
 	start := service.Now()
+	waitCtx, cancel := context.WithTimeout(ctx, maxWait)
+	defer cancel()
 	attempt := 1
 	delay := time.Second
 	for {
 		ready := true
 		for _, asset := range releaseAssets {
-			status := service.releaseAssetStatus(ctx, baseURL+"/"+asset)
+			remaining := maxWait - service.Now().Sub(start)
+			if remaining <= 0 {
+				return fmt.Errorf("release assets did not become ready within %s", durationSeconds(maxWait))
+			}
+			requestTimeout := min(service.AssetRequestTimeout, remaining)
+			requestCtx, requestCancel := context.WithTimeout(waitCtx, requestTimeout)
+			status, requestErr := service.releaseAssetStatus(requestCtx, baseURL+"/"+asset)
+			requestCancel()
+			if requestErr != nil {
+				if waitCtx.Err() != nil {
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					return fmt.Errorf(
+						"release assets did not become ready within %s: %v",
+						durationSeconds(maxWait),
+						waitCtx.Err().Error(),
+					)
+				}
+				service.console().Warning(
+					fmt.Sprintf("release asset request failed: %s: %v", asset, requestErr),
+				)
+				ready = false
+				continue
+			}
 			if status < 200 || status >= 400 {
 				service.console().Warning(fmt.Sprintf("release asset not ready (%03d): %s", status, asset))
 				ready = false
@@ -70,18 +96,18 @@ func (service *Service) waitReleaseAssets(ctx context.Context, tag string) error
 	}
 }
 
-func (service *Service) releaseAssetStatus(ctx context.Context, url string) int {
+func (service *Service) releaseAssetStatus(ctx context.Context, url string) (int, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	response, err := service.HTTPClient.Do(request)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	return response.StatusCode
+	return response.StatusCode, nil
 }
 
 func (service *Service) generateHomebrewFormula(ctx context.Context, tapPath, tag string) error {

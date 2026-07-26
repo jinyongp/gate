@@ -74,6 +74,73 @@ func TestWaitReleaseAssetsFailsClosedOnTimeout(t *testing.T) {
 	requireContains(t, errOut.String(), "did not become ready within 2s")
 }
 
+func TestWaitReleaseAssetsCancelsStalledRequestAtOverallDeadline(t *testing.T) {
+	requestCancelled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
+		close(requestCancelled)
+	}))
+	t.Cleanup(server.Close)
+	service, _, errOut := newTestService(t, &fakeRunner{})
+	service.GitHubWeb = server.URL
+	service.HTTPClient = server.Client()
+	service.Getenv = environment(map[string]string{
+		"GATE_RELEASE_ASSET_WAIT_SECONDS": "1",
+	})
+
+	started := time.Now()
+	if code := service.Run(context.Background(), []string{"wait-release-assets", "v1.2.3"}); code != 1 {
+		t.Fatalf("Run = %d", code)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("stalled request exceeded deadline: %s", elapsed)
+	}
+	select {
+	case <-requestCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("request context was not cancelled")
+	}
+	requireContains(t, errOut.String(), "did not become ready within 1s", "context deadline exceeded")
+}
+
+func TestWaitReleaseAssetsRetriesAfterOneRequestDeadline(t *testing.T) {
+	var requests atomic.Int32
+	requestCancelled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if requests.Add(1) == 1 {
+			<-request.Context().Done()
+			close(requestCancelled)
+			return
+		}
+		response.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	service, out, errOut := newTestService(t, &fakeRunner{})
+	service.GitHubWeb = server.URL
+	service.HTTPClient = server.Client()
+	service.AssetRequestTimeout = 50 * time.Millisecond
+	service.Getenv = environment(map[string]string{
+		"GATE_RELEASE_ASSET_WAIT_SECONDS": "3",
+	})
+	now := time.Unix(100, 0)
+	service.Now = func() time.Time { return now }
+	service.Sleep = func(_ context.Context, delay time.Duration) error {
+		now = now.Add(delay)
+		return nil
+	}
+
+	if code := service.Run(context.Background(), []string{"wait-release-assets", "v1.2.3"}); code != 0 {
+		t.Fatalf("Run = %d, stderr=%s", code, errOut.String())
+	}
+	select {
+	case <-requestCancelled:
+	default:
+		t.Fatal("stalled request was not cancelled")
+	}
+	requireContains(t, errOut.String(), "release asset request failed", "context deadline exceeded")
+	requireContains(t, out.String(), "ok: release assets are ready")
+}
+
 func checksumManifest() string {
 	return fmt.Sprintf(
 		"%s  gate-darwin-amd64\n%s  gate-darwin-arm64\n%s  gate-linux-amd64\n%s  gate-linux-arm64\n",

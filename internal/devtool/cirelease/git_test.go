@@ -21,7 +21,7 @@ func TestDetectReleaseTagWritesAnnotatedStableOutputs(t *testing.T) {
 			"git fetch --force --quiet origin refs/heads/main:refs/remotes/origin/main",
 			"git merge-base --is-ancestor " + testSHA + " refs/remotes/origin/main":
 			return nil
-		case "git rev-parse v2.11.0^{commit}", "git rev-parse HEAD":
+		case "git rev-parse v2.11.0^{commit}":
 			writeCommandOutput(command, testSHA+"\n")
 			return nil
 		case "git tag --list v*":
@@ -39,6 +39,7 @@ func TestDetectReleaseTagWritesAnnotatedStableOutputs(t *testing.T) {
 	outputPath := githubOutputFixture(t, service, map[string]string{
 		"GITHUB_REF_TYPE": "tag",
 		"GITHUB_REF_NAME": "v2.11.0",
+		"GITHUB_SHA":      testSHA,
 	})
 
 	if code := service.Run(context.Background(), []string{"detect-release-tag"}); code != 0 {
@@ -56,13 +57,86 @@ func TestDetectReleaseTagWritesAnnotatedStableOutputs(t *testing.T) {
 	)
 }
 
+func TestDetectReleaseTagAcceptsExplicitRecoveryTagFromMainToolingCheckout(t *testing.T) {
+	fake := &fakeRunner{}
+	fake.run = func(_ context.Context, command runner.Command) error {
+		switch commandLine(command) {
+		case "git cat-file -e v2.11.0^{tag}",
+			"git fetch --force --quiet origin refs/heads/main:refs/remotes/origin/main",
+			"git merge-base --is-ancestor " + testSHA + " refs/remotes/origin/main":
+			return nil
+		case "git rev-parse v2.11.0^{commit}":
+			writeCommandOutput(command, testSHA)
+		case "git rev-parse refs/tags/v2.11.0":
+			writeCommandOutput(command, differentSHA)
+		case "git ls-remote origin refs/tags/v2.11.0 refs/tags/v2.11.0^{}":
+			writeCommandOutput(
+				command,
+				differentSHA+"\trefs/tags/v2.11.0\n"+
+					testSHA+"\trefs/tags/v2.11.0^{}\n",
+			)
+		case "git tag --list v*":
+			writeCommandOutput(command, "v2.11.0")
+		case "gh release view v2.11.0 --json isDraft,isPrerelease":
+			return failCommand(command, "HTTP 404: Not Found")
+		default:
+			t.Fatalf("unexpected command: %s", commandLine(command))
+		}
+		return nil
+	}
+	service, _, _ := newTestService(t, fake)
+	outputPath := githubOutputFixture(t, service, map[string]string{
+		"GITHUB_REF_TYPE":          "branch",
+		"GITHUB_REF_NAME":          "main",
+		"GATE_RELEASE_TAG":         "v2.11.0",
+		"GATE_RELEASE_TARGET_SHA":  testSHA,
+		"GATE_RELEASE_TAG_OBJECT":  differentSHA,
+		"GATE_REQUIRE_RELEASE_TAG": "1",
+	})
+	if code := service.Run(context.Background(), []string{"detect-release-tag"}); code != 0 {
+		t.Fatalf("Run = %d", code)
+	}
+	requireContains(
+		t,
+		readFile(t, outputPath),
+		"tag=v2.11.0",
+		"target="+testSHA,
+		"object="+differentSHA,
+		"release=missing",
+		"on_main=true",
+	)
+	requireNoCallContaining(t, fake, "git rev-parse HEAD")
+}
+
+func TestDetectReleaseTagRejectsInvalidExplicitRecoveryTag(t *testing.T) {
+	service, _, errOut := newTestService(t, &fakeRunner{})
+	_ = githubOutputFixture(t, service, map[string]string{
+		"GATE_RELEASE_TAG": "release/latest",
+	})
+	if code := service.Run(context.Background(), []string{"detect-release-tag"}); code != 2 {
+		t.Fatalf("Run = %d", code)
+	}
+	requireContains(t, errOut.String(), "GATE_RELEASE_TAG must be a strict stable tag")
+}
+
+func TestDetectReleaseTagRequiresTagForRepositoryDispatch(t *testing.T) {
+	service, _, errOut := newTestService(t, &fakeRunner{})
+	_ = githubOutputFixture(t, service, map[string]string{
+		"GATE_REQUIRE_RELEASE_TAG": "1",
+	})
+	if code := service.Run(context.Background(), []string{"detect-release-tag"}); code != 2 {
+		t.Fatalf("Run = %d", code)
+	}
+	requireContains(t, errOut.String(), "repository dispatch must include a strict stable GATE_RELEASE_TAG")
+}
+
 func TestDetectReleaseTagRejectsOlderStableTag(t *testing.T) {
 	fake := &fakeRunner{}
 	fake.run = func(_ context.Context, command runner.Command) error {
 		switch commandLine(command) {
 		case "git cat-file -e v2.10.0^{tag}":
 			return fakeExitError{code: 1}
-		case "git rev-parse v2.10.0", "git rev-parse HEAD":
+		case "git rev-parse v2.10.0":
 			writeCommandOutput(command, testSHA)
 			return nil
 		case "git tag --list v*":
@@ -77,6 +151,7 @@ func TestDetectReleaseTagRejectsOlderStableTag(t *testing.T) {
 	_ = githubOutputFixture(t, service, map[string]string{
 		"GITHUB_REF_TYPE": "tag",
 		"GITHUB_REF_NAME": "v2.10.0",
+		"GITHUB_SHA":      testSHA,
 	})
 
 	if code := service.Run(context.Background(), []string{"detect-release-tag"}); code != 1 {
@@ -199,5 +274,29 @@ func TestVerifyReleaseTagTargetHandlesAnnotatedAndMovedTags(t *testing.T) {
 			t.Fatalf("Run = %d", code)
 		}
 		requireContains(t, errOut.String(), "release tag target moved", differentSHA, testSHA)
+	})
+
+	t.Run("annotated object moved with unchanged target", func(t *testing.T) {
+		fake := &fakeRunner{run: func(_ context.Context, command runner.Command) error {
+			writeCommandOutput(
+				command,
+				testSHA+"\trefs/tags/v1.2.3\n"+
+					differentSHA+"\trefs/tags/v1.2.3^{}\n",
+			)
+			return nil
+		}}
+		service, _, errOut := newTestService(t, fake)
+		if code := service.Run(
+			context.Background(),
+			[]string{
+				"verify-release-tag-target",
+				"v1.2.3",
+				differentSHA,
+				differentSHA,
+			},
+		); code != 1 {
+			t.Fatalf("Run = %d", code)
+		}
+		requireContains(t, errOut.String(), "release tag object moved", testSHA, differentSHA)
 	})
 }

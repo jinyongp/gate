@@ -15,12 +15,31 @@ func (service *Service) detectReleaseTag(ctx context.Context) error {
 	tag := ""
 	tagType := "none"
 	target := ""
+	tagObject := ""
 	releaseState := "not-applicable"
 	onMain := "false"
 
-	if service.Getenv("GITHUB_REF_TYPE") == "tag" {
+	override := service.Getenv("GATE_RELEASE_TAG")
+	requireIdentity := service.Getenv("GATE_REQUIRE_RELEASE_TAG") == "1"
+	expectedTarget := strings.ToLower(strings.TrimSpace(service.Getenv("GATE_RELEASE_TARGET_SHA")))
+	expectedObject := strings.ToLower(strings.TrimSpace(service.Getenv("GATE_RELEASE_TAG_OBJECT")))
+	if override == "" && requireIdentity {
+		return usage("repository dispatch must include a strict stable GATE_RELEASE_TAG")
+	}
+	if requireIdentity &&
+		(!commitSHAPattern.MatchString(expectedTarget) ||
+			!commitSHAPattern.MatchString(expectedObject)) {
+		return usage("repository dispatch must include exact release target and tag object SHAs")
+	}
+	switch {
+	case override != "":
+		if _, err := localrelease.ParseVersion(override); err != nil {
+			return usage("GATE_RELEASE_TAG must be a strict stable tag like v1.2.3")
+		}
+		tag = override
+	case service.Getenv("GITHUB_REF_TYPE") == "tag":
 		tag = service.Getenv("GITHUB_REF_NAME")
-	} else {
+	default:
 		tags, err := service.output(ctx, "git", "tag", "--points-at", "HEAD", "--list", "v*", "--sort=-v:refname")
 		if err != nil {
 			return err
@@ -57,15 +76,48 @@ func (service *Service) detectReleaseTag(ctx context.Context) error {
 		if !commitSHAPattern.MatchString(target) {
 			return fmt.Errorf("release tag resolved to invalid commit SHA %q", target)
 		}
-
-		if service.Getenv("GITHUB_REF_TYPE") == "tag" {
-			head, err := service.output(ctx, "git", "rev-parse", "HEAD")
+		if expectedTarget != "" && target != expectedTarget {
+			return fmt.Errorf(
+				"release tag target does not match dispatch: tag=%s expected=%s",
+				target,
+				expectedTarget,
+			)
+		}
+		if expectedObject != "" {
+			localObject, err := service.output(ctx, "git", "rev-parse", "refs/tags/"+tag)
 			if err != nil {
 				return err
 			}
-			head = strings.TrimSpace(head)
-			if target != head {
-				return fmt.Errorf("release tag target does not match checked-out HEAD: tag=%s head=%s", target, head)
+			localObject = strings.ToLower(strings.TrimSpace(localObject))
+			if localObject != expectedObject {
+				return fmt.Errorf(
+					"release tag object does not match dispatch: tag=%s expected=%s",
+					localObject,
+					expectedObject,
+				)
+			}
+			if err := service.verifyReleaseTagIdentity(
+				ctx,
+				tag,
+				expectedTarget,
+				expectedObject,
+			); err != nil {
+				return err
+			}
+			tagObject = expectedObject
+		}
+
+		if service.Getenv("GITHUB_REF_TYPE") == "tag" {
+			eventSHA := strings.ToLower(strings.TrimSpace(service.Getenv("GITHUB_SHA")))
+			if !commitSHAPattern.MatchString(eventSHA) {
+				return fmt.Errorf("tag push is missing a valid GITHUB_SHA")
+			}
+			if target != eventSHA {
+				return fmt.Errorf(
+					"release tag target does not match event SHA: tag=%s event=%s",
+					target,
+					eventSHA,
+				)
 			}
 		}
 
@@ -124,9 +176,70 @@ func (service *Service) detectReleaseTag(ctx context.Context) error {
 		outputValue{Name: "tag", Value: tag},
 		outputValue{Name: "type", Value: tagType},
 		outputValue{Name: "target", Value: target},
+		outputValue{Name: "object", Value: tagObject},
 		outputValue{Name: "release", Value: releaseState},
 		outputValue{Name: "on_main", Value: onMain},
 	)
+}
+
+func (service *Service) verifyReleaseTagIdentity(
+	ctx context.Context,
+	tag,
+	expectedTarget,
+	expectedObject string,
+) error {
+	if _, err := localrelease.ParseVersion(tag); err != nil ||
+		!commitSHAPattern.MatchString(strings.ToLower(expectedTarget)) ||
+		!commitSHAPattern.MatchString(strings.ToLower(expectedObject)) {
+		return usage("invalid release tag, expected target SHA, or expected tag object SHA")
+	}
+	raw, err := service.output(
+		ctx,
+		"git",
+		"ls-remote",
+		"origin",
+		"refs/tags/"+tag,
+		"refs/tags/"+tag+"^{}",
+	)
+	if err != nil {
+		return err
+	}
+	tagRef := "refs/tags/" + tag
+	object := ""
+	target := ""
+	for _, line := range lines(raw) {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		switch fields[1] {
+		case tagRef:
+			object = strings.ToLower(fields[0])
+		case tagRef + "^{}":
+			target = strings.ToLower(fields[0])
+		}
+	}
+	if object == "" {
+		return fmt.Errorf("release tag is missing from origin: %s", tag)
+	}
+	if target == "" {
+		target = object
+	}
+	if object != strings.ToLower(expectedObject) {
+		return fmt.Errorf(
+			"release tag object moved: tag=%s expected=%s",
+			object,
+			expectedObject,
+		)
+	}
+	if target != strings.ToLower(expectedTarget) {
+		return fmt.Errorf(
+			"release tag target moved: tag=%s expected=%s",
+			target,
+			expectedTarget,
+		)
+	}
+	return nil
 }
 
 func (service *Service) verifyReleaseTagTarget(ctx context.Context, tag, expected string) error {

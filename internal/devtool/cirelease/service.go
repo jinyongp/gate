@@ -19,45 +19,48 @@ import (
 )
 
 var (
-	commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	repoSlugPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	workflowPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
-	notFoundPattern  = regexp.MustCompile(`(^|[^0-9])404([^0-9]|$)`)
+	commitSHAPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	repoSlugPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	workflowPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]+\.ya?ml$`)
+	ciRequestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	notFoundPattern    = regexp.MustCompile(`(^|[^0-9])404([^0-9]|$)`)
 )
 
 type Service struct {
-	Out        io.Writer
-	Err        io.Writer
-	Dir        string
-	Runner     runner.Runner
-	Getenv     func(string) string
-	Now        func() time.Time
-	Sleep      func(context.Context, time.Duration) error
-	HTTPClient *http.Client
-	GitHubWeb  string
-	ReadFile   func(string) ([]byte, error)
-	WriteFile  func(string, []byte, os.FileMode) error
-	MkdirAll   func(string, os.FileMode) error
-	MkdirTemp  func(string, string) (string, error)
-	RemoveAll  func(string) error
+	Out                 io.Writer
+	Err                 io.Writer
+	Dir                 string
+	Runner              runner.Runner
+	Getenv              func(string) string
+	Now                 func() time.Time
+	Sleep               func(context.Context, time.Duration) error
+	HTTPClient          *http.Client
+	GitHubWeb           string
+	AssetRequestTimeout time.Duration
+	ReadFile            func(string) ([]byte, error)
+	WriteFile           func(string, []byte, os.FileMode) error
+	MkdirAll            func(string, os.FileMode) error
+	MkdirTemp           func(string, string) (string, error)
+	RemoveAll           func(string) error
 }
 
 func New(out, errOut io.Writer, commandRunner runner.Runner) *Service {
 	return &Service{
-		Out:        out,
-		Err:        errOut,
-		Dir:        ".",
-		Runner:     commandRunner,
-		Getenv:     os.Getenv,
-		Now:        time.Now,
-		Sleep:      sleepContext,
-		HTTPClient: http.DefaultClient,
-		GitHubWeb:  "https://github.com",
-		ReadFile:   os.ReadFile,
-		WriteFile:  os.WriteFile,
-		MkdirAll:   os.MkdirAll,
-		MkdirTemp:  os.MkdirTemp,
-		RemoveAll:  os.RemoveAll,
+		Out:                 out,
+		Err:                 errOut,
+		Dir:                 ".",
+		Runner:              commandRunner,
+		Getenv:              os.Getenv,
+		Now:                 time.Now,
+		Sleep:               sleepContext,
+		HTTPClient:          http.DefaultClient,
+		GitHubWeb:           "https://github.com",
+		AssetRequestTimeout: 30 * time.Second,
+		ReadFile:            os.ReadFile,
+		WriteFile:           os.WriteFile,
+		MkdirAll:            os.MkdirAll,
+		MkdirTemp:           os.MkdirTemp,
+		RemoveAll:           os.RemoveAll,
 	}
 }
 
@@ -91,10 +94,19 @@ func (service *Service) execute(ctx context.Context, command string, args []stri
 		}
 		return service.detectReleaseTag(ctx)
 	case "wait-for-ci":
-		if len(args) != 1 {
-			return usage("usage: gate-dev ci wait-for-ci <40-character commit SHA>")
+		if len(args) < 1 || len(args) > 2 {
+			return usage("usage: gate-dev ci wait-for-ci <40-character commit SHA> [request-id]")
 		}
-		return service.waitForCI(ctx, args[0])
+		requestID := ""
+		if len(args) == 2 {
+			requestID = args[1]
+		}
+		return service.waitForCI(ctx, args[0], requestID)
+	case "dispatch-ci":
+		if len(args) != 2 {
+			return usage("usage: gate-dev ci dispatch-ci <40-character commit SHA> <request-id>")
+		}
+		return service.dispatchCI(ctx, args[0], args[1])
 	case "build-release-artifacts":
 		if len(args) > 1 {
 			return usage("usage: gate-dev ci build-release-artifacts [vX.Y.Z]")
@@ -115,8 +127,11 @@ func (service *Service) execute(ctx context.Context, command string, args []stri
 		}
 		return service.publishRelease(ctx, args[0])
 	case "verify-release-tag-target":
-		if len(args) != 2 {
-			return usage("usage: gate-dev ci verify-release-tag-target vX.Y.Z expected-sha")
+		if len(args) < 2 || len(args) > 3 {
+			return usage("usage: gate-dev ci verify-release-tag-target vX.Y.Z expected-sha [expected-tag-object]")
+		}
+		if len(args) == 3 {
+			return service.verifyReleaseTagIdentity(ctx, args[0], args[1], args[2])
 		}
 		return service.verifyReleaseTagTarget(ctx, args[0], args[1])
 	case "wait-release-assets":

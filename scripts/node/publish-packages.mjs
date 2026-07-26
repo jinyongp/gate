@@ -5,6 +5,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const strictVersionPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/
+const commitSHAPattern = /^[0-9a-f]{40}$/
 const npmNotFoundPattern = /E404|not in this registry|is not in this registry|not found/i
 const npmRegistryConfig = '--@jinyongp:registry=https://registry.npmjs.org'
 
@@ -15,6 +16,30 @@ export const packageRelativeDirectories = [
   'packages/binaries/linux-x64',
   'packages/node',
 ]
+
+const packageContracts = new Map([
+  [
+    'packages/binaries/darwin-arm64',
+    { name: '@jinyongp/gate-darwin-arm64', os: ['darwin'], cpu: ['arm64'] },
+  ],
+  [
+    'packages/binaries/darwin-x64',
+    { name: '@jinyongp/gate-darwin-x64', os: ['darwin'], cpu: ['x64'] },
+  ],
+  [
+    'packages/binaries/linux-arm64',
+    { name: '@jinyongp/gate-linux-arm64', os: ['linux'], cpu: ['arm64'] },
+  ],
+  [
+    'packages/binaries/linux-x64',
+    { name: '@jinyongp/gate-linux-x64', os: ['linux'], cpu: ['x64'] },
+  ],
+  ['packages/node', { name: '@jinyongp/gate' }],
+])
+const binaryPackageNames = [...packageContracts.values()]
+  .map((contract) => contract.name)
+  .filter((name) => name !== '@jinyongp/gate')
+  .toSorted()
 
 export class CommandFailure extends Error {
   constructor(command, code, stdout, stderr) {
@@ -120,8 +145,16 @@ export async function publishPackages(options) {
     temporaryDirectory = tmpdir(),
     stdout = process.stdout,
     stderr = process.stderr,
+    expectedReleaseSHA = '',
+    expectedTagObject = '',
   } = options
   validateVersionTag(versionTag)
+  if (expectedReleaseSHA && !commitSHAPattern.test(expectedReleaseSHA)) {
+    throw new Error('expected release SHA must be a 40-character lowercase commit SHA')
+  }
+  if (expectedTagObject && !commitSHAPattern.test(expectedTagObject)) {
+    throw new Error('expected tag object must be a 40-character lowercase object SHA')
+  }
 
   const publishRoot = await mkdtemp(path.join(temporaryDirectory, 'gate-publish-'))
   try {
@@ -139,15 +172,25 @@ export async function publishPackages(options) {
     )
     await writeFile(summaryFile, '', { mode: 0o600 })
 
+    const expectedVersion = versionTag.slice(1)
+    for (const relativeDirectory of packageRelativeDirectories) {
+      const manifest = JSON.parse(
+        await readFile(path.join(publishRoot, relativeDirectory, 'package.json'), 'utf8'),
+      )
+      validatePackageManifest(relativeDirectory, manifest, expectedVersion)
+    }
+
     const packages = []
     for (const relativeDirectory of packageRelativeDirectories) {
       const packageDirectory = path.join(publishRoot, relativeDirectory)
       const prepared = await preflightPackage({
+        relativeDirectory,
         packageDirectory,
         publishRoot,
         executor,
         summaryFile,
         stderr,
+        expectedVersion,
       })
       packages.push(prepared)
     }
@@ -183,6 +226,15 @@ export async function publishPackages(options) {
         continue
       }
       try {
+        if (expectedReleaseSHA) {
+          await verifyRemoteReleaseTag(
+            executor,
+            root,
+            versionTag,
+            expectedReleaseSHA,
+            expectedTagObject,
+          )
+        }
         await executor(
           'npm',
           ['publish', packageInfo.tarball, '--access', 'public', npmRegistryConfig],
@@ -196,6 +248,45 @@ export async function publishPackages(options) {
     }
   } finally {
     await rm(publishRoot, { recursive: true, force: true })
+  }
+}
+
+async function verifyRemoteReleaseTag(
+  executor,
+  root,
+  versionTag,
+  expectedReleaseSHA,
+  expectedTagObject,
+) {
+  const tagRef = `refs/tags/${versionTag}`
+  const result = await executor('git', ['ls-remote', 'origin', tagRef, `${tagRef}^{}`], {
+    cwd: root,
+    captureStdout: true,
+    captureStderr: true,
+  })
+  const refs = new Map(
+    result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [object, ref] = line.trim().split(/\s+/, 2)
+        return [ref, object]
+      }),
+  )
+  const actualObject = refs.get(tagRef) ?? ''
+  const actualTarget = refs.get(`${tagRef}^{}`) ?? actualObject
+  if (expectedTagObject && actualObject !== expectedTagObject) {
+    throw new Error(
+      `release tag object moved before npm publish: tag=${actualObject || 'missing'} ` +
+        `expected=${expectedTagObject}`,
+    )
+  }
+  if (actualTarget !== expectedReleaseSHA) {
+    throw new Error(
+      `release tag target moved before npm publish: tag=${actualTarget || 'missing'} ` +
+        `expected=${expectedReleaseSHA}`,
+    )
   }
 }
 
@@ -213,8 +304,17 @@ async function preparePublishTree(root, publishRoot) {
   )
 }
 
-async function preflightPackage({ packageDirectory, publishRoot, executor, summaryFile, stderr }) {
+async function preflightPackage({
+  relativeDirectory,
+  packageDirectory,
+  publishRoot,
+  executor,
+  summaryFile,
+  stderr,
+  expectedVersion,
+}) {
   const manifest = JSON.parse(await readFile(path.join(packageDirectory, 'package.json'), 'utf8'))
+  validatePackageManifest(relativeDirectory, manifest, expectedVersion)
   const spec = `${manifest.name}@${manifest.version}`
   const packDirectory = await mkdtemp(path.join(publishRoot, 'pack-'))
   const packResult = await executor(
@@ -262,6 +362,39 @@ async function preflightPackage({ packageDirectory, publishRoot, executor, summa
   }
 }
 
+export function validatePackageManifest(relativeDirectory, manifest, expectedVersion = '') {
+  const contract = packageContracts.get(relativeDirectory)
+  if (!contract) {
+    throw new Error(`missing package contract for ${relativeDirectory}`)
+  }
+  const actualOS = manifest.os
+  const actualCPU = manifest.cpu
+  if (
+    manifest.name !== contract.name ||
+    JSON.stringify(actualOS) !== JSON.stringify(contract.os) ||
+    JSON.stringify(actualCPU) !== JSON.stringify(contract.cpu) ||
+    (expectedVersion && manifest.version !== expectedVersion)
+  ) {
+    throw new Error(
+      `package metadata mismatch for ${relativeDirectory}: ` +
+        `name=${JSON.stringify(manifest.name)} os=${JSON.stringify(actualOS)} ` +
+        `cpu=${JSON.stringify(actualCPU)} version=${JSON.stringify(manifest.version)}`,
+    )
+  }
+  if (contract.name === '@jinyongp/gate' && expectedVersion) {
+    const optionalDependencies = manifest.optionalDependencies ?? {}
+    const dependencyNames = Object.keys(optionalDependencies).toSorted()
+    if (
+      JSON.stringify(dependencyNames) !== JSON.stringify(binaryPackageNames) ||
+      dependencyNames.some((name) => optionalDependencies[name] !== expectedVersion)
+    ) {
+      throw new Error(
+        `main package optional dependency mismatch: ${JSON.stringify(optionalDependencies)}`,
+      )
+    }
+  }
+}
+
 async function appendSummary(summaryFile, spec, status) {
   await appendFile(summaryFile, `${spec}\t${status}\n`)
 }
@@ -269,10 +402,20 @@ async function appendSummary(summaryFile, spec, status) {
 async function main() {
   const versionTag = process.argv[2] ?? ''
   const artifactDir = process.argv[3] ?? '.'
+  const expectedReleaseSHA = process.env.GATE_RELEASE_TARGET_SHA ?? ''
+  const expectedTagObject = process.env.GATE_RELEASE_TAG_OBJECT ?? ''
+  if (!expectedReleaseSHA) {
+    throw new Error('GATE_RELEASE_TARGET_SHA is required')
+  }
+  if (!expectedTagObject) {
+    throw new Error('GATE_RELEASE_TAG_OBJECT is required')
+  }
   await publishPackages({
     versionTag,
     artifactDir,
     summaryFile: process.env.NPM_PUBLISH_SUMMARY ?? 'npm-publish-summary.tsv',
+    expectedReleaseSHA,
+    expectedTagObject,
   })
 }
 

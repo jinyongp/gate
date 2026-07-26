@@ -5,6 +5,8 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?}"
 : "${GITHUB_SHA:?}"
 : "${VERSION_TAG:?}"
+: "${RELEASE_TARGET:?}"
+: "${RELEASE_OBJECT:?}"
 : "${WAIT_RELEASE_ASSETS_OUTCOME:?}"
 : "${GENERATE_FORMULA_OUTCOME:?}"
 : "${COMMIT_FORMULA_OUTCOME:?}"
@@ -19,7 +21,9 @@ set -euo pipefail
   echo "## Homebrew tap"
   echo
   echo "- Ref: \`${GITHUB_REF_NAME}\`"
-  echo "- Commit: \`${GITHUB_SHA}\`"
+  echo "- Workflow commit: \`${GITHUB_SHA}\`"
+  echo "- Release target: \`${RELEASE_TARGET}\`"
+  echo "- Release tag object: \`${RELEASE_OBJECT}\`"
   echo "- Version: \`${VERSION_TAG}\`"
   echo "- Formula changed: \`${FORMULA_CHANGED}\`"
   echo

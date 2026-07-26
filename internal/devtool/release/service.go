@@ -21,16 +21,18 @@ const Usage = "usage: gate-dev release [--dry-run|-n] [--yes|-y] [--since vX.Y.Z
 var errStopped = errors.New("release stopped")
 
 type Service struct {
-	In          io.Reader
-	Out         io.Writer
-	Err         io.Writer
-	Dir         string
-	Runner      runner.Runner
-	HTTPClient  *http.Client
-	APIBase     string
-	Getenv      func(string) string
-	Check       func(context.Context) error
-	latestTagFn func(context.Context, string, string) (string, error)
+	In                     io.Reader
+	Out                    io.Writer
+	Err                    io.Writer
+	Dir                    string
+	Runner                 runner.Runner
+	HTTPClient             *http.Client
+	APIBase                string
+	Getenv                 func(string) string
+	Check                  func(context.Context) error
+	PrepareReleaseDispatch func(context.Context) (string, error)
+	DispatchRelease        func(context.Context, string, string, string, string) error
+	latestTagFn            func(context.Context, string, string) (string, error)
 
 	reader  *bufio.Reader
 	console ui.Console
@@ -60,6 +62,8 @@ func New(in io.Reader, out, errOut io.Writer, commandRunner runner.Runner) *Serv
 	service.latestTagFn = func(ctx context.Context, repo, token string) (string, error) {
 		return latestReleaseTag(ctx, service.HTTPClient, service.APIBase, repo, token)
 	}
+	service.PrepareReleaseDispatch = service.prepareReleaseDispatch
+	service.DispatchRelease = service.dispatchRelease
 	return service
 }
 
@@ -98,7 +102,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 			service.printLines(dirty)
 			return errStoppedWithFailure
 		}
-		if err := service.confirmDirty(options, dirty); err != nil {
+		if err := service.confirmDirty(ctx, options, dirty); err != nil {
 			return err
 		}
 	}
@@ -188,6 +192,16 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		return nil
 	}
 
+	service.console.Section("Release dispatch")
+	repository, err := service.PrepareReleaseDispatch(ctx)
+	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return context.Canceled
+		}
+		return fmt.Errorf("prepare GitHub release dispatch: %w", err)
+	}
+	service.console.StatusOK("GitHub release dispatch ready")
+
 	service.console.Section("Checks")
 	if err := service.Check(ctx); err != nil {
 		if ctx.Err() != nil {
@@ -196,7 +210,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		return errors.New("checks failed; aborting release")
 	}
 	service.console.StatusOK("checks passed")
-	confirmed, err := service.confirmPush(resolvedTag, options)
+	confirmed, err := service.confirmPush(ctx, resolvedTag, options)
 	if err != nil {
 		return err
 	}
@@ -206,24 +220,38 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 	}
 
 	notes := releaseNotes(resolvedTag, notesCommits)
-	if err := service.gitRun(ctx, "tag", "-a", resolvedTag, "-m", notes, targetSHA); err != nil {
+	createdTagObject, err := service.createAnnotatedTag(
+		ctx,
+		resolvedTag,
+		targetSHA,
+		notes,
+	)
+	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
-			if cleanupErr := service.cleanupTag(ctx, resolvedTag); cleanupErr != nil {
-				service.console.Warning("interrupted tag cleanup failed; local tag may remain: " + resolvedTag)
+			if createdTagObject != "" {
+				if cleanupErr := service.cleanupTag(ctx, resolvedTag, createdTagObject); cleanupErr != nil {
+					service.console.Warning("interrupted tag cleanup failed; local tag may remain: " + resolvedTag)
+				}
 			}
 			return context.Canceled
 		}
 		return fmt.Errorf("create local tag %s: %w", resolvedTag, err)
+	}
+	if ctx.Err() != nil {
+		if cleanupErr := service.cleanupTag(ctx, resolvedTag, createdTagObject); cleanupErr != nil {
+			service.console.Warning("interrupted tag cleanup failed; local tag may remain: " + resolvedTag)
+		}
+		return ctx.Err()
 	}
 	if err := service.gitRun(
 		ctx,
 		"push",
 		"--atomic",
 		"origin",
-		"HEAD:main",
-		"refs/tags/"+resolvedTag+":refs/tags/"+resolvedTag,
+		targetSHA+":refs/heads/main",
+		createdTagObject+":refs/tags/"+resolvedTag,
 	); err != nil {
-		cleanupErr := service.cleanupTag(ctx, resolvedTag)
+		cleanupErr := service.cleanupTag(ctx, resolvedTag, createdTagObject)
 		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 			if cleanupErr != nil {
 				service.console.Warning("interrupted push cleanup failed; local tag may remain: " + resolvedTag)
@@ -236,19 +264,51 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		return fmt.Errorf("push failed; removed the local tag created by this release attempt: %s", resolvedTag)
 	}
 	service.console.StatusOK("created and pushed tag " + resolvedTag)
+	if err := service.DispatchRelease(
+		ctx,
+		repository,
+		resolvedTag,
+		targetSHA,
+		createdTagObject,
+	); err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			return fmt.Errorf(
+				"tag %s was pushed, but release workflow dispatch was interrupted; recover with: %s",
+				resolvedTag,
+				releaseDispatchRecoveryCommand(
+					repository,
+					resolvedTag,
+					targetSHA,
+					createdTagObject,
+				),
+			)
+		}
+		return fmt.Errorf(
+			"tag %s was pushed, but release workflow dispatch failed: %w; recover with: %s",
+			resolvedTag,
+			err,
+			releaseDispatchRecoveryCommand(
+				repository,
+				resolvedTag,
+				targetSHA,
+				createdTagObject,
+			),
+		)
+	}
+	service.console.StatusOK("dispatched release workflow for " + resolvedTag)
 	return nil
 }
 
 var errStoppedWithFailure = errors.New("release validation already reported")
 
-func (service *Service) confirmDirty(options Options, dirty string) error {
+func (service *Service) confirmDirty(ctx context.Context, options Options, dirty string) error {
 	service.console.Section("Uncommitted changes")
 	service.printLines(dirty)
 	service.console.Info("This is a dry run; no tag or push will be created.")
 	if options.AutoPush || service.Getenv("CI") != "" {
 		return errors.New("dirty working tree requires interactive confirmation; aborting release")
 	}
-	confirmed, err := service.confirm("Continue with dirty working tree? [y/N]", false)
+	confirmed, err := service.confirm(ctx, "Continue with dirty working tree? [y/N]", false)
 	if err != nil {
 		return fmt.Errorf("no response; aborting release: %w", err)
 	}
@@ -372,7 +432,32 @@ func (service *Service) selectBump(
 			CaseSensitive: true,
 		})
 	}
-	return ui.PromptChoices(service.reader, service.Out, "Select bump", recommended, choices)
+	if input, ok := service.In.(*os.File); ok {
+		return ui.PromptChoicesFileContext(
+			ctx,
+			input,
+			service.reader,
+			service.Out,
+			"Select bump",
+			recommended,
+			choices,
+		)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	//nolint:contextcheck // Non-file test readers cannot be interrupted safely; cancellation is checked on both sides.
+	choice, err := ui.PromptChoices(
+		service.reader,
+		service.Out,
+		"Select bump",
+		recommended,
+		choices,
+	)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
+	return choice, err
 }
 
 func (service *Service) printReleaseBase(latestTag string) {
@@ -413,19 +498,31 @@ func (service *Service) gitLog(ctx context.Context, commitRange string, args ...
 	return service.gitOutput(ctx, commandArgs...)
 }
 
-func (service *Service) confirmPush(tag string, options Options) (bool, error) {
+func (service *Service) confirmPush(ctx context.Context, tag string, options Options) (bool, error) {
 	if options.AutoPush {
 		return true, nil
 	}
 	if service.Getenv("CI") != "" {
 		return false, nil
 	}
-	return service.confirm("Push branch main and tag "+tag+" now? [Y/n]", true)
+	return service.confirm(ctx, "Push branch main and tag "+tag+" now? [Y/n]", true)
 }
 
-func (service *Service) confirm(label string, defaultYes bool) (bool, error) {
+func (service *Service) confirm(ctx context.Context, label string, defaultYes bool) (bool, error) {
 	fmt.Fprint(service.Out, ui.PromptLabel(service.Out, label))
-	line, err := service.reader.ReadString('\n')
+	var line string
+	var err error
+	if input, ok := service.In.(*os.File); ok {
+		line, err = ui.ReadLineFileContext(ctx, input, service.reader)
+	} else {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		line, err = service.reader.ReadString('\n')
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+	}
 	if err != nil && line == "" {
 		return false, err
 	}
@@ -437,11 +534,20 @@ func (service *Service) confirm(label string, defaultYes bool) (bool, error) {
 }
 
 func (service *Service) gitOutput(ctx context.Context, args ...string) (string, error) {
+	return service.gitOutputInput(ctx, nil, args...)
+}
+
+func (service *Service) gitOutputInput(
+	ctx context.Context,
+	input io.Reader,
+	args ...string,
+) (string, error) {
 	var stdout, stderr bytes.Buffer
 	err := service.Runner.Run(ctx, runner.Command{
 		Name:   "git",
 		Args:   args,
 		Dir:    service.Dir,
+		Stdin:  input,
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
@@ -453,6 +559,45 @@ func (service *Service) gitOutput(ctx context.Context, args ...string) (string, 
 		return "", fmt.Errorf("%w: %s", err, detail)
 	}
 	return strings.TrimRight(stdout.String(), "\r\n"), nil
+}
+
+func (service *Service) createAnnotatedTag(
+	ctx context.Context,
+	tag, targetSHA, notes string,
+) (string, error) {
+	for _, policy := range []string{"tag.gpgSign", "tag.forceSignAnnotated"} {
+		signTags, err := service.gitOutput(ctx, "config", "--type=bool", "--default=false", policy)
+		if err != nil {
+			return "", fmt.Errorf("read annotated-tag signing policy %s: %w", policy, err)
+		}
+		if signTags == "true" {
+			return "", fmt.Errorf("%s=true is not supported by atomic release tag creation; disable it explicitly or create and push the signed release tag manually", policy)
+		}
+	}
+	identity, err := service.gitOutput(ctx, "var", "GIT_COMMITTER_IDENT")
+	if err != nil {
+		return "", fmt.Errorf("read tagger identity: %w", err)
+	}
+	var payload strings.Builder
+	fmt.Fprintf(&payload, "object %s\ntype commit\ntag %s\ntagger %s\n\n%s\n", targetSHA, tag, identity, notes)
+	object, err := service.gitOutputInput(ctx, strings.NewReader(payload.String()), "mktag")
+	if err != nil {
+		return "", fmt.Errorf("create annotated tag object: %w", err)
+	}
+	if object == "" || strings.Trim(object, "0123456789abcdef") != "" {
+		return "", fmt.Errorf("git mktag returned invalid object ID %q", object)
+	}
+	err = service.gitRun(
+		ctx,
+		"update-ref",
+		"refs/tags/"+tag,
+		object,
+		strings.Repeat("0", len(object)),
+	)
+	if err != nil {
+		return object, fmt.Errorf("install annotated tag ref: %w", err)
+	}
+	return object, nil
 }
 
 func (service *Service) gitRun(ctx context.Context, args ...string) error {
@@ -477,10 +622,16 @@ func (service *Service) gitSucceeds(ctx context.Context, args ...string) bool {
 	return service.gitQuiet(ctx, args...) == nil
 }
 
-func (service *Service) cleanupTag(ctx context.Context, tag string) error {
+func (service *Service) cleanupTag(ctx context.Context, tag, expectedObject string) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return service.gitQuiet(cleanupCtx, "tag", "-d", tag)
+	return service.gitQuiet(
+		cleanupCtx,
+		"update-ref",
+		"-d",
+		"refs/tags/"+tag,
+		expectedObject,
+	)
 }
 
 func (service *Service) printItems(lines []string) {

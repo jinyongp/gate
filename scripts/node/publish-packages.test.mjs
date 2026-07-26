@@ -12,6 +12,7 @@ import {
   packageRelativeDirectories,
   publishPackages,
   selectSmokeTarballs,
+  validatePackageManifest,
   validatePackedFiles,
 } from './publish-packages.mjs'
 
@@ -37,13 +38,23 @@ async function createRepositoryFixture() {
     const isMain = relativeDirectory === 'packages/node'
     const suffix = relativeDirectory.split('/').at(-1)
     const name = isMain ? '@jinyongp/gate' : `@jinyongp/gate-${suffix}`
+    const [platform, architecture] = suffix.split('-')
+    const manifest = { name, version: '1.2.3' }
+    if (!isMain) {
+      manifest.os = [platform]
+      manifest.cpu = [architecture]
+    }
     await mkdir(path.join(directory, 'bin'), { recursive: true })
-    await writeFile(
-      path.join(directory, 'package.json'),
-      `${JSON.stringify({ name, version: '1.2.3' })}\n`,
-    )
     await writeFile(path.join(directory, 'LICENSE'), 'license\n')
     if (isMain) {
+      manifest.optionalDependencies = Object.fromEntries(
+        [
+          '@jinyongp/gate-darwin-arm64',
+          '@jinyongp/gate-darwin-x64',
+          '@jinyongp/gate-linux-arm64',
+          '@jinyongp/gate-linux-x64',
+        ].map((packageName) => [packageName, '1.2.3']),
+      )
       await mkdir(path.join(directory, 'dist'), { recursive: true })
       await writeFile(path.join(directory, 'README.md'), 'readme\n')
       await writeFile(path.join(directory, 'bin/gate.mjs'), 'main\n')
@@ -52,6 +63,7 @@ async function createRepositoryFixture() {
     } else {
       await writeFile(path.join(directory, 'bin/gate'), 'binary\n')
     }
+    await writeFile(path.join(directory, 'package.json'), `${JSON.stringify(manifest)}\n`)
   }
   await mkdir(path.join(root, 'scripts/node'), { recursive: true })
   await writeFile(path.join(root, 'scripts/node/verify-package-binary.mjs'), 'fixture\n')
@@ -177,6 +189,32 @@ describe('packed file contracts', () => {
       /unexpected packed files/,
     )
   })
+
+  test('validates every package name and platform mapping before packing', () => {
+    assert.doesNotThrow(() =>
+      validatePackageManifest('packages/binaries/linux-x64', {
+        name: '@jinyongp/gate-linux-x64',
+        os: ['linux'],
+        cpu: ['x64'],
+      }),
+    )
+    assert.throws(
+      () =>
+        validatePackageManifest('packages/binaries/darwin-arm64', {
+          name: '@jinyongp/gate-darwin-arm64',
+          os: ['linux'],
+          cpu: ['arm64'],
+        }),
+      /package metadata mismatch/,
+    )
+    assert.throws(
+      () =>
+        validatePackageManifest('packages/node', {
+          name: '@jinyongp/gate-linux-x64',
+        }),
+      /package metadata mismatch/,
+    )
+  })
 })
 
 describe('smoke package selection', () => {
@@ -247,6 +285,95 @@ describe('publish orchestration', () => {
     )
   })
 
+  test('fails before pack, smoke, or publish on non-current package metadata mismatch', async () => {
+    const root = await createRepositoryFixture()
+    const manifestPath = path.join(root, 'packages/binaries/linux-x64/package.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+    manifest.cpu = ['arm64']
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`)
+    const temporary = await temporaryDirectory('gate-publish-temp-')
+    const fake = createFakeExecutor({ remote: 'missing' })
+    await assert.rejects(
+      publishPackages({
+        versionTag: 'v1.2.3',
+        root,
+        summaryFile: path.join(temporary, 'summary.tsv'),
+        temporaryDirectory: temporary,
+        executor: fake.executor,
+        platform: 'darwin',
+        architecture: 'arm64',
+      }),
+      /package metadata mismatch/,
+    )
+    assert.equal(
+      fake.calls.some(
+        (call) =>
+          call.name === 'npm' &&
+          call.args[0] === 'pack' &&
+          call.args[1].endsWith('/packages/binaries/linux-x64'),
+      ),
+      false,
+    )
+    assert.equal(
+      fake.calls.some(
+        (call) => call.name === 'npm' && (call.args[0] === 'install' || call.args[0] === 'publish'),
+      ),
+      false,
+    )
+  })
+
+  test('fails before every pack when a prepared package version does not match the tag', async () => {
+    const root = await createRepositoryFixture()
+    const manifestPath = path.join(root, 'packages/binaries/linux-x64/package.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+    manifest.version = '9.9.9'
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`)
+    const temporary = await temporaryDirectory('gate-publish-temp-')
+    const fake = createFakeExecutor({ remote: 'missing' })
+    await assert.rejects(
+      publishPackages({
+        versionTag: 'v1.2.3',
+        root,
+        summaryFile: path.join(temporary, 'summary.tsv'),
+        temporaryDirectory: temporary,
+        executor: fake.executor,
+      }),
+      /package metadata mismatch/,
+    )
+    assert.equal(
+      fake.calls.some((call) => call.name === 'npm' && call.args[0] === 'pack'),
+      false,
+    )
+    assert.equal(
+      fake.calls.some((call) => call.name === 'npm' && call.args[0] === 'publish'),
+      false,
+    )
+  })
+
+  test('fails before every pack when main optional dependency versions drift', async () => {
+    const root = await createRepositoryFixture()
+    const manifestPath = path.join(root, 'packages/node/package.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+    manifest.optionalDependencies['@jinyongp/gate-linux-x64'] = '9.9.9'
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`)
+    const temporary = await temporaryDirectory('gate-publish-temp-')
+    const fake = createFakeExecutor({ remote: 'missing' })
+    await assert.rejects(
+      publishPackages({
+        versionTag: 'v1.2.3',
+        root,
+        summaryFile: path.join(temporary, 'summary.tsv'),
+        temporaryDirectory: temporary,
+        executor: fake.executor,
+      }),
+      /optional dependency mismatch/,
+    )
+    assert.equal(
+      fake.calls.some((call) => call.name === 'npm' && call.args[0] === 'pack'),
+      false,
+    )
+  })
+
   test('distinguishes lookup failure from npm 404 and records the summary', async () => {
     const root = await createRepositoryFixture()
     const temporary = await temporaryDirectory('gate-publish-temp-')
@@ -294,6 +421,108 @@ describe('publish orchestration', () => {
     assert.match(summary, /gate-darwin-arm64@1\.2\.3\tpublished/)
     assert.match(summary, /gate-linux-arm64@1\.2\.3\tfailed/)
   })
+
+  test('re-verifies the immutable release tag before every npm publish', async () => {
+    const root = await createRepositoryFixture()
+    const temporary = await temporaryDirectory('gate-publish-temp-')
+    const base = createFakeExecutor({ remote: 'missing' })
+    const expected = '1'.repeat(40)
+    const moved = '2'.repeat(40)
+    let verifications = 0
+    const executor = async (name, args, options) => {
+      if (name === 'git' && args[0] === 'ls-remote') {
+        verifications += 1
+        return {
+          stdout: `${verifications === 1 ? expected : moved}\trefs/tags/v1.2.3^{}\n`,
+          stderr: '',
+        }
+      }
+      return base.executor(name, args, options)
+    }
+    await assert.rejects(
+      publishPackages({
+        versionTag: 'v1.2.3',
+        root,
+        summaryFile: path.join(temporary, 'summary.tsv'),
+        temporaryDirectory: temporary,
+        executor,
+        expectedReleaseSHA: expected,
+      }),
+      /release tag target moved before npm publish/,
+    )
+    assert.equal(verifications, 2)
+    assert.equal(
+      base.calls.filter((call) => call.name === 'npm' && call.args[0] === 'publish').length,
+      1,
+    )
+  })
+
+  test('rejects a moved annotated tag object even when its target is unchanged', async () => {
+    const root = await createRepositoryFixture()
+    const temporary = await temporaryDirectory('gate-publish-temp-')
+    const base = createFakeExecutor({ remote: 'missing' })
+    const expectedTarget = '1'.repeat(40)
+    const expectedObject = '2'.repeat(40)
+    const movedObject = '3'.repeat(40)
+    let verifications = 0
+    const executor = async (name, args, options) => {
+      if (name === 'git' && args[0] === 'ls-remote') {
+        verifications += 1
+        return {
+          stdout:
+            `${verifications === 1 ? expectedObject : movedObject}\trefs/tags/v1.2.3\n` +
+            `${expectedTarget}\trefs/tags/v1.2.3^{}\n`,
+          stderr: '',
+        }
+      }
+      return base.executor(name, args, options)
+    }
+    await assert.rejects(
+      publishPackages({
+        versionTag: 'v1.2.3',
+        root,
+        summaryFile: path.join(temporary, 'summary.tsv'),
+        temporaryDirectory: temporary,
+        executor,
+        expectedReleaseSHA: expectedTarget,
+        expectedTagObject: expectedObject,
+      }),
+      /release tag object moved before npm publish/,
+    )
+    assert.equal(verifications, 2)
+    assert.equal(
+      base.calls.filter((call) => call.name === 'npm' && call.args[0] === 'publish').length,
+      1,
+    )
+  })
+
+  test('accepts a matching lightweight release tag during npm verification', async () => {
+    const root = await createRepositoryFixture()
+    const temporary = await temporaryDirectory('gate-publish-temp-')
+    const base = createFakeExecutor({ remote: 'missing' })
+    const expected = '1'.repeat(40)
+    const executor = async (name, args, options) => {
+      if (name === 'git' && args[0] === 'ls-remote') {
+        if (args[2].endsWith('^{}')) {
+          return { stdout: '', stderr: '' }
+        }
+        return { stdout: `${expected}\trefs/tags/v1.2.3\n`, stderr: '' }
+      }
+      return base.executor(name, args, options)
+    }
+    await publishPackages({
+      versionTag: 'v1.2.3',
+      root,
+      summaryFile: path.join(temporary, 'summary.tsv'),
+      temporaryDirectory: temporary,
+      executor,
+      expectedReleaseSHA: expected,
+    })
+    assert.equal(
+      base.calls.filter((call) => call.name === 'npm' && call.args[0] === 'publish').length,
+      5,
+    )
+  })
 })
 
 test('release workflow uses the Node entrypoint and the shell orchestrator stays deleted', async () => {
@@ -301,7 +530,10 @@ test('release workflow uses the Node entrypoint and the shell orchestrator stays
     path.join(repositoryRoot, '.github/workflows/release.yml'),
     'utf8',
   )
-  assert.match(workflow, /node scripts\/node\/publish-packages\.mjs "\$\{VERSION_TAG\}" bin/)
+  assert.match(
+    workflow,
+    /node \.\.\/tooling\/scripts\/node\/publish-packages\.mjs "\$\{VERSION_TAG\}" bin/,
+  )
   assert.doesNotMatch(workflow, /publish-npm\.sh/)
   await assert.rejects(
     readFile(path.join(repositoryRoot, '.github/scripts/publish-npm.sh')),

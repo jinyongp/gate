@@ -8,6 +8,7 @@ set -euo pipefail
 : "${RELEASE_TAG:=}"
 : "${TAG_TYPE:?}"
 : "${TAG_TARGET:=}"
+: "${TAG_OBJECT:=}"
 : "${TAG_ON_MAIN:?}"
 : "${RELEASE_STATUS:?}"
 : "${DETECT_TAG_OUTCOME:?}"
@@ -26,6 +27,7 @@ set -euo pipefail
     echo "- Release tag: \`${RELEASE_TAG}\`"
     echo "- Tag type: \`${TAG_TYPE}\`"
     echo "- Tag target: \`${TAG_TARGET}\`"
+    echo "- Tag object: \`${TAG_OBJECT}\`"
     echo "- Tag on main: \`${TAG_ON_MAIN}\`"
     echo "- Release before publish: \`${RELEASE_STATUS}\`"
   else

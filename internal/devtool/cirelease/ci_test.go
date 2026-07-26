@@ -2,6 +2,7 @@ package cirelease
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +51,17 @@ func TestWaitForCIReportsTransitionsAndRequiresSuccess(t *testing.T) {
 	if call != 3 {
 		t.Fatalf("gh calls = %d", call)
 	}
+	for _, line := range fake.commandLines() {
+		requireContains(
+			t,
+			line,
+			`.event == "push"`,
+			`.head_sha == "`+testSHA+`"`,
+		)
+		if strings.Contains(line, "workflow_dispatch") {
+			t.Fatalf("push CI wait accepted an unrelated dispatch run: %s", line)
+		}
+	}
 }
 
 func TestWaitForCIFailsOnCompletedFailure(t *testing.T) {
@@ -63,6 +75,59 @@ func TestWaitForCIFailsOnCompletedFailure(t *testing.T) {
 		t.Fatalf("Run = %d", code)
 	}
 	requireContains(t, errOut.String(), "completed/failure", "run/456")
+}
+
+func TestDispatchCIStartsExactSHAValidationForReleaseRecovery(t *testing.T) {
+	requestID := "release-123-2"
+	dispatch := 0
+	fake := &fakeRunner{run: func(_ context.Context, command runner.Command) error {
+		line := commandLine(command)
+		if line == "gh workflow run ci.yml --repo jinyongp/gate --ref main -f checkout_ref="+testSHA+" -f request_id="+requestID {
+			dispatch++
+			return nil
+		}
+		t.Fatalf("unexpected command: %s", line)
+		return nil
+	}}
+	service, out, _ := newTestService(t, fake)
+	service.Getenv = environment(map[string]string{
+		"GH_REPO": "jinyongp/gate",
+	})
+
+	if code := service.Run(context.Background(), []string{"dispatch-ci", testSHA, requestID}); code != 0 {
+		t.Fatalf("Run = %d", code)
+	}
+	if dispatch != 1 {
+		t.Fatalf("dispatch calls = %d", dispatch)
+	}
+	requireContains(t, out.String(), "dispatched CI for "+testSHA)
+}
+
+func TestWaitForCISelectsOnlyTheRequestedRecoveryRun(t *testing.T) {
+	requestID := "release-123-2"
+	fake := &fakeRunner{run: func(_ context.Context, command runner.Command) error {
+		writeCommandOutput(command, "789\tcompleted\tsuccess\thttps://example.test/run/789")
+		return nil
+	}}
+	service, _, _ := newTestService(t, fake)
+	service.Getenv = environment(map[string]string{"GH_REPO": "jinyongp/gate"})
+
+	if code := service.Run(
+		context.Background(),
+		[]string{"wait-for-ci", testSHA, requestID},
+	); code != 0 {
+		t.Fatalf("Run = %d", code)
+	}
+	line := fake.commandLines()[0]
+	requireContains(
+		t,
+		line,
+		`.event == "workflow_dispatch"`,
+		`.display_title == "CI `+testSHA+` `+requestID+`"`,
+	)
+	if strings.Contains(line, `.event == "push"`) {
+		t.Fatalf("recovery wait accepted a historical push run: %s", line)
+	}
 }
 
 func TestWaitForCITimesOutAndValidatesInputs(t *testing.T) {
@@ -85,6 +150,26 @@ func TestWaitForCITimesOutAndValidatesInputs(t *testing.T) {
 		})
 		if code := service.Run(context.Background(), []string{"wait-for-ci", testSHA}); code != 1 {
 			t.Fatalf("Run = %d", code)
+		}
+		requireContains(t, errOut.String(), "timed out waiting for successful CI")
+	})
+
+	t.Run("stalled API command", func(t *testing.T) {
+		fake := &fakeRunner{run: func(ctx context.Context, _ runner.Command) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+		service, _, errOut := newTestService(t, fake)
+		service.Getenv = environment(map[string]string{
+			"GH_REPO":                 "jinyongp/gate",
+			"CI_WAIT_TIMEOUT_SECONDS": "1",
+		})
+		started := time.Now()
+		if code := service.Run(context.Background(), []string{"wait-for-ci", testSHA}); code != 1 {
+			t.Fatalf("Run = %d", code)
+		}
+		if elapsed := time.Since(started); elapsed > 3*time.Second {
+			t.Fatalf("stalled API command exceeded deadline: %s", elapsed)
 		}
 		requireContains(t, errOut.String(), "timed out waiting for successful CI")
 	})

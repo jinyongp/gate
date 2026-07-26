@@ -72,6 +72,41 @@ func TestPublishReleaseCreatesMissingReleaseWithGeneratedNotes(t *testing.T) {
 	}
 }
 
+func TestPublishReleaseReverifiesTagImmediatelyBeforeCreate(t *testing.T) {
+	lookups := 0
+	fake := &fakeRunner{run: func(_ context.Context, command runner.Command) error {
+		switch commandLine(command) {
+		case "git ls-remote origin refs/tags/v1.2.3^{}":
+			lookups++
+			target := testSHA
+			if lookups == 2 {
+				target = differentSHA
+			}
+			writeCommandOutput(command, target+"\trefs/tags/v1.2.3^{}\n")
+		case "git cat-file -e v1.2.3^{tag}":
+			return fakeExitError{code: 1}
+		case "gh api repos/jinyongp/gate/releases/latest --jq .tag_name":
+			return failCommand(command, "HTTP 404: Not Found")
+		case "git log --oneline --no-decorate v1.2.3":
+			writeCommandOutput(command, "abc123 first\n")
+		case "gh release view v1.2.3 --json isDraft,isPrerelease":
+			return failCommand(command, "release not found")
+		default:
+			t.Fatalf("unexpected command: %s", commandLine(command))
+		}
+		return nil
+	}}
+	service, _, errOut := newTestService(t, fake)
+	publishEnvironment(service)
+	writeReleaseAssetFixtures(t, service)
+
+	if code := service.Run(context.Background(), []string{"publish-release", "v1.2.3"}); code != 1 {
+		t.Fatalf("Run = %d", code)
+	}
+	requireContains(t, errOut.String(), "release tag target moved")
+	requireNoCallContaining(t, fake, "gh release create")
+}
+
 func TestPublishReleaseReconcilesMatchingAssetsAndUploadsOnlyMissing(t *testing.T) {
 	fake := &fakeRunner{}
 	service, _, _ := newTestService(t, fake)
@@ -122,6 +157,40 @@ func TestPublishReleaseReconcilesMatchingAssetsAndUploadsOnlyMissing(t *testing.
 	requireNoCallContaining(t, fake, "gh release create")
 }
 
+func TestPublishReleaseReverifiesTagBeforeUploadingMissingAssets(t *testing.T) {
+	lookups := 0
+	fake := &fakeRunner{}
+	service, _, errOut := newTestService(t, fake)
+	publishEnvironment(service)
+	writeReleaseAssetFixtures(t, service)
+	fake.run = func(_ context.Context, command runner.Command) error {
+		switch commandLine(command) {
+		case "git ls-remote origin refs/tags/v1.2.3^{}":
+			lookups++
+			target := testSHA
+			if lookups == 2 {
+				target = differentSHA
+			}
+			writeCommandOutput(command, target+"\trefs/tags/v1.2.3^{}\n")
+		case "git cat-file -e v1.2.3^{tag}":
+		case "git tag -l --format=%(contents:subject)%0a%0a%(contents:body) v1.2.3":
+			writeCommandOutput(command, "Release notes")
+		case "gh release view v1.2.3 --json isDraft,isPrerelease":
+			writeCommandOutput(command, `{"isDraft":false,"isPrerelease":false}`)
+		case "gh release view v1.2.3 --json assets --jq .assets[].name":
+		default:
+			t.Fatalf("unexpected command: %s", commandLine(command))
+		}
+		return nil
+	}
+
+	if code := service.Run(context.Background(), []string{"publish-release", "v1.2.3"}); code != 1 {
+		t.Fatalf("Run = %d", code)
+	}
+	requireContains(t, errOut.String(), "release tag target moved")
+	requireNoCallContaining(t, fake, "gh release upload")
+}
+
 func TestPublishReleaseRefusesConflictingImmutableAsset(t *testing.T) {
 	fake := &fakeRunner{}
 	service, _, errOut := newTestService(t, fake)
@@ -157,6 +226,48 @@ func TestPublishReleaseRefusesConflictingImmutableAsset(t *testing.T) {
 		t.Fatalf("Run = %d", code)
 	}
 	requireContains(t, errOut.String(), "refusing to replace tagged artifact", existingAsset)
+	requireNoCallContaining(t, fake, "gh release upload")
+}
+
+func TestPublishReleaseValidatesAllExistingAssetsBeforeUploadingMissing(t *testing.T) {
+	fake := &fakeRunner{}
+	service, _, errOut := newTestService(t, fake)
+	publishEnvironment(service)
+	writeReleaseAssetFixtures(t, service)
+	conflictingAsset := releaseAssets[1]
+	fake.run = func(_ context.Context, command runner.Command) error {
+		line := commandLine(command)
+		switch line {
+		case "git ls-remote origin refs/tags/v1.2.3^{}":
+			writeCommandOutput(command, testSHA+"\trefs/tags/v1.2.3^{}\n")
+		case "git cat-file -e v1.2.3^{tag}":
+		case "git tag -l --format=%(contents:subject)%0a%0a%(contents:body) v1.2.3":
+			writeCommandOutput(command, "Release notes")
+		case "gh release view v1.2.3 --json isDraft,isPrerelease":
+			writeCommandOutput(command, `{"isDraft":false,"isPrerelease":false}`)
+		case "gh release view v1.2.3 --json assets --jq .assets[].name":
+			writeCommandOutput(command, conflictingAsset)
+		default:
+			if strings.HasPrefix(line, "gh release download ") {
+				directory := command.Args[len(command.Args)-1]
+				if err := os.WriteFile(
+					filepath.Join(directory, conflictingAsset),
+					[]byte("different"),
+					0o600,
+				); err != nil {
+					t.Fatal(err)
+				}
+				return nil
+			}
+			t.Fatalf("unexpected command: %s", line)
+		}
+		return nil
+	}
+
+	if code := service.Run(context.Background(), []string{"publish-release", "v1.2.3"}); code != 1 {
+		t.Fatalf("Run = %d", code)
+	}
+	requireContains(t, errOut.String(), "refusing to replace tagged artifact", conflictingAsset)
 	requireNoCallContaining(t, fake, "gh release upload")
 }
 

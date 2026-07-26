@@ -20,11 +20,15 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 	if _, err := localrelease.ParseVersion(tag); err != nil {
 		return usage("release tag must be strict vX.Y.Z: " + tag)
 	}
-	expected := service.Getenv("GITHUB_SHA")
+	expected := service.Getenv("GATE_RELEASE_TARGET_SHA")
+	if expected == "" {
+		expected = service.Getenv("GITHUB_SHA")
+	}
 	if expected == "" {
 		return usage("GITHUB_SHA is required")
 	}
-	if err := service.verifyReleaseTagTarget(ctx, tag, expected); err != nil {
+	expectedObject := service.Getenv("GATE_RELEASE_TAG_OBJECT")
+	if err := service.verifyReleaseTag(ctx, tag, expected, expectedObject); err != nil {
 		return err
 	}
 	repository := service.Getenv("GITHUB_REPOSITORY")
@@ -55,10 +59,13 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 				tag,
 			)
 		}
-		return service.reconcileReleaseAssets(ctx, tag)
+		return service.reconcileReleaseAssets(ctx, tag, expected, expectedObject)
 	case !isGitHubNotFound(stateErr):
 		return fmt.Errorf("inspect existing GitHub release: %w", stateErr)
 	default:
+		if err := service.verifyReleaseTag(ctx, tag, expected, expectedObject); err != nil {
+			return err
+		}
 		args := []string{"release", "create", tag}
 		args = append(args, releaseAssets...)
 		args = append(args, "--title", tag, "--notes", notes, "--verify-tag")
@@ -67,6 +74,18 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 		}
 		return nil
 	}
+}
+
+func (service *Service) verifyReleaseTag(
+	ctx context.Context,
+	tag,
+	expectedTarget,
+	expectedObject string,
+) error {
+	if expectedObject != "" {
+		return service.verifyReleaseTagIdentity(ctx, tag, expectedTarget, expectedObject)
+	}
+	return service.verifyReleaseTagTarget(ctx, tag, expectedTarget)
 }
 
 func (service *Service) githubReleaseState(ctx context.Context, tag string) (githubReleaseState, error) {
@@ -129,7 +148,12 @@ func (service *Service) latestPublishedTag(ctx context.Context, repository strin
 	return strings.TrimSpace(tag), nil
 }
 
-func (service *Service) reconcileReleaseAssets(ctx context.Context, tag string) error {
+func (service *Service) reconcileReleaseAssets(
+	ctx context.Context,
+	tag,
+	expected,
+	expectedObject string,
+) error {
 	raw, err := service.output(ctx, "gh", "release", "view", tag, "--json", "assets", "--jq", ".assets[].name")
 	if err != nil {
 		return fmt.Errorf("list GitHub release assets: %w", err)
@@ -144,11 +168,10 @@ func (service *Service) reconcileReleaseAssets(ctx context.Context, tag string) 
 	}
 	defer func() { _ = service.RemoveAll(temp) }()
 
+	var missing []string
 	for _, asset := range releaseAssets {
 		if !existing[asset] {
-			if err := service.stream(ctx, "gh", "release", "upload", tag, asset); err != nil {
-				return fmt.Errorf("upload missing release asset %s: %w", asset, err)
-			}
+			missing = append(missing, asset)
 			continue
 		}
 		if err := service.stream(ctx, "gh", "release", "download", tag, "--pattern", asset, "--dir", temp); err != nil {
@@ -164,6 +187,16 @@ func (service *Service) reconcileReleaseAssets(ctx context.Context, tag string) 
 		}
 		if !bytes.Equal(local, remote) {
 			return fmt.Errorf("release asset differs from local file; refusing to replace tagged artifact: %s", asset)
+		}
+	}
+	if len(missing) > 0 {
+		if err := service.verifyReleaseTag(ctx, tag, expected, expectedObject); err != nil {
+			return err
+		}
+	}
+	for _, asset := range missing {
+		if err := service.stream(ctx, "gh", "release", "upload", tag, asset); err != nil {
+			return fmt.Errorf("upload missing release asset %s: %w", asset, err)
 		}
 	}
 	return nil

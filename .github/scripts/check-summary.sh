@@ -4,6 +4,7 @@ set -euo pipefail
 : "${GITHUB_STEP_SUMMARY:?}"
 : "${GITHUB_REF_NAME:?}"
 : "${GITHUB_SHA:?}"
+: "${SOURCE_SHA:=$GITHUB_SHA}"
 : "${RUNNER_OS_NAME:?}"
 : "${GOFMT_OUTCOME:?}"
 : "${VET_OUTCOME:?}"
@@ -18,7 +19,8 @@ set -euo pipefail
   echo "## CI check (${RUNNER_OS_NAME})"
   echo
   echo "- Ref: \`${GITHUB_REF_NAME}\`"
-  echo "- Commit: \`${GITHUB_SHA}\`"
+  echo "- Workflow commit: \`${GITHUB_SHA}\`"
+  echo "- Source commit: \`${SOURCE_SHA}\`"
   echo "- Go: \`$(go version | awk '{print $3}')\`"
   echo
   echo "| Step | Result |"

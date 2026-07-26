@@ -4,13 +4,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"gate/internal/devtool/runner"
+)
+
+const (
+	testCommitSHA = "1111111111111111111111111111111111111111"
+	testTagObject = "2222222222222222222222222222222222222222"
 )
 
 func TestServiceDryRunResolvesVersionWithoutMutation(t *testing.T) {
@@ -67,6 +75,89 @@ func TestServicePushesBranchAndAnnotatedTagAtomically(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "created and pushed tag v1.0.1") {
 		t.Fatalf("stdout = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "dispatched release workflow for v1.0.1") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
+func TestServicePushUsesCapturedCommitAndTagObjectIDs(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	target := strings.TrimSpace(gitOutput(t, fixture.work, "rev-parse", "HEAD"))
+	var out, errOut bytes.Buffer
+	commandRunner := &capturePushRunner{delegate: runner.OS{}}
+	service := New(strings.NewReader(""), &out, &errOut, commandRunner)
+	service.Dir = fixture.work
+	service.Getenv = func(string) string { return "" }
+	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 0 {
+		t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	tagObject := strings.TrimSpace(gitOutput(t, fixture.work, "rev-parse", "refs/tags/v1.0.1"))
+	if !reflect.DeepEqual(commandRunner.push.Args, []string{
+		"push",
+		"--atomic",
+		"origin",
+		target + ":refs/heads/main",
+		tagObject + ":refs/tags/v1.0.1",
+	}) {
+		t.Fatalf("push args = %#v", commandRunner.push.Args)
+	}
+}
+
+func TestServiceDispatchPreflightFailureCreatesNoTagOrPush(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	service, _, errOut := testService(fixture.work, "")
+	checkCalled := false
+	service.Check = func(context.Context) error {
+		checkCalled = true
+		return nil
+	}
+	service.PrepareReleaseDispatch = func(context.Context) (string, error) {
+		return "", errors.New("missing GitHub access")
+	}
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+		t.Fatalf("Run = %d", code)
+	}
+	if checkCalled {
+		t.Fatal("dispatch preflight failure executed release checks")
+	}
+	if hasRef(fixture.work, "refs/tags/v1.0.1") ||
+		remoteHasRef(t, fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("dispatch preflight failure created a release tag")
+	}
+	if !strings.Contains(errOut.String(), "prepare GitHub release dispatch") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+func TestServiceDispatchFailurePreservesPushedTagAndPrintsRecovery(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	service, _, errOut := testService(fixture.work, "")
+	service.DispatchRelease = func(context.Context, string, string, string, string) error {
+		return errors.New("injected dispatch failure")
+	}
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+		t.Fatalf("Run = %d", code)
+	}
+	if !hasRef(fixture.work, "refs/tags/v1.0.1") ||
+		!remoteHasRef(t, fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("dispatch failure removed the already-pushed release tag")
+	}
+	for _, want := range []string{
+		"tag v1.0.1 was pushed, but release workflow dispatch failed",
+		"gh api --method POST repos/acme/gate/dispatches",
+		"client_payload[tag]=v1.0.1",
+		"client_payload[target_sha]=",
+		"client_payload[tag_object]=",
+	} {
+		if !strings.Contains(errOut.String(), want) {
+			t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+		}
 	}
 }
 
@@ -125,6 +216,7 @@ func TestServiceInterruptedPushRemovesAttemptTag(t *testing.T) {
 	service.Dir = fixture.work
 	service.Getenv = func(string) string { return "" }
 	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
 
 	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 130 {
 		t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
@@ -137,7 +229,36 @@ func TestServiceInterruptedPushRemovesAttemptTag(t *testing.T) {
 	}
 }
 
-func TestServiceInterruptedTagCreationRemovesAttemptTag(t *testing.T) {
+func TestServicePushFailureDoesNotDeleteTagMovedByAnotherProcess(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	var out, errOut bytes.Buffer
+	service := New(
+		strings.NewReader(""),
+		&out,
+		&errOut,
+		&moveTagOnPushRunner{delegate: runner.OS{}},
+	)
+	service.Dir = fixture.work
+	service.Getenv = func(string) string { return "" }
+	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+		t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if !hasRef(fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("compare-and-delete removed a tag moved by another process")
+	}
+	tagObject := gitOutput(t, fixture.work, "cat-file", "-p", "refs/tags/v1.0.1")
+	if !strings.Contains(tagObject, "foreign tag") {
+		t.Fatalf("tag object = %q", tagObject)
+	}
+	if !strings.Contains(errOut.String(), "local tag cleanup failed") {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+}
+
+func TestServiceInterruptedTagInstallationRemovesOwnedTag(t *testing.T) {
 	fixture := newReleaseRepository(t, true, true)
 	var out, errOut bytes.Buffer
 	service := New(
@@ -149,12 +270,128 @@ func TestServiceInterruptedTagCreationRemovesAttemptTag(t *testing.T) {
 	service.Dir = fixture.work
 	service.Getenv = func(string) string { return "" }
 	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
 
 	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 130 {
 		t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
 	}
 	if hasRef(fixture.work, "refs/tags/v1.0.1") {
-		t.Fatal("interrupted tag creation left a local tag")
+		t.Fatal("interrupted atomic tag installation left the owned tag")
+	}
+}
+
+func TestServiceTagInstallationRacePreservesForeignTag(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	var out, errOut bytes.Buffer
+	service := New(
+		strings.NewReader(""),
+		&out,
+		&errOut,
+		&foreignTagBeforeInstallRunner{delegate: runner.OS{}},
+	)
+	service.Dir = fixture.work
+	service.Getenv = func(string) string { return "" }
+	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
+
+	if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+		t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if !hasRef(fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("atomic install race deleted a foreign tag")
+	}
+	tagObject := gitOutput(t, fixture.work, "cat-file", "-p", "refs/tags/v1.0.1")
+	if !strings.Contains(tagObject, "foreign tag") {
+		t.Fatalf("tag object = %q", tagObject)
+	}
+}
+
+func TestServiceFailsClosedWhenAnnotatedTagSigningIsRequired(t *testing.T) {
+	for _, policy := range []string{"tag.gpgSign", "tag.forceSignAnnotated"} {
+		t.Run(policy, func(t *testing.T) {
+			fixture := newReleaseRepository(t, true, true)
+			runGit(t, fixture.work, "config", policy, "true")
+			service, _, errOut := testService(fixture.work, "")
+
+			if code := service.Run(context.Background(), []string{"--yes", "--since", "v1.0.0", "patch"}); code != 1 {
+				t.Fatalf("Run = %d\nstderr:\n%s", code, errOut.String())
+			}
+			if hasRef(fixture.work, "refs/tags/v1.0.1") {
+				t.Fatal("unsupported signing policy created a tag")
+			}
+			if !strings.Contains(errOut.String(), policy+"=true is not supported") {
+				t.Fatalf("stderr = %q", errOut.String())
+			}
+		})
+	}
+}
+
+func TestServiceCancellationAfterTagCreationRemovesOwnedTag(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	var out, errOut bytes.Buffer
+	service := New(
+		strings.NewReader(""),
+		&out,
+		&errOut,
+		&cancelAfterTagRunner{delegate: runner.OS{}, cancel: cancel},
+	)
+	service.Dir = fixture.work
+	service.Getenv = func(string) string { return "" }
+	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
+
+	if code := service.Run(ctx, []string{"--yes", "--since", "v1.0.0", "patch"}); code != 130 {
+		t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+	}
+	if hasRef(fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("cancellation after successful tag creation left the owned tag")
+	}
+}
+
+func TestServiceCancellationUnblocksConfirmationWithoutMutation(t *testing.T) {
+	fixture := newReleaseRepository(t, true, true)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	var out, errOut bytes.Buffer
+	service := New(reader, &out, &errOut, runner.OS{})
+	service.Dir = fixture.work
+	service.Getenv = func(string) string { return "" }
+	disableReleaseDispatch(service)
+	checkReached := make(chan struct{})
+	service.Check = func(context.Context) error {
+		close(checkReached)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan int, 1)
+	go func() {
+		result <- service.Run(ctx, []string{"--since", "v1.0.0", "patch"})
+	}()
+	<-checkReached
+	cancel()
+	select {
+	case code := <-result:
+		if code != 130 {
+			t.Fatalf("Run = %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("confirmation did not unblock after context cancellation")
+	}
+	if hasRef(fixture.work, "refs/tags/v1.0.1") {
+		t.Fatal("cancelled confirmation created a tag")
+	}
+	if _, err := reader.Stat(); err != nil {
+		t.Fatalf("cancellation closed prompt input before terminal restoration: %v", err)
+	}
+	if _, err := writer.WriteString("n\n"); err != nil {
+		t.Fatalf("prompt input is unusable after cancellation: %v", err)
 	}
 }
 
@@ -305,6 +542,71 @@ func TestDefaultCheckStreamsJustCheckOutput(t *testing.T) {
 	}
 }
 
+func TestGitHubReleaseDispatchUsesStructuredRepositoryDispatchAPI(t *testing.T) {
+	var out, errOut bytes.Buffer
+	commandRunner := &releaseDispatchRunner{}
+	service := New(strings.NewReader(""), &out, &errOut, commandRunner)
+	service.Dir = "/tmp/repository"
+	commandRunner.run = func(command runner.Command) error {
+		switch {
+		case command.Name == "git":
+			_, _ = io.WriteString(command.Stdout, "git@github.com:jinyongp/gate.git\n")
+		case command.Name == "gh" && strings.Contains(strings.Join(command.Args, " "), "repos/jinyongp/gate --jq"):
+			_, _ = io.WriteString(command.Stdout, "true\n")
+		}
+		return nil
+	}
+
+	repository, err := service.prepareReleaseDispatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repository != "jinyongp/gate" {
+		t.Fatalf("repository = %q", repository)
+	}
+	if err := service.dispatchRelease(
+		context.Background(),
+		repository,
+		"v2.11.0",
+		testCommitSHA,
+		testTagObject,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(commandRunner.commands) != 3 {
+		t.Fatalf("commands = %#v", commandRunner.commands)
+	}
+	preflight := commandRunner.commands[1]
+	if !reflect.DeepEqual(preflight.Args, []string{
+		"api", "repos/jinyongp/gate", "--jq", ".permissions.push",
+	}) {
+		t.Fatalf("preflight args = %#v", preflight.Args)
+	}
+	dispatch := commandRunner.commands[2]
+	if !reflect.DeepEqual(dispatch.Args, []string{
+		"api",
+		"--silent",
+		"--method",
+		"POST",
+		"repos/jinyongp/gate/dispatches",
+		"-f",
+		"event_type=release",
+		"-F",
+		"client_payload[tag]=v2.11.0",
+		"-F",
+		"client_payload[target_sha]=" + testCommitSHA,
+		"-F",
+		"client_payload[tag_object]=" + testTagObject,
+	}) {
+		t.Fatalf("dispatch args = %#v", dispatch.Args)
+	}
+	for _, command := range []runner.Command{preflight, dispatch} {
+		if !reflect.DeepEqual(command.Env, []string{"GH_PROMPT_DISABLED=1"}) {
+			t.Fatalf("command env = %#v", command.Env)
+		}
+	}
+}
+
 type recordingRunner struct {
 	command runner.Command
 }
@@ -314,8 +616,33 @@ func (runner *recordingRunner) Run(_ context.Context, command runner.Command) er
 	return nil
 }
 
+type releaseDispatchRunner struct {
+	commands []runner.Command
+	run      func(runner.Command) error
+}
+
+func (commandRunner *releaseDispatchRunner) Run(_ context.Context, command runner.Command) error {
+	commandRunner.commands = append(commandRunner.commands, command)
+	if commandRunner.run != nil {
+		return commandRunner.run(command)
+	}
+	return nil
+}
+
 type cancelPushRunner struct {
 	delegate runner.Runner
+}
+
+type capturePushRunner struct {
+	delegate runner.Runner
+	push     runner.Command
+}
+
+func (commandRunner *capturePushRunner) Run(ctx context.Context, command runner.Command) error {
+	if command.Name == "git" && len(command.Args) > 0 && command.Args[0] == "push" {
+		commandRunner.push = command
+	}
+	return commandRunner.delegate.Run(ctx, command)
 }
 
 func (commandRunner *cancelPushRunner) Run(ctx context.Context, command runner.Command) error {
@@ -329,11 +656,70 @@ type cancelTagRunner struct {
 	delegate runner.Runner
 }
 
+type moveTagOnPushRunner struct {
+	delegate runner.Runner
+}
+
+type foreignTagBeforeInstallRunner struct {
+	delegate runner.Runner
+}
+
+type cancelAfterTagRunner struct {
+	delegate runner.Runner
+	cancel   context.CancelFunc
+}
+
+func (commandRunner *cancelAfterTagRunner) Run(ctx context.Context, command runner.Command) error {
+	err := commandRunner.delegate.Run(ctx, command)
+	if err == nil &&
+		command.Name == "git" &&
+		len(command.Args) > 1 &&
+		command.Args[0] == "update-ref" &&
+		command.Args[1] == "refs/tags/v1.0.1" {
+		commandRunner.cancel()
+	}
+	return err
+}
+
+func (commandRunner *foreignTagBeforeInstallRunner) Run(ctx context.Context, command runner.Command) error {
+	if command.Name == "git" &&
+		len(command.Args) > 1 &&
+		command.Args[0] == "update-ref" &&
+		command.Args[1] == "refs/tags/v1.0.1" {
+		if err := commandRunner.delegate.Run(ctx, runner.Command{
+			Name:   "git",
+			Args:   []string{"tag", "-a", "v1.0.1", "-m", "foreign tag", "v1.0.0"},
+			Dir:    command.Dir,
+			Stdout: command.Stdout,
+			Stderr: command.Stderr,
+		}); err != nil {
+			return err
+		}
+	}
+	return commandRunner.delegate.Run(ctx, command)
+}
+
+func (commandRunner *moveTagOnPushRunner) Run(ctx context.Context, command runner.Command) error {
+	if command.Name == "git" && len(command.Args) > 0 && command.Args[0] == "push" {
+		if err := commandRunner.delegate.Run(ctx, runner.Command{
+			Name:   "git",
+			Args:   []string{"tag", "-f", "-a", "v1.0.1", "-m", "foreign tag", "v1.0.0"},
+			Dir:    command.Dir,
+			Stdout: command.Stdout,
+			Stderr: command.Stderr,
+		}); err != nil {
+			return err
+		}
+		return errors.New("injected push failure")
+	}
+	return commandRunner.delegate.Run(ctx, command)
+}
+
 func (commandRunner *cancelTagRunner) Run(ctx context.Context, command runner.Command) error {
 	if command.Name == "git" &&
 		len(command.Args) > 1 &&
-		command.Args[0] == "tag" &&
-		command.Args[1] == "-a" {
+		command.Args[0] == "update-ref" &&
+		command.Args[1] == "refs/tags/v1.0.1" {
 		if err := commandRunner.delegate.Run(ctx, command); err != nil {
 			return err
 		}
@@ -370,6 +756,7 @@ func newReleaseRepository(t *testing.T, withRemote, withSecondCommit bool) relea
 	runGit(t, work, "config", "user.email", "gate@example.com")
 	runGit(t, work, "config", "commit.gpgsign", "false")
 	runGit(t, work, "config", "tag.gpgSign", "false")
+	runGit(t, work, "config", "tag.forceSignAnnotated", "false")
 	writeCommit(t, work, "README.md", "base\n", "chore: base")
 	runGit(t, work, "tag", "v1.0.0")
 
@@ -402,7 +789,17 @@ func testService(dir, input string) (*Service, *bytes.Buffer, *bytes.Buffer) {
 	service.Dir = dir
 	service.Getenv = func(string) string { return "" }
 	service.Check = func(context.Context) error { return nil }
+	disableReleaseDispatch(service)
 	return service, &out, &errOut
+}
+
+func disableReleaseDispatch(service *Service) {
+	service.PrepareReleaseDispatch = func(context.Context) (string, error) {
+		return "acme/gate", nil
+	}
+	service.DispatchRelease = func(context.Context, string, string, string, string) error {
+		return nil
+	}
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

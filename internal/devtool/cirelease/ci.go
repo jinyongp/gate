@@ -6,9 +6,12 @@ import (
 	"strings"
 )
 
-func (service *Service) waitForCI(ctx context.Context, sha string) error {
+func (service *Service) waitForCI(ctx context.Context, sha, requestID string) error {
 	if !commitSHAPattern.MatchString(sha) {
-		return usage("usage: gate-dev ci wait-for-ci <40-character commit SHA>")
+		return usage("usage: gate-dev ci wait-for-ci <40-character commit SHA> [request-id]")
+	}
+	if requestID != "" && !ciRequestIDPattern.MatchString(requestID) {
+		return usage("CI request ID must contain only letters, digits, dot, underscore, and hyphen")
 	}
 	repository := service.Getenv("GH_REPO")
 	if repository == "" {
@@ -41,11 +44,30 @@ func (service *Service) waitForCI(ctx context.Context, sha string) error {
 		return err
 	}
 
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	timedOut := func() error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("timed out waiting for successful CI for %s", sha)
+	}
 	deadline := service.Now().Add(timeout)
 	lastReported := ""
+	selector := fmt.Sprintf(
+		`.workflow_runs | map(select(.event == "push" and .head_sha == "%s")) | sort_by(.created_at) | last | select(. != null) | [.id, .status, (.conclusion // ""), .html_url] | @tsv`,
+		sha,
+	)
+	if requestID != "" {
+		selector = fmt.Sprintf(
+			`.workflow_runs | map(select(.event == "workflow_dispatch" and .display_title == "CI %s %s")) | sort_by(.created_at) | last | select(. != null) | [.id, .status, (.conclusion // ""), .html_url] | @tsv`,
+			sha,
+			requestID,
+		)
+	}
 	for !service.Now().After(deadline) {
 		run, queryErr := service.output(
-			ctx,
+			waitCtx,
 			"gh",
 			"api",
 			"--method",
@@ -54,15 +76,14 @@ func (service *Service) waitForCI(ctx context.Context, sha string) error {
 			"Accept: application/vnd.github+json",
 			"repos/"+repository+"/actions/workflows/"+workflow+"/runs",
 			"-f",
-			"head_sha="+sha,
-			"-f",
-			"event=push",
-			"-f",
 			"per_page=100",
 			"--jq",
-			`.workflow_runs | sort_by(.created_at) | last | select(. != null) | [.id, .status, (.conclusion // ""), .html_url] | @tsv`,
+			selector,
 		)
 		if queryErr != nil {
+			if waitCtx.Err() != nil {
+				return timedOut()
+			}
 			return queryErr
 		}
 		report := "waiting for CI run for " + sha
@@ -95,9 +116,71 @@ func (service *Service) waitForCI(ctx context.Context, sha string) error {
 		if !service.Now().Before(deadline) {
 			break
 		}
-		if err := service.Sleep(ctx, poll); err != nil {
+		if err := service.Sleep(waitCtx, poll); err != nil {
+			if waitCtx.Err() != nil {
+				return timedOut()
+			}
 			return err
 		}
 	}
-	return fmt.Errorf("timed out waiting for successful CI for %s", sha)
+	return timedOut()
+}
+
+func (service *Service) dispatchCI(ctx context.Context, sha, requestID string) error {
+	if !commitSHAPattern.MatchString(sha) {
+		return usage("usage: gate-dev ci dispatch-ci <40-character commit SHA> <request-id>")
+	}
+	if !ciRequestIDPattern.MatchString(requestID) {
+		return usage("CI request ID must contain only letters, digits, dot, underscore, and hyphen")
+	}
+	repository := service.Getenv("GH_REPO")
+	if repository == "" {
+		repository = service.Getenv("GITHUB_REPOSITORY")
+	}
+	if !repoSlugPattern.MatchString(repository) {
+		return usage("GH_REPO or GITHUB_REPOSITORY must be an owner/repository slug")
+	}
+	workflow := service.Getenv("CI_WORKFLOW_FILE")
+	if workflow == "" {
+		workflow = "ci.yml"
+	}
+	if !workflowPattern.MatchString(workflow) {
+		return usage("CI_WORKFLOW_FILE must be a workflow filename")
+	}
+	workflowRef := service.Getenv("CI_WORKFLOW_REF")
+	if workflowRef == "" {
+		workflowRef = "main"
+	}
+	if !safeGitRef(workflowRef) {
+		return usage("CI_WORKFLOW_REF must be a safe branch or tag name")
+	}
+	if err := service.stream(
+		ctx,
+		"gh",
+		"workflow",
+		"run",
+		workflow,
+		"--repo",
+		repository,
+		"--ref",
+		workflowRef,
+		"-f",
+		"checkout_ref="+sha,
+		"-f",
+		"request_id="+requestID,
+	); err != nil {
+		return fmt.Errorf("dispatch exact-SHA CI: %w", err)
+	}
+	fmt.Fprintln(service.Out, "dispatched CI for "+sha)
+	return nil
+}
+
+func safeGitRef(value string) bool {
+	if value == "" ||
+		strings.HasPrefix(value, "-") ||
+		strings.Contains(value, "..") ||
+		strings.ContainsAny(value, " \t\r\n~^:?*[\\") {
+		return false
+	}
+	return true
 }
