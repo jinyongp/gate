@@ -13,6 +13,13 @@ import (
 
 var ErrPromptInterrupted = errors.New("interrupted")
 
+type Choice struct {
+	Value         string
+	Label         string
+	Aliases       []string
+	CaseSensitive bool
+}
+
 func PromptLabel(w io.Writer, label string) string {
 	label = strings.TrimSpace(label)
 	if strings.HasSuffix(label, "?") {
@@ -47,11 +54,22 @@ func PromptEnabled(w io.Writer) bool {
 }
 
 func PromptChoice(reader *bufio.Reader, output io.Writer, label, defaultValue string, allowed []string) (string, error) {
-	if len(allowed) == 0 {
+	choices := make([]Choice, 0, len(allowed))
+	for _, value := range allowed {
+		choices = append(choices, Choice{Value: value, Label: value})
+	}
+	return PromptChoices(reader, output, label, defaultValue, choices)
+}
+
+func PromptChoices(reader *bufio.Reader, output io.Writer, label, defaultValue string, choices []Choice) (string, error) {
+	if len(choices) == 0 {
 		return "", errors.New("prompt choice requires at least one allowed value")
 	}
+	if err := validateChoices(choices); err != nil {
+		return "", err
+	}
 	if PromptEnabled(output) {
-		return promptChoiceRadio(output, label, defaultValue, allowed)
+		return promptChoiceRadio(output, label, defaultValue, choices)
 	}
 	for {
 		fmt.Fprint(output, PromptLabel(output, label))
@@ -62,21 +80,56 @@ func PromptChoice(reader *bufio.Reader, output io.Writer, label, defaultValue st
 		if err != nil && line == "" {
 			return "", err
 		}
-		value := strings.ToLower(strings.TrimSpace(line))
+		value := strings.TrimSpace(line)
 		if value == "" {
 			value = defaultValue
 		}
-		for _, item := range allowed {
-			if value == item {
-				return value, nil
+		for _, choice := range choices {
+			if choiceMatches(value, choice) {
+				return choice.Value, nil
 			}
 		}
-		fmt.Fprintf(output, "Choose one of: %s\n", strings.Join(allowed, ", "))
+		fmt.Fprintf(output, "Choose one of: %s\n", strings.Join(choiceValues(choices), ", "))
 	}
 }
 
-func promptChoiceRadio(output io.Writer, label, defaultValue string, allowed []string) (string, error) {
-	selected := choiceIndex(defaultValue, allowed)
+func validateChoices(choices []Choice) error {
+	for _, choice := range choices {
+		if strings.TrimSpace(choice.Value) == "" {
+			return errors.New("prompt choice value is required")
+		}
+	}
+	return nil
+}
+
+func choiceMatches(value string, choice Choice) bool {
+	equal := strings.EqualFold
+	if choice.CaseSensitive {
+		equal = func(left, right string) bool {
+			return left == right
+		}
+	}
+	if equal(value, choice.Value) {
+		return true
+	}
+	for _, alias := range choice.Aliases {
+		if equal(value, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func choiceValues(choices []Choice) []string {
+	values := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		values = append(values, choice.Value)
+	}
+	return values
+}
+
+func promptChoiceRadio(output io.Writer, label, defaultValue string, choices []Choice) (string, error) {
+	selected := choiceIndex(defaultValue, choices)
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return "", err
@@ -90,7 +143,7 @@ func promptChoiceRadio(output io.Writer, label, defaultValue string, allowed []s
 	if _, err := fmt.Fprintf(output, "%s\r\n", PromptHeading(output, label)); err != nil {
 		return "", err
 	}
-	if err := renderChoiceMenu(output, allowed, selected); err != nil {
+	if err := renderChoiceMenu(output, choices, selected); err != nil {
 		return "", err
 	}
 
@@ -104,7 +157,7 @@ func promptChoiceRadio(output io.Writer, label, defaultValue string, allowed []s
 		switch {
 		case r == '\r' || r == '\n':
 			fmt.Fprint(output, "\r\n")
-			return allowed[selected], nil
+			return choices[selected].Value, nil
 		case r == 0x03:
 			return "", ErrPromptInterrupted
 		case r == 0x1b:
@@ -121,57 +174,73 @@ func promptChoiceRadio(output io.Writer, label, defaultValue string, allowed []s
 			}
 			switch arrow {
 			case 'A':
-				selected = (selected + len(allowed) - 1) % len(allowed)
+				selected = (selected + len(choices) - 1) % len(choices)
 			case 'B':
-				selected = (selected + 1) % len(allowed)
+				selected = (selected + 1) % len(choices)
 			}
 		case r == 'j':
-			selected = (selected + 1) % len(allowed)
+			selected = (selected + 1) % len(choices)
 		case r == 'k':
-			selected = (selected + len(allowed) - 1) % len(allowed)
+			selected = (selected + len(choices) - 1) % len(choices)
 		case r >= '1' && r <= '9':
 			index := int(r - '1')
-			if index >= len(allowed) {
+			if index >= len(choices) {
 				continue
 			}
 			selected = index
-			if err := updateChoiceMenu(output, allowed, selected); err != nil {
+			if err := updateChoiceMenu(output, choices, selected); err != nil {
 				return "", err
 			}
 			fmt.Fprint(output, "\r\n")
-			return allowed[selected], nil
+			return choices[selected].Value, nil
+		default:
+			value := string(r)
+			for index, choice := range choices {
+				if choiceMatches(value, choice) {
+					selected = index
+					if err := updateChoiceMenu(output, choices, selected); err != nil {
+						return "", err
+					}
+					fmt.Fprint(output, "\r\n")
+					return choices[selected].Value, nil
+				}
+			}
 		}
 		if selected != previous {
-			if err := updateChoiceMenu(output, allowed, selected); err != nil {
+			if err := updateChoiceMenu(output, choices, selected); err != nil {
 				return "", err
 			}
 		}
 	}
 }
 
-func choiceIndex(defaultValue string, allowed []string) int {
-	for index, item := range allowed {
-		if item == defaultValue {
+func choiceIndex(defaultValue string, choices []Choice) int {
+	for index, choice := range choices {
+		if choice.Value == defaultValue {
 			return index
 		}
 	}
 	return 0
 }
 
-func renderChoiceMenu(output io.Writer, allowed []string, selected int) error {
-	for index, item := range allowed {
-		if err := renderChoiceOption(output, item, index == selected); err != nil {
+func renderChoiceMenu(output io.Writer, choices []Choice, selected int) error {
+	for index, choice := range choices {
+		label := choice.Label
+		if label == "" {
+			label = choice.Value
+		}
+		if err := renderChoiceOption(output, label, index == selected); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func updateChoiceMenu(output io.Writer, allowed []string, selected int) error {
-	if _, err := fmt.Fprintf(output, "\x1b[%dA", len(allowed)); err != nil {
+func updateChoiceMenu(output io.Writer, choices []Choice, selected int) error {
+	if _, err := fmt.Fprintf(output, "\x1b[%dA", len(choices)); err != nil {
 		return err
 	}
-	return renderChoiceMenu(output, allowed, selected)
+	return renderChoiceMenu(output, choices, selected)
 }
 
 func renderChoiceOption(output io.Writer, label string, selected bool) error {

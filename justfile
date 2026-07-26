@@ -70,7 +70,7 @@ check:
 
 [doc('release a new version: no arg => interactive patch/minor/major; patch/minor/major -> bump from latest tag; explicit vX.Y.Z')]
 release tag="":
-  ./scripts/release/publish.sh "{{tag}}"
+  go run ./cmd/gate-dev release {{quote(tag)}}
 
 [doc('cross-compile all release targets into bin/')]
 build-all version="dev":

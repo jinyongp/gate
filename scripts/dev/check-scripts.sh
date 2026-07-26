@@ -49,9 +49,9 @@ if grep -Eq '^  check:' .github/workflows/release.yml ||
   echo "Release must gate publishing on the exact commit's CI result without rerunning checks" >&2
   exit 1
 fi
-if ! grep -Fq 'if just check; then' scripts/release/publish.sh ||
-  grep -Fq 'out="$(just check' scripts/release/publish.sh; then
-  echo "Release checks must stream staged progress from the repository check command" >&2
+if [ -e scripts/release/publish.sh ] ||
+  ! grep -Fq 'go run ./cmd/gate-dev release {{quote(tag)}}' justfile; then
+  echo "Local releases must use gate-dev without retaining the legacy publish script" >&2
   exit 1
 fi
 

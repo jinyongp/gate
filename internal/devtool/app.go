@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"gate/internal/devtool/platform"
+	"gate/internal/devtool/release"
 	"gate/internal/devtool/runner"
 	"gate/internal/ui"
 )
@@ -28,11 +29,14 @@ func New(in io.Reader, out, errOut io.Writer) *App {
 	}
 }
 
-func (app *App) Run(_ context.Context, args []string) int {
+func (app *App) Run(ctx context.Context, args []string) int {
 	switch {
 	case len(args) == 0, args[0] == "help", args[0] == "-h", args[0] == "--help":
 		app.usage()
 		return 0
+	case args[0] == "release":
+		service := release.New(app.In, app.Out, app.Err, app.Runner)
+		return service.Run(ctx, args[1:])
 	default:
 		ui.NewConsole(app.Out, app.Err).Error(fmt.Sprintf("unknown gate-dev command %q", args[0]))
 		app.usage()
@@ -47,5 +51,6 @@ usage:
   gate-dev <command> [args]
 
 commands:
-  help  show this help`)
+  release  create and atomically push a release tag
+  help     show this help`)
 }

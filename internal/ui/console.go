@@ -66,6 +66,10 @@ func (c Console) KV(label, value string) {
 	fmt.Fprintf(c.Out, "  %s: %s\n", label, value)
 }
 
+func (c Console) Item(message string) {
+	fmt.Fprintf(c.Out, "  - %s\n", message)
+}
+
 func (c Console) Section(label string) {
 	fmt.Fprintln(c.Out)
 	if ColorEnabled(c.Out) {
