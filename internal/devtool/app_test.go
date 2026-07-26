@@ -17,7 +17,7 @@ func TestAppHelp(t *testing.T) {
 		if !strings.Contains(out.String(), "gate-dev") || !strings.Contains(out.String(), "commands:") {
 			t.Fatalf("help output = %q", out.String())
 		}
-		for _, command := range []string{"check", "lint", "build-all", "release"} {
+		for _, command := range []string{"check", "lint", "build-all", "release", "ci"} {
 			if !strings.Contains(out.String(), command) {
 				t.Fatalf("help output missing %q: %q", command, out.String())
 			}

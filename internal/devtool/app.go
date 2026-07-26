@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"gate/internal/devtool/cirelease"
 	"gate/internal/devtool/devcmd"
 	"gate/internal/devtool/platform"
 	"gate/internal/devtool/release"
@@ -38,6 +39,9 @@ func (app *App) Run(ctx context.Context, args []string) int {
 	case args[0] == "release":
 		service := release.New(app.In, app.Out, app.Err, app.Runner)
 		return service.Run(ctx, args[1:])
+	case args[0] == "ci":
+		service := cirelease.New(app.Out, app.Err, app.Runner)
+		return service.Run(ctx, args[1:])
 	case devcmd.Handles(args[0]):
 		service := devcmd.New(app.In, app.Out, app.Err, app.Runner, app.Platform)
 		return service.Run(ctx, args)
@@ -69,5 +73,6 @@ commands:
   check      run the full staged repository check
   build-all  cross-build all release targets
   release    create and atomically push a release tag
+  ci         run bounded GitHub release workflow operations
   help       show this help`)
 }

@@ -3,7 +3,6 @@ set -euo pipefail
 
 sh -n scripts/install.sh scripts/uninstall.sh scripts/lib/*.sh
 bash -n .github/scripts/*.sh scripts/dev/*.sh
-bash scripts/dev/test-wait-for-ci.sh
 node scripts/node/check-publish-packages.mjs
 if command -v actionlint >/dev/null 2>&1; then
   actionlint
@@ -41,13 +40,14 @@ if ! grep -Fq 'set positional-arguments' justfile ||
   echo "Just must forward gate arguments positionally without shell interpolation" >&2
   exit 1
 fi
-if ! grep -Fq '"$GATE_DEV" build-all "$version"' .github/scripts/build-release-artifacts.sh ||
-  ! grep -Fq 'GATE_DEV: ${{ runner.temp }}/gate-dev' .github/workflows/release.yml; then
-  echo "Release artifact builds must use the job-local gate-dev binary" >&2
+if ! grep -Fq '"$RUNNER_TEMP/gate-dev" ci build-release-artifacts' .github/workflows/release.yml ||
+  ! grep -Fq '"$RUNNER_TEMP/gate-dev" ci checksums' .github/workflows/release.yml ||
+  ! grep -Fq '"$RUNNER_TEMP/gate-dev" ci publish-release' .github/workflows/release.yml; then
+  echo "Release build and publish jobs must use the job-local gate-dev binary" >&2
   exit 1
 fi
 if grep -Eq '^  check:' .github/workflows/release.yml ||
-  ! grep -Fq 'bash .github/scripts/wait-for-ci.sh "${{ needs.release_tag.outputs.target }}"' \
+  ! grep -Fq '"$RUNNER_TEMP/gate-dev" ci wait-for-ci "${{ needs.release_tag.outputs.target }}"' \
     .github/workflows/release.yml ||
   ! grep -Fq 'needs: [release_tag, ci_gate]' .github/workflows/release.yml; then
   echo "Release must gate publishing on the exact commit's CI result without rerunning checks" >&2
@@ -80,10 +80,19 @@ for migrated_script in \
   scripts/dev/test-check-progress.sh \
   scripts/dev/test-install-low-ports.sh \
   scripts/dev/test-linux-low-ports.sh \
+  scripts/dev/test-wait-for-ci.sh \
   scripts/dev/test.sh \
   scripts/dev/vet.sh \
   scripts/dev/vuln.sh \
-  scripts/release/build-gate.sh; do
+  scripts/release/build-gate.sh \
+  .github/scripts/build-release-artifacts.sh \
+  .github/scripts/checksums.sh \
+  .github/scripts/detect-release-tag.sh \
+  .github/scripts/generate-homebrew-binary-formula.sh \
+  .github/scripts/publish-release.sh \
+  .github/scripts/verify-release-tag-target.sh \
+  .github/scripts/wait-for-ci.sh \
+  .github/scripts/wait-release-assets.sh; do
   if [ -e "$migrated_script" ]; then
     echo "migrated development script still exists: $migrated_script" >&2
     exit 1

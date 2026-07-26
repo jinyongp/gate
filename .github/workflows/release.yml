@@ -26,9 +26,15 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - name: build developer tool
+        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
       - name: detect release tag
         id: release_tag
-        run: bash .github/scripts/detect-release-tag.sh
+        run: '"$RUNNER_TEMP/gate-dev" ci detect-release-tag'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -43,8 +49,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+      - name: build developer tool
+        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
       - name: wait for CI on release commit
-        run: bash .github/scripts/wait-for-ci.sh "${{ needs.release_tag.outputs.target }}"
+        run: '"$RUNNER_TEMP/gate-dev" ci wait-for-ci "${{ needs.release_tag.outputs.target }}"'
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,9 +83,7 @@ jobs:
         run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
       - name: build
         id: build
-        run: bash .github/scripts/build-release-artifacts.sh "${{ needs.release_tag.outputs.tag }}"
-        env:
-          GATE_DEV: ${{ runner.temp }}/gate-dev
+        run: '"$RUNNER_TEMP/gate-dev" ci build-release-artifacts "${{ needs.release_tag.outputs.tag }}"'
       - id: upload_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -85,12 +95,12 @@ jobs:
             gate-linux-arm64
       - name: checksums
         id: checksums
-        run: bash .github/scripts/checksums.sh
+        run: '"$RUNNER_TEMP/gate-dev" ci checksums'
       - name: publish release
         id: publish_release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash .github/scripts/publish-release.sh "${{ needs.release_tag.outputs.tag }}"
+        run: '"$RUNNER_TEMP/gate-dev" ci publish-release "${{ needs.release_tag.outputs.tag }}"'
       - name: job summary
         if: always()
         run: bash .github/scripts/build-summary.sh
@@ -127,19 +137,27 @@ jobs:
           ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
           path: tap
           fetch-depth: 0
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: source/go.sum
+      - name: build developer tool
+        working-directory: source
+        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
       - name: wait for release assets
         id: wait_release_assets
-        run: bash source/.github/scripts/wait-release-assets.sh "${VERSION_TAG}"
+        run: '"$RUNNER_TEMP/gate-dev" ci wait-release-assets "${VERSION_TAG}"'
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: generate binary formula
         id: generate_formula
-        run: bash source/.github/scripts/generate-homebrew-binary-formula.sh tap "${VERSION_TAG}"
+        run: '"$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula tap "${VERSION_TAG}"'
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: verify release tag target
         working-directory: source
-        run: bash .github/scripts/verify-release-tag-target.sh "${VERSION_TAG}" "${GITHUB_SHA}"
+        run: '"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target "${VERSION_TAG}" "${GITHUB_SHA}"'
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: commit formula
@@ -165,7 +183,7 @@ jobs:
       - name: verify release tag before formula push
         if: steps.commit_formula.outputs.changed == 'true'
         working-directory: source
-        run: bash .github/scripts/verify-release-tag-target.sh "${VERSION_TAG}" "${GITHUB_SHA}"
+        run: '"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target "${VERSION_TAG}" "${GITHUB_SHA}"'
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: push formula
@@ -209,6 +227,8 @@ jobs:
         with:
           node-version-file: .node-version
           registry-url: https://registry.npmjs.org
+      - name: build developer tool
+        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
       - name: enable corepack
         id: corepack
         run: corepack enable
@@ -222,7 +242,7 @@ jobs:
           name: gate-${{ github.sha }}
           path: bin
       - name: verify release tag target
-        run: bash .github/scripts/verify-release-tag-target.sh "${VERSION_TAG}" "${GITHUB_SHA}"
+        run: '"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target "${VERSION_TAG}" "${GITHUB_SHA}"'
         env:
           VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
       - name: publish npm packages
