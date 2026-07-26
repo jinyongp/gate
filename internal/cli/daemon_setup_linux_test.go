@@ -161,7 +161,7 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 	target := openLinuxCapabilityTarget(t)
 	linuxCapabilityEUID = func() int { return 1000 }
 	linuxCapabilityTool = func(name string) (string, error) {
-		if name != "sudo" && name != "true" {
+		if name != "sudo" {
 			t.Fatalf("unexpected tool = %q", name)
 		}
 		return "/trusted/" + name, nil
@@ -182,7 +182,6 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 	}
 	stat, _ := selfInfoSys(target.Info)
 	wantCalls := [][]string{
-		{"-n", "--", "/trusted/true"},
 		{
 			"-n", "--", "/tmp/.gate-capability-helper-test",
 			lowPortCapabilityHelperName,
@@ -192,9 +191,8 @@ func TestLinuxCapabilityApplyUsesStableExecutableAndFixedSudoArgv(t *testing.T) 
 			"--sha256", strings.Repeat("a", sha256.Size*2),
 		},
 	}
-	if !slices.Equal(executables, []string{"/trusted/sudo", "/trusted/sudo"}) ||
-		len(calls) != 2 || !slices.Equal(calls[0], wantCalls[0]) ||
-		!slices.Equal(calls[1], wantCalls[1]) {
+	if !slices.Equal(executables, []string{"/trusted/sudo"}) ||
+		len(calls) != 1 || !slices.Equal(calls[0], wantCalls[0]) {
 		t.Fatalf("commands = %q %q, want %q", executables, calls, wantCalls)
 	}
 	for _, cmd := range commands {
@@ -226,9 +224,68 @@ func TestLinuxCapabilityApplyFallsBackToInteractiveSudoAuthorization(t *testing.
 		t.Fatal(err)
 	}
 	if len(calls) != 3 ||
-		!slices.Equal(calls[0], []string{"-n", "--", "/trusted/true"}) ||
-		!slices.Equal(calls[1], []string{"-v"}) {
+		!slices.Equal(calls[0][:3], []string{"-n", "--", "/tmp/.gate-capability-helper-test"}) ||
+		!slices.Equal(calls[1], []string{"-v"}) ||
+		!slices.Equal(calls[2], calls[0]) {
 		t.Fatalf("sudo calls = %q", calls)
+	}
+}
+
+func TestLinuxCapabilityAuthenticationFailureStaysPermissionClassified(t *testing.T) {
+	isolateLinuxCapabilityManager(t)
+	calls := 0
+	linuxCapabilityCommand = func(_ string, commandArgs ...string) *exec.Cmd {
+		calls++
+		switch {
+		case len(commandArgs) > 0 && commandArgs[0] == "-n":
+			return exec.Command("/bin/sh", "-c", "echo 'sudo: a password is required' >&2; exit 1")
+		case slices.Equal(commandArgs, []string{"-v"}):
+			return exec.Command("/bin/sh", "-c", "echo 'sudo: authentication failed' >&2; exit 1")
+		default:
+			t.Fatalf("unexpected sudo args: %q", commandArgs)
+			return nil
+		}
+	}
+
+	err := runLinuxCapabilityAuthorizedSudo("/trusted/sudo", "/trusted/mktemp", "/tmp/helper-XXXX")
+	var capabilityErr *lowPortCapabilityError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "sudo_failed" {
+		t.Fatalf("error = %v, want sudo_failed", err)
+	}
+	if calls != 2 {
+		t.Fatalf("sudo calls = %d, want actual command plus one authorization", calls)
+	}
+}
+
+func TestLinuxCapabilityApplyPreservesSudoFailureFromPrivilegedSetupSteps(t *testing.T) {
+	for _, step := range []string{"cleanup", "create"} {
+		t.Run(step, func(t *testing.T) {
+			isolateLinuxCapabilityManager(t)
+			target := openLinuxCapabilityTarget(t)
+			linuxCapabilityEUID = func() int { return 1000 }
+			linuxCapabilityTool = func(string) (string, error) { return "/trusted/sudo", nil }
+			denied := &lowPortCapabilityError{
+				Code: "sudo_failed",
+				Err:  errors.New("authentication denied"),
+			}
+			if step == "cleanup" {
+				linuxCapabilityCleanupHelpers = func(string) error { return denied }
+			} else {
+				linuxCapabilityCreateHelper = func(
+					string,
+					*lowPortCapabilityTarget,
+					[]string,
+				) (*lowPortCapabilityHelperCopy, error) {
+					return nil, denied
+				}
+			}
+
+			err := (linuxLowPortCapabilityManager{}).Apply(target)
+			var capabilityErr *lowPortCapabilityError
+			if !errors.As(err, &capabilityErr) || capabilityErr.Code != "sudo_failed" {
+				t.Fatalf("error = %v, want sudo_failed", err)
+			}
+		})
 	}
 }
 
@@ -267,7 +324,7 @@ func TestLinuxCapabilityApplyRetriesHelperOnExecutableTempDir(t *testing.T) {
 	commandCall := 0
 	linuxCapabilityCommand = func(string, ...string) *exec.Cmd {
 		commandCall++
-		if commandCall == 2 {
+		if commandCall == 1 {
 			return exec.Command(
 				"/bin/sh",
 				"-c",
@@ -280,7 +337,7 @@ func TestLinuxCapabilityApplyRetriesHelperOnExecutableTempDir(t *testing.T) {
 	if err := (linuxLowPortCapabilityManager{}).Apply(target); err != nil {
 		t.Fatal(err)
 	}
-	if createCalls != 2 || commandCall != 3 {
+	if createCalls != 2 || commandCall != 2 {
 		t.Fatalf("create calls = %d, command calls = %d", createCalls, commandCall)
 	}
 }
@@ -401,12 +458,7 @@ func TestLinuxCapabilityApplyFindsHelperErrorAfterSudoDiagnostic(t *testing.T) {
 	target := openLinuxCapabilityTarget(t)
 	linuxCapabilityEUID = func() int { return 1000 }
 	linuxCapabilityTool = func(name string) (string, error) { return "/trusted/" + name, nil }
-	call := 0
 	linuxCapabilityCommand = func(string, ...string) *exec.Cmd {
-		call++
-		if call == 1 {
-			return successfulLinuxCapabilityCommand()
-		}
 		return exec.Command(
 			"/bin/sh",
 			"-c",

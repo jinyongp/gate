@@ -13,7 +13,12 @@ import (
 
 func (service *Service) goTest(ctx context.Context, cover bool, extraArgs []string) error {
 	args := []string{"test", "-race"}
-	args = append(args, extraArgs...)
+	for _, arg := range extraArgs {
+		if !strings.HasPrefix(arg, "-count=") {
+			args = append(args, arg)
+		}
+	}
+	args = append(args, "-count=1")
 	if cover {
 		args = append(args, "-cover")
 	}

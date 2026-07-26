@@ -44,7 +44,7 @@ func TestGoTestPreservesFailureExitAndOutput(t *testing.T) {
 		},
 	}
 	service, out, errOut := newTestService(fake, platform.Darwin{})
-	if code := service.Run(context.Background(), []string{"cover", "-count=1"}); code != 7 {
+	if code := service.Run(context.Background(), []string{"cover", "-count=9", "-run=TestOnly"}); code != 7 {
 		t.Fatalf("Run = %d", code)
 	}
 	if !strings.Contains(out.String(), "FAIL gate/example") || !strings.Contains(out.String(), "failure detail") {
@@ -53,7 +53,7 @@ func TestGoTestPreservesFailureExitAndOutput(t *testing.T) {
 	if errOut.Len() != 0 {
 		t.Fatalf("stderr = %q", errOut.String())
 	}
-	wantArgs := []string{"test", "-race", "-count=1", "-cover", "./..."}
+	wantArgs := []string{"test", "-race", "-run=TestOnly", "-count=1", "-cover", "./..."}
 	if got := fake.commands[0].Args; !reflect.DeepEqual(got, wantArgs) {
 		t.Fatalf("args = %v, want %v", got, wantArgs)
 	}

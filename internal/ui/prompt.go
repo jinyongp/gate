@@ -2,11 +2,13 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -46,11 +48,15 @@ func PromptValue(w io.Writer, value string) string {
 }
 
 func PromptEnabled(w io.Writer) bool {
+	return PromptEnabledFor(os.Stdin, w)
+}
+
+func PromptEnabledFor(input *os.File, w io.Writer) bool {
 	output, ok := w.(*os.File)
 	if !ok {
 		return false
 	}
-	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(output.Fd()))
+	return term.IsTerminal(int(input.Fd())) && term.IsTerminal(int(output.Fd()))
 }
 
 func PromptChoice(reader *bufio.Reader, output io.Writer, label, defaultValue string, allowed []string) (string, error) {
@@ -69,7 +75,7 @@ func PromptChoices(reader *bufio.Reader, output io.Writer, label, defaultValue s
 		return "", err
 	}
 	if PromptEnabled(output) {
-		return promptChoiceRadio(output, label, defaultValue, choices)
+		return promptChoiceRadio(context.Background(), os.Stdin, output, label, defaultValue, choices)
 	}
 	for {
 		fmt.Fprint(output, PromptLabel(output, label))
@@ -90,6 +96,59 @@ func PromptChoices(reader *bufio.Reader, output io.Writer, label, defaultValue s
 			}
 		}
 		fmt.Fprintf(output, "Choose one of: %s\n", strings.Join(choiceValues(choices), ", "))
+	}
+}
+
+func PromptChoicesFileContext(
+	ctx context.Context,
+	input *os.File,
+	reader *bufio.Reader,
+	output io.Writer,
+	label, defaultValue string,
+	choices []Choice,
+) (string, error) {
+	if len(choices) == 0 {
+		return "", errors.New("prompt choice requires at least one allowed value")
+	}
+	if err := validateChoices(choices); err != nil {
+		return "", err
+	}
+	if PromptEnabledFor(input, output) {
+		return promptChoiceRadio(ctx, input, output, label, defaultValue, choices)
+	}
+	for {
+		fmt.Fprint(output, PromptLabel(output, label))
+		if defaultValue != "" {
+			fmt.Fprintf(output, "[%s] ", defaultValue)
+		}
+		line, err := ReadLineFileContext(ctx, input, reader)
+		if err != nil && line == "" {
+			return "", err
+		}
+		value := strings.TrimSpace(line)
+		if value == "" {
+			value = defaultValue
+		}
+		for _, choice := range choices {
+			if choiceMatches(value, choice) {
+				return choice.Value, nil
+			}
+		}
+		fmt.Fprintf(output, "Choose one of: %s\n", strings.Join(choiceValues(choices), ", "))
+	}
+}
+
+func ReadLineFileContext(ctx context.Context, input *os.File, reader *bufio.Reader) (string, error) {
+	var line strings.Builder
+	for {
+		value, err := readByteFileContext(ctx, input, reader)
+		if err != nil {
+			return line.String(), err
+		}
+		line.WriteByte(value)
+		if value == '\n' {
+			return line.String(), nil
+		}
 	}
 }
 
@@ -128,15 +187,21 @@ func choiceValues(choices []Choice) []string {
 	return values
 }
 
-func promptChoiceRadio(output io.Writer, label, defaultValue string, choices []Choice) (string, error) {
+func promptChoiceRadio(
+	ctx context.Context,
+	inputFile *os.File,
+	output io.Writer,
+	label, defaultValue string,
+	choices []Choice,
+) (string, error) {
 	selected := choiceIndex(defaultValue, choices)
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	oldState, err := term.MakeRaw(int(inputFile.Fd()))
 	if err != nil {
 		return "", err
 	}
 	defer func() {
 		showPromptCursor(output)
-		_ = term.Restore(int(os.Stdin.Fd()), oldState)
+		_ = term.Restore(int(inputFile.Fd()), oldState)
 	}()
 	hidePromptCursor(output)
 
@@ -147,10 +212,10 @@ func promptChoiceRadio(output io.Writer, label, defaultValue string, choices []C
 		return "", err
 	}
 
-	input := bufio.NewReader(os.Stdin)
+	input := bufio.NewReader(inputFile)
 	for {
 		previous := selected
-		r, _, err := input.ReadRune()
+		r, err := readRuneContext(ctx, inputFile, input)
 		if err != nil {
 			return "", err
 		}
@@ -161,14 +226,14 @@ func promptChoiceRadio(output io.Writer, label, defaultValue string, choices []C
 		case r == 0x03:
 			return "", ErrPromptInterrupted
 		case r == 0x1b:
-			next, _, err := input.ReadRune()
+			next, err := readRuneContext(ctx, inputFile, input)
 			if err != nil {
 				return "", err
 			}
 			if next != '[' {
 				continue
 			}
-			arrow, _, err := input.ReadRune()
+			arrow, err := readRuneContext(ctx, inputFile, input)
 			if err != nil {
 				return "", err
 			}
@@ -212,6 +277,35 @@ func promptChoiceRadio(output io.Writer, label, defaultValue string, choices []C
 			}
 		}
 	}
+}
+
+func readRuneContext(ctx context.Context, input *os.File, reader *bufio.Reader) (rune, error) {
+	var encoded [utf8.UTFMax]byte
+	for length := 0; length < len(encoded); length++ {
+		value, err := readByteFileContext(ctx, input, reader)
+		if err != nil {
+			return 0, err
+		}
+		encoded[length] = value
+		if utf8.FullRune(encoded[:length+1]) {
+			decoded, _ := utf8.DecodeRune(encoded[:length+1])
+			return decoded, nil
+		}
+	}
+	return utf8.RuneError, nil
+}
+
+func readByteFileContext(ctx context.Context, input *os.File, reader *bufio.Reader) (byte, error) {
+	if reader.Buffered() == 0 {
+		if err := waitReadable(ctx, input); err != nil {
+			return 0, err
+		}
+	}
+	value, err := reader.ReadByte()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return 0, ctxErr
+	}
+	return value, err
 }
 
 func choiceIndex(defaultValue string, choices []Choice) int {

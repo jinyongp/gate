@@ -122,22 +122,15 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 	if err != nil {
 		return err
 	}
-	authorizationProbe, err := linuxCapabilityTool("true")
-	if err != nil {
-		return err
-	}
 	setupLock, err := linuxCapabilitySetupLock()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = setupLock.Close() }()
-	if err := authorizeLinuxCapabilitySudo(sudo, authorizationProbe); err != nil {
-		return &lowPortCapabilityError{
-			Code: "sudo_failed",
-			Err:  fmt.Errorf("authorize low-port capability setup: %w", err),
-		}
-	}
 	if err := linuxCapabilityCleanupHelpers(sudo); err != nil {
+		if linuxCapabilitySudoFailed(err) {
+			return err
+		}
 		return &lowPortCapabilityError{
 			Code: "capability_helper_cleanup",
 			Err:  fmt.Errorf("clean interrupted low-port capability helper: %w", err),
@@ -160,6 +153,9 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 	for len(remainingDirs) > 0 {
 		helper, createErr := linuxCapabilityCreateHelper(sudo, target, remainingDirs)
 		if createErr != nil {
+			if linuxCapabilitySudoFailed(createErr) {
+				return createErr
+			}
 			return &lowPortCapabilityError{
 				Code: "capability_helper_copy",
 				Err:  fmt.Errorf("prepare low-port capability helper: %w", createErr),
@@ -179,10 +175,8 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 			_ = linuxCapabilityRemoveHelper(sudo, helper.Path)
 			return identityErr
 		}
-		runErr := runLinuxCapabilitySudo(
+		runErr := runLinuxCapabilityAuthorizedSudo(
 			sudo,
-			"-n",
-			"--",
 			helper.Path,
 			lowPortCapabilityHelperName,
 			"--target",
@@ -198,6 +192,9 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 		cleanupErr := linuxCapabilityRemoveHelper(sudo, helper.Path)
 		if runErr == nil {
 			if cleanupErr != nil {
+				if linuxCapabilitySudoFailed(cleanupErr) {
+					return cleanupErr
+				}
 				return &lowPortCapabilityError{
 					Code: "capability_helper_cleanup",
 					Err:  fmt.Errorf("remove low-port capability helper: %w", cleanupErr),
@@ -207,6 +204,9 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 		}
 		message := runErr.Error()
 		if cleanupErr != nil {
+			if linuxCapabilitySudoFailed(cleanupErr) {
+				return cleanupErr
+			}
 			return &lowPortCapabilityError{
 				Code: "capability_helper_cleanup",
 				Err:  fmt.Errorf("remove failed low-port capability helper: %w", cleanupErr),
@@ -229,16 +229,64 @@ func (linuxLowPortCapabilityManager) Apply(target *lowPortCapabilityTarget) erro
 	}
 }
 
-func authorizeLinuxCapabilitySudo(sudo, probe string) error {
-	if err := runLinuxCapabilitySudo(sudo, "-n", "--", probe); err == nil {
-		return nil
-	}
-	return runLinuxCapabilitySudo(sudo, "-v")
-}
-
 func runLinuxCapabilitySudo(sudo string, args ...string) error {
 	_, err := runLinuxCapabilitySudoOutput(sudo, args...)
 	return err
+}
+
+func runLinuxCapabilityAuthorizedSudo(sudo string, command ...string) error {
+	_, err := runLinuxCapabilityAuthorizedSudoOutput(sudo, command...)
+	return err
+}
+
+func runLinuxCapabilityAuthorizedSudoOutput(sudo string, command ...string) (string, error) {
+	output, err := runLinuxCapabilitySudoOutput(
+		sudo,
+		append([]string{"-n", "--"}, command...)...,
+	)
+	if err == nil || !linuxCapabilitySudoNeedsAuthentication(err) {
+		return output, err
+	}
+	if authorizationErr := runLinuxCapabilitySudo(sudo, "-v"); authorizationErr != nil {
+		return "", &lowPortCapabilityError{
+			Code: "sudo_failed",
+			Err:  fmt.Errorf("sudo authorization failed: %w", authorizationErr),
+		}
+	}
+	output, err = runLinuxCapabilitySudoOutput(
+		sudo,
+		append([]string{"-n", "--"}, command...)...,
+	)
+	if linuxCapabilitySudoNeedsAuthentication(err) {
+		return "", &lowPortCapabilityError{
+			Code: "sudo_failed",
+			Err:  fmt.Errorf("sudo authorization was not accepted for the requested command: %w", err),
+		}
+	}
+	return output, err
+}
+
+func linuxCapabilitySudoNeedsAuthentication(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"password is required",
+		"no tty present",
+		"a terminal is required",
+		"authentication is required",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func linuxCapabilitySudoFailed(err error) bool {
+	var capabilityErr *lowPortCapabilityError
+	return errors.As(err, &capabilityErr) && capabilityErr.Code == "sudo_failed"
 }
 
 func runLinuxCapabilitySudoOutput(sudo string, args ...string) (string, error) {
@@ -248,6 +296,7 @@ func runLinuxCapabilitySudoOutput(sudo string, args ...string) (string, error) {
 
 func runLinuxCapabilityCommand(cmd *exec.Cmd) (string, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -302,8 +351,12 @@ func createLowPortCapabilityHelperCopy(
 			dir,
 			lowPortCapabilityHelperPrefix+strconv.Itoa(os.Getuid())+"-XXXXXXXX",
 		)
-		output, runErr := runLinuxCapabilitySudoOutput(sudo, "-n", "--", mktemp, template)
+		output, runErr := runLinuxCapabilityAuthorizedSudoOutput(sudo, mktemp, template)
 		if runErr != nil {
+			var capabilityErr *lowPortCapabilityError
+			if errors.As(runErr, &capabilityErr) && capabilityErr.Code == "sudo_failed" {
+				return nil, runErr
+			}
 			err = runErr
 			continue
 		}
@@ -312,11 +365,14 @@ func createLowPortCapabilityHelperCopy(
 			err = fmt.Errorf("mktemp returned an invalid helper path")
 			continue
 		}
-		if runErr := runLinuxCapabilitySudo(
-			sudo, "-n", "--", install, "-m", "0755", "--", target.operationPath(), path,
+		if runErr := runLinuxCapabilityAuthorizedSudo(
+			sudo, install, "-m", "0755", "--", target.operationPath(), path,
 		); runErr != nil {
 			if cleanupErr := removeLowPortCapabilityHelper(sudo, path); cleanupErr != nil {
 				return nil, cleanupErr
+			}
+			if linuxCapabilitySudoFailed(runErr) {
+				return nil, runErr
 			}
 			err = runErr
 			continue
@@ -405,7 +461,7 @@ func removeLowPortCapabilityHelper(sudo, path string) error {
 	if err != nil {
 		return err
 	}
-	return runLinuxCapabilitySudo(sudo, "-n", "--", rm, "-f", "--", path)
+	return runLinuxCapabilityAuthorizedSudo(sudo, rm, "-f", "--", path)
 }
 
 func acquireLowPortCapabilitySetupLock() (io.Closer, error) {

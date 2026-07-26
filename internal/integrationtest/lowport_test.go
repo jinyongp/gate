@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -19,6 +20,9 @@ const bindServiceCapability = uint64(0x400)
 func TestLinuxLowPortIntegration(t *testing.T) {
 	run := parseBooleanEnvironment(t, "GATE_RUN_LINUX_LOW_PORT_TEST")
 	required := parseBooleanEnvironment(t, "GATE_REQUIRE_LINUX_LOW_PORT_TEST")
+	if required && !run {
+		t.Fatal("GATE_REQUIRE_LINUX_LOW_PORT_TEST=1 requires GATE_RUN_LINUX_LOW_PORT_TEST=1")
+	}
 	if !run {
 		t.Skip("Linux low-port integration was not requested")
 	}
@@ -246,6 +250,25 @@ port = 49191
 	requireNotExists(t, shellResidue)
 	assertNoRootHelperResidue(t)
 	t.Log("setup recovery and both uninstall paths removed root helper residue")
+}
+
+func TestLinuxLowPortRequiredModeCannotSkip(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=^TestLinuxLowPortIntegration$", "-test.count=1") //nolint:gosec // fixed test subprocess
+	command.Env = append(
+		os.Environ(),
+		"GATE_RUN_LINUX_LOW_PORT_TEST=0",
+		"GATE_REQUIRE_LINUX_LOW_PORT_TEST=1",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatal("required low-port mode skipped successfully")
+	}
+	if !strings.Contains(
+		string(output),
+		"GATE_REQUIRE_LINUX_LOW_PORT_TEST=1 requires GATE_RUN_LINUX_LOW_PORT_TEST=1",
+	) {
+		t.Fatalf("unexpected required-mode failure:\n%s", output)
+	}
 }
 
 func parseBooleanEnvironment(t *testing.T, name string) bool {

@@ -38,6 +38,9 @@ func (OS) Run(ctx context.Context, command Command) error {
 	cmd.Stdout = command.Stdout
 	cmd.Stderr = command.Stderr
 	err := cmd.Run()
+	if err == nil {
+		return nil
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
