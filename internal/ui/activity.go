@@ -195,7 +195,7 @@ func (a *Activity) run(label string, frames []string, delay, interval time.Durat
 func (a *Activity) render(frame, label string, elapsed time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, _ = io.WriteString(a.w, "\r"+activityLine(a.w, frame, label, elapsed))
+	_, _ = io.WriteString(a.w, "\r\033[K"+activityLine(a.w, frame, label, elapsed))
 	a.wrote = true
 }
 

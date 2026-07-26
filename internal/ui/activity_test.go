@@ -178,6 +178,17 @@ func TestActivityShowsElapsedTimeWhileRunning(t *testing.T) {
 	}
 }
 
+func TestActivityClearsEachFrameBeforeRendering(t *testing.T) {
+	var buf bytes.Buffer
+	a := &Activity{w: &buf}
+	a.render("|", "checking repository", 990*time.Millisecond)
+	a.render("/", "checking repository", time.Second)
+	want := "\r\033[K| checking repository 990ms\r\033[K/ checking repository 1s"
+	if got := buf.String(); got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestFormatActivityDuration(t *testing.T) {
 	tests := []struct {
 		elapsed time.Duration
