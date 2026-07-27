@@ -45,6 +45,10 @@ func Tint(c lipgloss.TerminalColor, s string) string {
 	return lipgloss.NewStyle().Foreground(c).Render(s)
 }
 
+func FaintTint(c lipgloss.TerminalColor, s string) string {
+	return lipgloss.NewStyle().Foreground(c).Faint(true).Render(s)
+}
+
 func ColorEnabled(w io.Writer) bool {
 	return policy.ColorEnabled(w)
 }

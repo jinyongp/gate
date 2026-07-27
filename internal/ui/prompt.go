@@ -125,8 +125,10 @@ func promptConfirmKey(
 		return false, err
 	}
 	defer func() {
+		showPromptCursor(output)
 		_ = term.Restore(int(inputFile.Fd()), oldState)
 	}()
+	hidePromptCursor(output)
 
 	if _, err := fmt.Fprint(output, promptConfirmLabel(output, label, true)); err != nil {
 		return false, err
@@ -183,9 +185,14 @@ func promptEscapeSequenceContinues(
 func promptConfirmLabel(output io.Writer, label string, compact bool) string {
 	hint := "[Enter to continue; any other input cancels]"
 	if compact {
-		hint = "↵ continue · esc cancel"
-	}
-	if Enabled(output) {
+		hint = "ENTER continue · ESC cancel"
+		if Enabled(output) {
+			hint = FaintTint(Success, "ENTER") + " " +
+				Dim.Render("continue ·") + " " +
+				FaintTint(Danger, "ESC") + " " +
+				Dim.Render("cancel")
+		}
+	} else if Enabled(output) {
 		hint = Dim.Render(hint)
 	}
 	if compact {

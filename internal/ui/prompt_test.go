@@ -86,8 +86,47 @@ func TestPromptConfirmContextStopsBeforePromptWhenCancelled(t *testing.T) {
 }
 
 func TestPromptConfirmUsesCompactTerminalHint(t *testing.T) {
-	if got := promptConfirmLabel(&bytes.Buffer{}, "Continue?", true); got != "› Continue?  ↵ continue · esc cancel" {
+	if got := promptConfirmLabel(&bytes.Buffer{}, "Continue?", true); got != "› Continue?  ENTER continue · ESC cancel" {
 		t.Fatalf("label = %q", got)
+	}
+}
+
+func TestPromptConfirmRestoresCursorAndTerminalAfterCancellation(t *testing.T) {
+	primary, terminal, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = primary.Close()
+		_ = terminal.Close()
+	})
+	before, err := term.GetState(int(terminal.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var output bytes.Buffer
+	_, err = promptConfirmKey(
+		ctx,
+		terminal,
+		bufio.NewReader(terminal),
+		&output,
+		"Continue?",
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if got := output.String(); !strings.HasPrefix(got, "\x1b[?25l") ||
+		!strings.HasSuffix(got, "\x1b[?25h") {
+		t.Fatalf("cursor lifecycle output = %q", got)
+	}
+	after, err := term.GetState(int(terminal.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *before != *after {
+		t.Fatal("terminal state was not restored after cancellation")
 	}
 }
 
