@@ -76,7 +76,7 @@ func Upgrade(args []string, stdout, stderr io.Writer) int {
 		activity.Stop()
 		return fail(stderr, false, ExitError, "upgrade_check", "unable to check latest version: "+err.Error())
 	}
-	activity.Complete()
+	activity.Complete("checked latest release")
 
 	if latestTag != "" {
 		if current := normalizedVersion(currentVersion); current != "" && current != "dev" {
@@ -140,10 +140,10 @@ func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVe
 	}
 
 	if isHomebrewGatePath(previousExecutable) {
-		if err := runUpgradeCommand(stderr, "updating Homebrew taps", "brew update", upgradeHomebrewUpdateFunc(ctx)); err != nil {
+		if err := runUpgradeCommand(stderr, "updating Homebrew taps", "updated Homebrew taps", "brew update", upgradeHomebrewUpdateFunc(ctx)); err != nil {
 			return upgradeInstallResult{}, err
 		}
-		if err := runUpgradeCommand(stderr, "upgrading Homebrew package", "brew upgrade jinyongp/tap/gate", upgradeHomebrewCommandFunc(ctx)); err != nil {
+		if err := runUpgradeCommand(stderr, "upgrading Homebrew package", "upgraded Homebrew package", "brew upgrade jinyongp/tap/gate", upgradeHomebrewCommandFunc(ctx)); err != nil {
 			return upgradeInstallResult{}, err
 		}
 		upgradedLink, err := homebrewLinkedGatePath(previousExecutable)
@@ -185,7 +185,7 @@ func runUpgradeInstall(ctx context.Context, stdout, stderr io.Writer, expectedVe
 		_ = os.Remove(scriptPath)
 	}()
 
-	if err := runUpgradeCommand(stderr, "installing gate", "install script", upgradeInstallScriptCommandFunc(ctx, scriptPath, previousExecutable, expectedVersion)); err != nil {
+	if err := runUpgradeCommand(stderr, "installing gate", "installed gate", "install script", upgradeInstallScriptCommandFunc(ctx, scriptPath, previousExecutable, expectedVersion)); err != nil {
 		return upgradeInstallResult{}, err
 	}
 	upgradedTarget, err := lowPortCapabilityTargetFunc(previousExecutable)
@@ -265,6 +265,7 @@ func preserveUpgradeLowPortAccess(
 		if err := runUpgradeCommand(
 			stderr,
 			"restoring low-port access",
+			"restored low-port access",
 			"gate daemon setup --yes",
 			upgradeLowPortSetupCommandFunc(ctx, target.pinnedExecutionPath()),
 		); err != nil {
@@ -330,7 +331,7 @@ func verifyUpgradedVersion(ctx context.Context, path, expectedVersion string) er
 	return nil
 }
 
-func runUpgradeCommand(stderr io.Writer, label, action string, cmd *exec.Cmd) error {
+func runUpgradeCommand(stderr io.Writer, label, doneLabel, action string, cmd *exec.Cmd) error {
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -340,7 +341,7 @@ func runUpgradeCommand(stderr io.Writer, label, action string, cmd *exec.Cmd) er
 		activity.Stop()
 		return upgradeCommandError(action, err, output.String())
 	}
-	activity.Complete()
+	activity.Complete(doneLabel)
 	return nil
 }
 
@@ -357,7 +358,7 @@ func prepareUpgradeScript(ctx context.Context, stderr io.Writer, expectedVersion
 	completed := false
 	defer func() {
 		if completed {
-			activity.Complete()
+			activity.Complete("downloaded installer")
 		} else {
 			activity.Stop()
 		}
@@ -524,7 +525,7 @@ func restartDaemonAfterUpgrade(executable string, st daemon.Status, stdout, stde
 		printUpgradeDaemonRestartWarning(stderr, "failed to reload daemon routes after upgrade: "+err.Error())
 		return ExitOK
 	}
-	activity.Complete()
+	activity.Complete("restarted daemon")
 	printDaemonRunResult(stdout, "daemon restarted", result.PID, httpsAddr, httpAddr)
 	return ExitOK
 }

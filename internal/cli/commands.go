@@ -871,7 +871,7 @@ func restoreProjectServiceRemoval(path string, originalConfig []byte, mode os.Fi
 	}
 	if hadReservation {
 		errs = append(errs, restoreReservations([]projectReservation{{Key: key, Reservation: res}}, daemonScope{}, stderr, jsonOut))
-	} else if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes"); err != nil {
+	} else if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes", "restored routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
@@ -891,7 +891,7 @@ func restoreProjectAdd(path string, originalConfig []byte, mode os.FileMode, key
 		}); err != nil {
 			errs = append(errs, fmt.Errorf("restore registry: %w", err))
 		}
-		if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes"); err != nil {
+		if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes", "restored routes"); err != nil {
 			errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 		}
 	}
@@ -936,7 +936,7 @@ func rollbackStandaloneAdd(key string, previous registry.Reservation, hadPreviou
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("remove registry: %w", err))
 	}
-	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes"); err != nil {
+	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes", "restored routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
@@ -958,14 +958,14 @@ func restoreReservations(removed []projectReservation, scope daemonScope, stderr
 	if len(refs) == 0 && scope.Kind != "" {
 		refs = []listenerDaemonRef{defaultListenerRef()}
 	}
-	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes"); err != nil {
+	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "restoring routes", "restored routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
 }
 
 func reloadListenerRoutes(refs []listenerDaemonRef, stderr io.Writer, jsonOut bool) int {
-	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "reloading routes"); err != nil {
+	if err := setListenerRoutesForRefsWithActivity(refs, stderr, jsonOut, "reloading routes", "reloaded routes"); err != nil {
 		var aliasConflict *exposureAliasConflictError
 		if errors.As(err, &aliasConflict) {
 			return fail(stderr, jsonOut, ExitConflict, "domain_conflict", aliasConflict.Error())
@@ -975,20 +975,20 @@ func reloadListenerRoutes(refs []listenerDaemonRef, stderr io.Writer, jsonOut bo
 	return ExitOK
 }
 
-func setListenerRoutesWithActivity(ref listenerDaemonRef, stderr io.Writer, jsonOut bool, label string) error {
+func setListenerRoutesWithActivity(ref listenerDaemonRef, stderr io.Writer, jsonOut bool, label, doneLabel string) error {
 	activity := startActivity(stderr, jsonOut, label)
 	err := setListenerRoutesForRef(ref)
 	if err != nil {
 		activity.Stop()
 	} else {
-		activity.Complete()
+		activity.Complete(doneLabel)
 	}
 	return err
 }
 
-func setListenerRoutesForRefsWithActivity(refs []listenerDaemonRef, stderr io.Writer, jsonOut bool, label string) error {
+func setListenerRoutesForRefsWithActivity(refs []listenerDaemonRef, stderr io.Writer, jsonOut bool, label, doneLabel string) error {
 	for _, ref := range refs {
-		if err := setListenerRoutesWithActivity(ref, stderr, jsonOut, label); err != nil {
+		if err := setListenerRoutesWithActivity(ref, stderr, jsonOut, label, doneLabel); err != nil {
 			return err
 		}
 	}
@@ -1039,15 +1039,15 @@ func listenerRefsForReservations(reservations []projectReservation) []listenerDa
 
 func ensureDomainDNS(domain, mode string, stderr io.Writer, jsonOut bool) error {
 	provider := selectDNSProvider(domain, mode)
-	return runDomainDNS(provider, domain, stderr, jsonOut, "updating DNS", provider.Ensure)
+	return runDomainDNS(provider, domain, stderr, jsonOut, "updating DNS", "updated DNS", provider.Ensure)
 }
 
 func removeDomainDNS(domain, mode string, stderr io.Writer, jsonOut bool) error {
 	provider := selectDNSProvider(domain, mode)
-	return runDomainDNS(provider, domain, stderr, jsonOut, "updating DNS", provider.Remove)
+	return runDomainDNS(provider, domain, stderr, jsonOut, "updating DNS", "updated DNS", provider.Remove)
 }
 
-func runDomainDNS(provider dns.Provider, domain string, stderr io.Writer, jsonOut bool, label string, fn func(string) error) error {
+func runDomainDNS(provider dns.Provider, domain string, stderr io.Writer, jsonOut bool, label, doneLabel string, fn func(string) error) error {
 	if hosts, ok := provider.(dns.Hosts); ok && hosts.Path == "/etc/hosts" && os.Getenv("GATE_ISOLATED_ROOT") != "" {
 		return errors.New("isolated gate state cannot mutate the shared system hosts file; use a .localhost domain or run without GATE_ISOLATED_ROOT")
 	}
@@ -1059,7 +1059,7 @@ func runDomainDNS(provider dns.Provider, domain string, stderr io.Writer, jsonOu
 	if err != nil {
 		activity.Stop()
 	} else {
-		activity.Complete()
+		activity.Complete(doneLabel)
 	}
 	return err
 }

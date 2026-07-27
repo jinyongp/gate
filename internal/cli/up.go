@@ -426,7 +426,7 @@ func rollbackCurrentProjectUp(previous, pruned []projectReservation, createdKeys
 		errs = append(errs, fmt.Errorf("restore registry: %w", err))
 	}
 	errs = append(errs, reconcileRollbackDNS(ensured, append(append([]projectReservation{}, previous...), pruned...), stderr, jsonOut))
-	if err := setListenerRoutesForRefsWithActivity(uniqueListenerRefs(refs), stderr, jsonOut, "restoring routes"); err != nil {
+	if err := setListenerRoutesForRefsWithActivity(uniqueListenerRefs(refs), stderr, jsonOut, "restoring routes", "restored routes"); err != nil {
 		errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 	}
 	return errors.Join(errs...)
@@ -451,7 +451,7 @@ func rollbackScopedUp(previous []projectReservation, ensured []registry.Reservat
 			refs = []listenerDaemonRef{defaultListenerRef()}
 		}
 		refs = append(refs, extraRefs...)
-		if err := setListenerRoutesForRefsWithActivity(uniqueListenerRefs(refs), stderr, jsonOut, "restoring routes"); err != nil {
+		if err := setListenerRoutesForRefsWithActivity(uniqueListenerRefs(refs), stderr, jsonOut, "restoring routes", "restored routes"); err != nil {
 			errs = append(errs, fmt.Errorf("restore daemon routes: %w", err))
 		}
 	}
@@ -479,7 +479,7 @@ func reloadOtherListenerRefs(refs []listenerDaemonRef, current listenerDaemonRef
 		if ref.fileKey() == current.fileKey() {
 			continue
 		}
-		if err := setListenerRoutesWithActivity(ref, stderr, jsonOut, "reloading routes"); err != nil {
+		if err := setListenerRoutesWithActivity(ref, stderr, jsonOut, "reloading routes", "reloaded routes"); err != nil {
 			return err
 		}
 	}
@@ -588,7 +588,7 @@ func reloadUpRoutes(ref listenerDaemonRef, startDaemon bool, pair listener.Pair,
 				activity.Stop()
 				return reloadUpResult{Code: failDaemonStart(stderr, jsonOut, result, pair, ref, "daemon_start")}
 			}
-			activity.Complete()
+			activity.Complete("started daemon")
 			startedPID = result.PID
 		}
 	}
@@ -694,7 +694,7 @@ func Down(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, ref := range reloadRefs {
 		if daemonClientForRef(ref).IsRunning() {
-			if err := setListenerRoutesWithActivity(ref, stderr, *jsonOut, "reloading routes"); err != nil {
+			if err := setListenerRoutesWithActivity(ref, stderr, *jsonOut, "reloading routes", "reloaded routes"); err != nil {
 				rollbackErr := restoreProjectDNS(reservationsFromRegistry(deactivated), stderr, *jsonOut)
 				rollbackErr = errors.Join(rollbackErr, restoreReservations(previous, scope, stderr, *jsonOut))
 				if rollbackErr != nil {
@@ -775,7 +775,7 @@ func downExistingScope(sel registryScopeSelection, stdout, stderr io.Writer, jso
 		if !daemonClientForRef(ref).IsRunning() {
 			continue
 		}
-		if err := setListenerRoutesWithActivity(ref, stderr, jsonOut, "reloading routes"); err != nil {
+		if err := setListenerRoutesWithActivity(ref, stderr, jsonOut, "reloading routes", "reloaded routes"); err != nil {
 			rollbackErr := restoreProjectDNS(reservationsFromRegistry(deactivated), stderr, jsonOut)
 			rollbackErr = errors.Join(rollbackErr, restoreReservations(previous, scope, stderr, jsonOut))
 			if rollbackErr != nil {

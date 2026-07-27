@@ -185,7 +185,7 @@ func TestTrustStopsActivityBeforeTrustStoreCall(t *testing.T) {
 	oldTrust := trustAuthorityFunc
 	t.Cleanup(func() { trustAuthorityFunc = oldTrust })
 	trustAuthorityFunc = func(*ca.CA) error {
-		if got := lastEvent(*events); got != "complete:preparing trust store" {
+		if got := lastEvent(*events); got != "complete:prepared trust store" {
 			t.Fatalf("trust store called before activity stopped; events=%v", *events)
 		}
 		return nil
@@ -207,7 +207,7 @@ func TestUntrustStopsActivityBeforeTrustStoreCall(t *testing.T) {
 	oldUntrust := untrustAuthorityFunc
 	t.Cleanup(func() { untrustAuthorityFunc = oldUntrust })
 	untrustAuthorityFunc = func(*ca.CA) error {
-		if got := lastEvent(*events); got != "complete:preparing trust store" {
+		if got := lastEvent(*events); got != "complete:prepared trust store" {
 			t.Fatalf("trust store called before activity stopped; events=%v", *events)
 		}
 		return nil

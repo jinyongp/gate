@@ -31,7 +31,6 @@ type ActivityOptions struct {
 
 type Activity struct {
 	w        io.Writer
-	label    string
 	doneMark string
 	stopc    chan struct{}
 	donec    chan struct{}
@@ -48,7 +47,6 @@ type Activity struct {
 type ActivityStatus struct {
 	activity *Activity
 	w        io.Writer
-	label    string
 	enabled  bool
 	finish   sync.Once
 }
@@ -71,7 +69,7 @@ func StartActivity(w io.Writer, label string, opts ActivityOptions) *Activity {
 	if now == nil {
 		now = time.Now
 	}
-	a := &Activity{w: w, label: label, now: now, started: now()}
+	a := &Activity{w: w, now: now, started: now()}
 	if !opts.Enabled || w == nil {
 		return a
 	}
@@ -102,7 +100,6 @@ func StartActivityStatus(w io.Writer, label string, opts ActivityOptions) *Activ
 	return &ActivityStatus{
 		activity: activity,
 		w:        w,
-		label:    label,
 		enabled:  activity.enabled,
 	}
 }
@@ -114,13 +111,13 @@ func (status *ActivityStatus) Stop() {
 	status.finish.Do(status.activity.Stop)
 }
 
-func (status *ActivityStatus) Complete() {
+func (status *ActivityStatus) Complete(doneLabel string) {
 	if status == nil {
 		return
 	}
 	status.finish.Do(func() {
 		if status.enabled {
-			status.activity.Complete()
+			status.activity.Complete(doneLabel)
 			status.activity.mu.Lock()
 			wrote := status.activity.wrote
 			doneMark := status.activity.doneMark
@@ -128,26 +125,26 @@ func (status *ActivityStatus) Complete() {
 			if !wrote {
 				_, _ = io.WriteString(
 					status.w,
-					activityLine(status.w, doneMark, status.label, status.activity.elapsed())+"\n",
+					activityLine(status.w, doneMark, doneLabel, status.activity.elapsed())+"\n",
 				)
 			}
 			return
 		}
 		NewConsole(status.w, status.w).StatusOK(
-			status.label + " " + activityElapsed(status.w, status.activity.elapsed()),
+			doneLabel + " " + activityElapsed(status.w, status.activity.elapsed()),
 		)
 	})
 }
 
 func (a *Activity) Stop() {
-	a.finish(false)
+	a.finish(false, "")
 }
 
-func (a *Activity) Complete() {
-	a.finish(true)
+func (a *Activity) Complete(doneLabel string) {
+	a.finish(true, doneLabel)
 }
 
-func (a *Activity) finish(complete bool) {
+func (a *Activity) finish(complete bool, doneLabel string) {
 	if a == nil || !a.enabled {
 		return
 	}
@@ -160,7 +157,7 @@ func (a *Activity) finish(complete bool) {
 			if complete {
 				_, _ = io.WriteString(
 					a.w,
-					"\r\033[K"+activityLine(a.w, a.doneMark, a.label, a.elapsed())+"\n",
+					"\r\033[K"+activityLine(a.w, a.doneMark, doneLabel, a.elapsed())+"\n",
 				)
 			} else {
 				_, _ = io.WriteString(a.w, "\r\033[K")

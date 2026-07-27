@@ -11,50 +11,58 @@ import (
 )
 
 type checkStep struct {
-	label string
-	run   func(context.Context, *Service) error
+	label     string
+	doneLabel string
+	run       func(context.Context, *Service) error
 }
 
 func (service *Service) check(ctx context.Context) error {
 	steps := []checkStep{
 		{
-			label: "checking documentation boundaries",
+			label:     "checking documentation boundaries",
+			doneLabel: "checked documentation boundaries",
 			run: func(ctx context.Context, child *Service) error {
 				return child.docsCheck(ctx)
 			},
 		},
 		{
-			label: "checking Go formatting",
+			label:     "checking Go formatting",
+			doneLabel: "checked Go formatting",
 			run: func(ctx context.Context, child *Service) error {
 				return child.formatCheck(ctx)
 			},
 		},
 		{
-			label: "running Go vet",
+			label:     "running Go vet",
+			doneLabel: "completed Go vet",
 			run: func(ctx context.Context, child *Service) error {
 				return child.stream(ctx, runner.Command{Name: "go", Args: []string{"vet", "./..."}})
 			},
 		},
 		{
-			label: "running Go tests and coverage",
+			label:     "running Go tests and coverage",
+			doneLabel: "completed Go tests and coverage",
 			run: func(ctx context.Context, child *Service) error {
 				return child.goTest(ctx, true, nil)
 			},
 		},
 		{
-			label: "running Node checks",
+			label:     "running Node checks",
+			doneLabel: "completed Node checks",
 			run: func(ctx context.Context, child *Service) error {
 				return child.stream(ctx, runner.Command{Name: "pnpm", Args: []string{"node:check"}})
 			},
 		},
 		{
-			label: "linting Go for Darwin and Linux",
+			label:     "linting Go for Darwin and Linux",
+			doneLabel: "linted Go for Darwin and Linux",
 			run: func(ctx context.Context, child *Service) error {
 				return child.lint(ctx, false, nil)
 			},
 		},
 		{
-			label: "scanning Go vulnerabilities",
+			label:     "scanning Go vulnerabilities",
+			doneLabel: "scanned Go vulnerabilities",
 			run: func(ctx context.Context, child *Service) error {
 				return child.stream(ctx, runner.Command{
 					Name: "go",
@@ -63,7 +71,8 @@ func (service *Service) check(ctx context.Context) error {
 			},
 		},
 		{
-			label: "checking scripts and workflows",
+			label:     "checking scripts and workflows",
+			doneLabel: "checked scripts and workflows",
 			run: func(ctx context.Context, child *Service) error {
 				return child.scriptsCheck(ctx)
 			},
@@ -80,7 +89,7 @@ func (service *Service) check(ctx context.Context) error {
 		child.Err = &output
 		err := step.run(ctx, &child)
 		if err == nil {
-			status.Complete()
+			status.Complete(step.doneLabel)
 			continue
 		}
 		status.Stop()

@@ -205,7 +205,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		}
 		return fmt.Errorf("prepare GitHub release dispatch: %w", err)
 	}
-	dispatchAccessStatus.Complete()
+	dispatchAccessStatus.Complete("checked GitHub release access")
 
 	if err := service.Check(ctx); err != nil {
 		if ctx.Err() != nil {
@@ -242,7 +242,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		}
 		return fmt.Errorf("create local tag %s: %w", resolvedTag, err)
 	}
-	tagStatus.Complete()
+	tagStatus.Complete("created release tag " + resolvedTag)
 	if ctx.Err() != nil {
 		if cleanupErr := service.cleanupTag(ctx, resolvedTag, createdTagObject); cleanupErr != nil {
 			service.console.Warning("interrupted tag cleanup failed; local tag may remain: " + resolvedTag)
@@ -271,7 +271,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 		}
 		return fmt.Errorf("push failed; removed the local tag created by this release attempt: %s", resolvedTag)
 	}
-	pushStatus.Complete()
+	pushStatus.Complete("pushed main and " + resolvedTag)
 	dispatchStatus := service.startActivityStatus("dispatching release workflow for " + resolvedTag)
 	if err := service.DispatchRelease(
 		ctx,
@@ -305,7 +305,7 @@ func (service *Service) execute(ctx context.Context, options Options) error {
 			),
 		)
 	}
-	dispatchStatus.Complete()
+	dispatchStatus.Complete("dispatched release workflow for " + resolvedTag)
 	return nil
 }
 

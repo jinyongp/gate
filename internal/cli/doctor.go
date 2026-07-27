@@ -70,7 +70,7 @@ func Doctor(args []string, stdout, stderr io.Writer) int {
 		report.Issues = []doctorIssue{}
 	}
 	if activity != nil {
-		activity.Complete()
+		activity.Complete("repaired local state")
 	}
 	report.OK = doctorReportOK(report)
 	if report.OK {

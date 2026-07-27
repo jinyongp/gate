@@ -265,8 +265,8 @@ func TestCheckUsesActivityLabelsAndPreservesFailureDetail(t *testing.T) {
 	if code := service.Run(context.Background(), []string{"check"}); code != 23 {
 		t.Fatalf("Run = %d", code)
 	}
-	if !strings.Contains(out.String(), "ok: checking documentation boundaries") ||
-		!strings.Contains(out.String(), "ok: checking Go formatting") ||
+	if !strings.Contains(out.String(), "ok: checked documentation boundaries") ||
+		!strings.Contains(out.String(), "ok: checked Go formatting") ||
 		strings.Contains(out.String(), "running Go tests") ||
 		strings.Contains(out.String(), "[1/8]") {
 		t.Fatalf("stdout = %q", out.String())
@@ -291,14 +291,14 @@ func TestCheckSuccessShowsAllActivityStages(t *testing.T) {
 		t.Fatalf("Run = %d", code)
 	}
 	for _, label := range []string{
-		"checking documentation boundaries",
-		"checking Go formatting",
-		"running Go vet",
-		"running Go tests and coverage",
-		"running Node checks",
-		"linting Go for Darwin and Linux",
-		"scanning Go vulnerabilities",
-		"checking scripts and workflows",
+		"checked documentation boundaries",
+		"checked Go formatting",
+		"completed Go vet",
+		"completed Go tests and coverage",
+		"completed Node checks",
+		"linted Go for Darwin and Linux",
+		"scanned Go vulnerabilities",
+		"checked scripts and workflows",
 	} {
 		if !strings.Contains(out.String(), "ok: "+label) {
 			t.Fatalf("missing stage %q in %q", label, out.String())

@@ -74,10 +74,10 @@ func TestServicePushesBranchAndAnnotatedTagAtomically(t *testing.T) {
 		t.Fatalf("tag object = %q", tagObject)
 	}
 	for _, want := range []string{
-		"ok: checking GitHub release access",
-		"ok: creating release tag v1.0.1",
-		"ok: pushing main and v1.0.1",
-		"ok: dispatching release workflow for v1.0.1",
+		"ok: checked GitHub release access",
+		"ok: created release tag v1.0.1",
+		"ok: pushed main and v1.0.1",
+		"ok: dispatched release workflow for v1.0.1",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("stdout = %q, want %q", out.String(), want)
@@ -85,7 +85,7 @@ func TestServicePushesBranchAndAnnotatedTagAtomically(t *testing.T) {
 	}
 	if !strings.Contains(
 		out.String(),
-		"Resolved version\n  Tag: v1.0.1 (from patch bump)\n\nok: checking GitHub release access",
+		"Resolved version\n  Tag: v1.0.1 (from patch bump)\n\nok: checked GitHub release access",
 	) {
 		t.Fatalf("resolved version is not separated from activity output: %q", out.String())
 	}

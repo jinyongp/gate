@@ -72,8 +72,8 @@ func (a recordingActivity) Stop() {
 	*a.events = append(*a.events, "stop:"+a.label)
 }
 
-func (a recordingActivity) Complete() {
-	*a.events = append(*a.events, "complete:"+a.label)
+func (a recordingActivity) Complete(label string) {
+	*a.events = append(*a.events, "complete:"+label)
 }
 
 func recordActivities(t *testing.T) *[]string {

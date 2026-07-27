@@ -342,7 +342,7 @@ func TestIsolatedStateRefusesSystemHostsMutation(t *testing.T) {
 	isolate(t)
 	t.Setenv("GATE_ISOLATED_ROOT", t.TempDir())
 	called := false
-	err := runDomainDNS(dns.Hosts{Path: "/etc/hosts"}, "demo.test", io.Discard, true, "updating DNS", func(string) error {
+	err := runDomainDNS(dns.Hosts{Path: "/etc/hosts"}, "demo.test", io.Discard, true, "updating DNS", "updated DNS", func(string) error {
 		called = true
 		return nil
 	})

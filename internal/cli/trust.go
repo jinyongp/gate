@@ -55,7 +55,7 @@ func Trust(args []string, stdout, stderr io.Writer) int {
 		activity.Stop()
 		return fail(stderr, false, ExitError, "ca", err.Error())
 	}
-	activity.Complete()
+	activity.Complete("prepared trust store")
 	if err := trustAuthorityFunc(authority); err != nil {
 		if os.IsPermission(err) {
 			return fail(stderr, false, ExitPerm, "permission", err.Error())
@@ -89,7 +89,7 @@ func Untrust(args []string, stdout, stderr io.Writer) int {
 		activity.Stop()
 		return fail(stderr, false, ExitError, "ca", err.Error())
 	}
-	activity.Complete()
+	activity.Complete("prepared trust store")
 	if err := untrustAuthorityFunc(authority); err != nil {
 		if os.IsPermission(err) {
 			return fail(stderr, false, ExitPerm, "permission", err.Error())
@@ -277,7 +277,7 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 		applyExposeSession(ref.String(), nil, res.Domain, routeAuth)
 		txn.routesChanged = true
 		preRecords := upsertExposureRecord(previousRecords, provisional)
-		if err := reloadExposureRoutesForRef(ref, preRecords, true, stderr, *jsonOut, "applying exposure policy"); err != nil {
+		if err := reloadExposureRoutesForRef(ref, preRecords, true, stderr, *jsonOut, "applying exposure policy", "applied exposure policy"); err != nil {
 			if rollbackErr := txn.rollback(); rollbackErr != nil {
 				_ = provider.Close()
 				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
@@ -312,7 +312,7 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			activity.Stop()
 		} else {
-			activity.Complete()
+			activity.Complete("started tunnel")
 		}
 	}
 	if err != nil {
@@ -339,7 +339,7 @@ func Expose(args []string, stdout, stderr io.Writer) int {
 	if client.IsRunning() {
 		txn.routesChanged = true
 		finalRecords := upsertExposureRecord(previousRecords, record)
-		if err := reloadExposureRoutesForRef(ref, finalRecords, external, stderr, *jsonOut, "reloading routes"); err != nil {
+		if err := reloadExposureRoutesForRef(ref, finalRecords, external, stderr, *jsonOut, "reloading routes", "reloaded routes"); err != nil {
 			cleanupExposureProvider(provider, record)
 			if rollbackErr := txn.rollback(); rollbackErr != nil {
 				return fail(stderr, *jsonOut, ExitError, "rollback_failed", "expose failed and rollback failed: "+rollbackErr.Error())
@@ -801,7 +801,7 @@ func refreshExistingExposure(provider expose.Provider, existing expose.Record, p
 	}
 	applyExposeSession(ref.String(), nil, res.Domain, routeAuth)
 	nextRecords := upsertExposureRecord(previousRecords, updated)
-	if err := reloadExposureRoutesForRef(ref, nextRecords, true, stderr, jsonOut, "refreshing exposure policy"); err != nil {
+	if err := reloadExposureRoutesForRef(ref, nextRecords, true, stderr, jsonOut, "refreshing exposure policy", "refreshed exposure policy"); err != nil {
 		if rollbackErr := txn.rollback(); rollbackErr != nil {
 			return fail(stderr, jsonOut, ExitError, "rollback_failed", "expose refresh failed and rollback failed: "+rollbackErr.Error())
 		}
@@ -838,14 +838,14 @@ func (t exposureTransaction) rollback() error {
 		restoreExposeSession(t.ref.String(), t.previousSession)
 	}
 	if t.routesChanged {
-		if err := reloadExposureRoutesForRef(t.ref, t.previousRecords, false, t.stderr, t.jsonOut, "restoring routes"); err != nil {
+		if err := reloadExposureRoutesForRef(t.ref, t.previousRecords, false, t.stderr, t.jsonOut, "restoring routes", "restored routes"); err != nil {
 			errs = append(errs, fmt.Errorf("restore routes: %w", err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func reloadExposureRoutesForRef(ref listenerDaemonRef, records []expose.Record, requireRunning bool, stderr io.Writer, jsonOut bool, label string) error {
+func reloadExposureRoutesForRef(ref listenerDaemonRef, records []expose.Record, requireRunning bool, stderr io.Writer, jsonOut bool, label, doneLabel string) error {
 	if requireRunning && !daemonClientForRef(ref).IsRunning() {
 		return errors.New("listener daemon stopped before exposure policy was applied")
 	}
@@ -862,7 +862,7 @@ func reloadExposureRoutesForRef(ref listenerDaemonRef, records []expose.Record, 
 	if err != nil {
 		activity.Stop()
 	} else {
-		activity.Complete()
+		activity.Complete(doneLabel)
 	}
 	return err
 }
@@ -1126,7 +1126,7 @@ func reloadExposureRecordsTransitionBlocked(previous, next []expose.Record, bloc
 				}
 				return err
 			}
-			activity.Complete()
+			activity.Complete("reloaded routes")
 			applied = append(applied, ref)
 		}
 		return nil

@@ -663,7 +663,7 @@ func TestUpgradeInstallScriptTargetsCurrentExecutableDir(t *testing.T) {
 
 func TestRunUpgradeCommandReportsCapturedOutputOnFailure(t *testing.T) {
 	var errb bytes.Buffer
-	err := runUpgradeCommand(&errb, "upgrading test package", "test upgrade", helperUpgradeCommand(t, "hidden failure detail", 7))
+	err := runUpgradeCommand(&errb, "upgrading test package", "upgraded test package", "test upgrade", helperUpgradeCommand(t, "hidden failure detail", 7))
 	if err == nil {
 		t.Fatal("runUpgradeCommand should fail")
 	}
@@ -843,7 +843,7 @@ func TestPrepareUpgradeScriptStopsActivityBeforeInstallerHandoff(t *testing.T) {
 		t.Fatalf("prepareUpgradeScript: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(path) })
-	if got := lastEvent(*events); got != "complete:downloading installer" {
+	if got := lastEvent(*events); got != "complete:downloaded installer" {
 		t.Fatalf("installer handoff happened before activity stopped; events=%v", *events)
 	}
 	info, err := os.Stat(path)

@@ -113,10 +113,10 @@ func TestStartActivityCompleteKeepsDoneLine(t *testing.T) {
 	for time.Now().Before(deadline) && !strings.Contains(buf.String(), "work") {
 		time.Sleep(time.Millisecond)
 	}
-	a.Complete()
-	a.Complete()
+	a.Complete("worked")
+	a.Complete("ignored")
 	got := buf.String()
-	if !strings.Contains(got, "\r\033[Kok work ") ||
+	if !strings.Contains(got, "\r\033[Kok worked ") ||
 		!strings.HasSuffix(got, "\n") {
 		t.Fatalf("activity did not leave completion line: %q", got)
 	}
@@ -128,9 +128,9 @@ func TestActivityStatusFallsBackToStableCompletionLine(t *testing.T) {
 		Enabled: false,
 		Now:     activityTestClock(1200 * time.Millisecond),
 	})
-	status.Complete()
-	status.Complete()
-	if got := buf.String(); got != "ok: checking repository 1.2s\n" {
+	status.Complete("checked repository")
+	status.Complete("ignored")
+	if got := buf.String(); got != "ok: checked repository 1.2s\n" {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -143,8 +143,8 @@ func TestActivityStatusShowsFastTerminalCompletion(t *testing.T) {
 		Renderer: ActivityASCII,
 		Now:      activityTestClock(1200 * time.Millisecond),
 	})
-	status.Complete()
-	if got := buf.String(); got != "ok checking repository 1.2s\n" {
+	status.Complete("checked repository")
+	if got := buf.String(); got != "ok checked repository 1.2s\n" {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -153,7 +153,7 @@ func TestActivityStatusStopSuppressesFallback(t *testing.T) {
 	var buf bytes.Buffer
 	status := StartActivityStatus(&buf, "checking repository", ActivityOptions{Enabled: false})
 	status.Stop()
-	status.Complete()
+	status.Complete("checked repository")
 	if buf.Len() != 0 {
 		t.Fatalf("output = %q", buf.String())
 	}
