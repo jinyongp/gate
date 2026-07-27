@@ -91,6 +91,7 @@ func StartActivity(w io.Writer, label string, opts ActivityOptions) *Activity {
 	a.doneMark = activityDoneMarker(opts.Renderer)
 	a.stopc = make(chan struct{})
 	a.donec = make(chan struct{})
+	hideCursor(a.w)
 	go a.run(label, frames, delay, interval)
 	return a
 }
@@ -117,17 +118,7 @@ func (status *ActivityStatus) Complete(doneLabel string) {
 	}
 	status.finish.Do(func() {
 		if status.enabled {
-			status.activity.Complete(doneLabel)
-			status.activity.mu.Lock()
-			wrote := status.activity.wrote
-			doneMark := status.activity.doneMark
-			status.activity.mu.Unlock()
-			if !wrote {
-				_, _ = io.WriteString(
-					status.w,
-					activityLine(status.w, doneMark, doneLabel, status.activity.elapsed())+"\n",
-				)
-			}
+			status.activity.finish(true, doneLabel, true)
 			return
 		}
 		NewConsole(status.w, status.w).StatusOK(
@@ -137,31 +128,37 @@ func (status *ActivityStatus) Complete(doneLabel string) {
 }
 
 func (a *Activity) Stop() {
-	a.finish(false, "")
+	a.finish(false, "", false)
 }
 
 func (a *Activity) Complete(doneLabel string) {
-	a.finish(true, doneLabel)
+	a.finish(true, doneLabel, false)
 }
 
-func (a *Activity) finish(complete bool, doneLabel string) {
+func (a *Activity) finish(complete bool, doneLabel string, ensureLine bool) {
 	if a == nil || !a.enabled {
 		return
 	}
 	a.stopOnce.Do(func() {
+		defer showCursor(a.w)
 		close(a.stopc)
 		<-a.donec
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if a.wrote {
-			if complete {
+		if complete {
+			if a.wrote {
 				_, _ = io.WriteString(
 					a.w,
 					"\r\033[K"+activityLine(a.w, a.doneMark, doneLabel, a.elapsed())+"\n",
 				)
-			} else {
-				_, _ = io.WriteString(a.w, "\r\033[K")
+			} else if ensureLine {
+				_, _ = io.WriteString(
+					a.w,
+					activityLine(a.w, a.doneMark, doneLabel, a.elapsed())+"\n",
+				)
 			}
+		} else if a.wrote {
+			_, _ = io.WriteString(a.w, "\r\033[K")
 		}
 	})
 }

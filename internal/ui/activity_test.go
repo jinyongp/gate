@@ -64,7 +64,7 @@ func TestStartActivityNoopWritesNothing(t *testing.T) {
 	}
 }
 
-func TestStartActivityStoppedBeforeDelayWritesNothing(t *testing.T) {
+func TestStartActivityStoppedBeforeDelayRestoresCursor(t *testing.T) {
 	var buf bytes.Buffer
 	a := StartActivity(&buf, "work", ActivityOptions{
 		Enabled:  true,
@@ -73,8 +73,8 @@ func TestStartActivityStoppedBeforeDelayWritesNothing(t *testing.T) {
 		Renderer: ActivityASCII,
 	})
 	a.Stop()
-	if buf.Len() != 0 {
-		t.Fatalf("activity wrote before delay: %q", buf.String())
+	if got := buf.String(); got != "\x1b[?25l\x1b[?25h" {
+		t.Fatalf("cursor lifecycle output = %q", got)
 	}
 }
 
@@ -99,6 +99,9 @@ func TestStartActivityWritesAndClearsLine(t *testing.T) {
 	if !strings.Contains(got, "\r\033[K") {
 		t.Fatalf("activity did not clear line: %q", got)
 	}
+	if !strings.HasPrefix(got, "\x1b[?25l") || !strings.HasSuffix(got, "\x1b[?25h") {
+		t.Fatalf("cursor lifecycle output = %q", got)
+	}
 }
 
 func TestStartActivityCompleteKeepsDoneLine(t *testing.T) {
@@ -117,7 +120,7 @@ func TestStartActivityCompleteKeepsDoneLine(t *testing.T) {
 	a.Complete("ignored")
 	got := buf.String()
 	if !strings.Contains(got, "\r\033[Kok worked ") ||
-		!strings.HasSuffix(got, "\n") {
+		!strings.HasSuffix(got, "\n\x1b[?25h") {
 		t.Fatalf("activity did not leave completion line: %q", got)
 	}
 }
@@ -144,7 +147,7 @@ func TestActivityStatusShowsFastTerminalCompletion(t *testing.T) {
 		Now:      activityTestClock(1200 * time.Millisecond),
 	})
 	status.Complete("checked repository")
-	if got := buf.String(); got != "ok checked repository 1.2s\n" {
+	if got := buf.String(); got != "\x1b[?25lok checked repository 1.2s\n\x1b[?25h" {
 		t.Fatalf("output = %q", got)
 	}
 }

@@ -125,10 +125,10 @@ func promptConfirmKey(
 		return false, err
 	}
 	defer func() {
-		showPromptCursor(output)
+		showCursor(output)
 		_ = term.Restore(int(inputFile.Fd()), oldState)
 	}()
-	hidePromptCursor(output)
+	hideCursor(output)
 
 	if _, err := fmt.Fprint(output, promptConfirmLabel(output, label, true)); err != nil {
 		return false, err
@@ -342,10 +342,10 @@ func promptChoiceRadio(
 		return "", err
 	}
 	defer func() {
-		showPromptCursor(output)
+		showCursor(output)
 		_ = term.Restore(int(inputFile.Fd()), oldState)
 	}()
-	hidePromptCursor(output)
+	hideCursor(output)
 
 	if _, err := fmt.Fprintf(output, "%s\r\n", PromptHeading(output, label)); err != nil {
 		return "", err
@@ -494,12 +494,4 @@ func renderChoiceOption(output io.Writer, label string, selected bool) error {
 	}
 	_, err := fmt.Fprintf(output, "  %s  %s\x1b[K\r\n", marker, label)
 	return err
-}
-
-func hidePromptCursor(output io.Writer) {
-	_, _ = fmt.Fprint(output, "\x1b[?25l")
-}
-
-func showPromptCursor(output io.Writer) {
-	_, _ = fmt.Fprint(output, "\x1b[?25h")
 }
