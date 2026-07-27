@@ -140,13 +140,19 @@ func promptConfirmKey(
 		}
 		switch r {
 		case '\r', '\n':
-			fmt.Fprint(output, "\r\n")
+			if err := renderPromptConfirmResult(output, label, "ENTER", true); err != nil {
+				return false, err
+			}
 			return true, nil
 		case 0x03:
-			fmt.Fprint(output, "\r\n")
+			if err := renderPromptConfirmResult(output, label, "CTRL-C", false); err != nil {
+				return false, err
+			}
 			return false, ErrPromptInterrupted
 		case 0x04:
-			fmt.Fprint(output, "\r\n")
+			if err := renderPromptConfirmResult(output, label, "CTRL-D", false); err != nil {
+				return false, err
+			}
 			return false, nil
 		case 0x1b:
 			sequence, err := promptEscapeSequenceContinues(ctx, inputFile, reader)
@@ -156,7 +162,9 @@ func promptConfirmKey(
 			if sequence {
 				continue
 			}
-			fmt.Fprint(output, "\r\n")
+			if err := renderPromptConfirmResult(output, label, "ESC", false); err != nil {
+				return false, err
+			}
 			return false, nil
 		}
 	}
@@ -199,6 +207,18 @@ func promptConfirmLabel(output io.Writer, label string, compact bool) string {
 		return PromptHeading(output, label) + "  " + hint
 	}
 	return PromptLabel(output, label) + hint + ": "
+}
+
+func renderPromptConfirmResult(output io.Writer, label, key string, confirmed bool) error {
+	color := Danger
+	if confirmed {
+		color = Success
+	}
+	if Enabled(output) {
+		key = Tint(color, key)
+	}
+	_, err := fmt.Fprint(output, "\r\033[K"+PromptHeading(output, label)+"  "+key+"\r\n")
+	return err
 }
 
 func PromptChoice(reader *bufio.Reader, output io.Writer, label, defaultValue string, allowed []string) (string, error) {

@@ -91,6 +91,66 @@ func TestPromptConfirmUsesCompactTerminalHint(t *testing.T) {
 	}
 }
 
+func TestPromptConfirmKeyReplacesHintWithPressedKey(t *testing.T) {
+	for name, input := range map[string]struct {
+		value     string
+		wantKey   string
+		want      bool
+		wantError error
+	}{
+		"enter":  {value: "\r", wantKey: "ENTER", want: true},
+		"escape": {value: "\x1b", wantKey: "ESC"},
+		"ctrl-d": {value: "\x04", wantKey: "CTRL-D"},
+		"ctrl-c": {value: "\x03", wantKey: "CTRL-C", wantError: ErrPromptInterrupted},
+	} {
+		t.Run(name, func(t *testing.T) {
+			primary, terminal, err := pty.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = primary.Close()
+				_ = terminal.Close()
+			})
+			type promptResult struct {
+				confirmed bool
+				err       error
+			}
+			result := make(chan promptResult, 1)
+			var output bytes.Buffer
+			go func() {
+				confirmed, promptErr := promptConfirmKey(
+					context.Background(),
+					terminal,
+					bufio.NewReader(terminal),
+					&output,
+					"Continue?",
+				)
+				result <- promptResult{confirmed: confirmed, err: promptErr}
+			}()
+			time.Sleep(50 * time.Millisecond)
+			if _, err := primary.WriteString(input.value); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-result:
+				if !errors.Is(got.err, input.wantError) {
+					t.Fatalf("error = %v, want %v", got.err, input.wantError)
+				}
+				if got.confirmed != input.want {
+					t.Fatalf("confirmed = %v, want %v", got.confirmed, input.want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("confirmation did not return after one key")
+			}
+			wantResult := "\r\x1b[K› Continue?  " + input.wantKey + "\r\n"
+			if got := output.String(); !strings.Contains(got, wantResult) {
+				t.Fatalf("output = %q, want resolved prompt %q", got, wantResult)
+			}
+		})
+	}
+}
+
 func TestPromptConfirmRestoresCursorAndTerminalAfterCancellation(t *testing.T) {
 	primary, terminal, err := pty.Open()
 	if err != nil {
