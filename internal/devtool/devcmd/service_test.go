@@ -332,7 +332,7 @@ fail-fast: false
 ref: ${{ github.sha }}
 uses: ./tooling/.github/actions/preflight
 cross-build: "true"
-uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
+uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@5d4694353a9ed933fe0be9055ca64b7eef53e4f0 # automation-v1.5.0
 dry-run: true
 validation-mode: spec
 `), nil
@@ -376,7 +376,7 @@ GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}
 "$RUNNER_TEMP/gate-dev" ci build-release-artifacts
 "$RUNNER_TEMP/gate-dev" ci checksums
 "$RUNNER_TEMP/gate-dev" ci publish-release
-uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
+uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@5d4694353a9ed933fe0be9055ca64b7eef53e4f0 # automation-v1.5.0
 preflight:
 fail-fast: false
 os: [ubuntu-latest, macos-15]

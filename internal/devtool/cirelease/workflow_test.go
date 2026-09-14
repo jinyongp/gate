@@ -33,7 +33,7 @@ func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 		"ref: ${{ github.sha }}",
 		"uses: ./tooling/.github/actions/preflight",
 		`cross-build: "true"`,
-		"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0",
+		"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@5d4694353a9ed933fe0be9055ca64b7eef53e4f0 # automation-v1.5.0",
 		"dry-run: true",
 		"validation-mode: spec",
 	} {
@@ -95,7 +95,7 @@ func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 		"uses: ./tooling/.github/actions/preflight",
 		"source-sha: ${{ needs.release_tag.outputs.target }}",
 		"needs: [release_tag, preflight]",
-		"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0",
+		"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@5d4694353a9ed933fe0be9055ca64b7eef53e4f0 # automation-v1.5.0",
 	} {
 		if !strings.Contains(workflow, contract) {
 			t.Errorf("release workflow is missing %q", contract)

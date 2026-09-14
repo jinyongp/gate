@@ -120,7 +120,7 @@ homebrew_tap:
     needs.release_tag.outputs.tag != '' &&
     needs.release_tag.outputs.on_main == 'true' &&
     needs.build.result == 'success'
-  uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
+  uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@5d4694353a9ed933fe0be9055ca64b7eef53e4f0 # automation-v1.5.0
   with:
     formula: gate
     ref: ${{ needs.release_tag.outputs.target }}
