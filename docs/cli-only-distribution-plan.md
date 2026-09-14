@@ -136,9 +136,9 @@ Formula contract changes are checked before a release exists.
 
 The release build continues to verify the annotated tag identity before
 creating or verifying release assets. GitHub immutable releases must be enabled
-before publishing; the publisher refuses mutable releases and requires every
-asset to be present at publication time. The Homebrew job starts only after that
-build succeeds.
+before publishing; the publisher rejects mutable releases and requires every
+asset to be present at publication time. The Homebrew job starts only after
+that build succeeds.
 
 Validation: actionlint and repository contract tests before merge; release-time
 validation on macOS and Linux before the reusable workflow pushes the formula.

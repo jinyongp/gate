@@ -32,6 +32,7 @@ func publishEnvironment(service *Service) {
 
 func TestPublishReleaseCreatesMissingReleaseWithGeneratedNotes(t *testing.T) {
 	var created runner.Command
+	viewCalls := 0
 	fake := &fakeRunner{}
 	fake.run = func(_ context.Context, command runner.Command) error {
 		switch commandLine(command) {
@@ -44,9 +45,11 @@ func TestPublishReleaseCreatesMissingReleaseWithGeneratedNotes(t *testing.T) {
 		case "git log --oneline --no-decorate v1.2.3":
 			writeCommandOutput(command, "abc123 first\n987def second\n")
 		case "gh release view v1.2.3 --json isDraft,isImmutable,isPrerelease":
-			return failCommand(command, "release not found")
-		case "gh api repos/jinyongp/gate/immutable-releases --jq .enabled":
-			writeCommandOutput(command, "true\n")
+			viewCalls++
+			if viewCalls == 1 {
+				return failCommand(command, "release not found")
+			}
+			writeCommandOutput(command, `{"isDraft":false,"isImmutable":true,"isPrerelease":false}`)
 		default:
 			if len(command.Args) >= 2 && command.Args[0] == "release" && command.Args[1] == "create" {
 				created = command
@@ -92,8 +95,6 @@ func TestPublishReleaseReverifiesTagImmediatelyBeforeCreate(t *testing.T) {
 			writeCommandOutput(command, "abc123 first\n")
 		case "gh release view v1.2.3 --json isDraft,isImmutable,isPrerelease":
 			return failCommand(command, "release not found")
-		case "gh api repos/jinyongp/gate/immutable-releases --jq .enabled":
-			writeCommandOutput(command, "true\n")
 		default:
 			t.Fatalf("unexpected command: %s", commandLine(command))
 		}
@@ -234,7 +235,8 @@ func TestPublishReleaseRefusesMutableExistingRelease(t *testing.T) {
 	requireNoCallContaining(t, fake, "gh release download")
 }
 
-func TestPublishReleaseRequiresImmutableReleaseSettingBeforeCreate(t *testing.T) {
+func TestPublishReleaseRefusesMutableCreatedRelease(t *testing.T) {
+	viewCalls := 0
 	fake := &fakeRunner{}
 	service, _, errOut := newTestService(t, fake)
 	publishEnvironment(service)
@@ -248,10 +250,15 @@ func TestPublishReleaseRequiresImmutableReleaseSettingBeforeCreate(t *testing.T)
 		case "git tag -l --format=%(contents:subject)%0a%0a%(contents:body) v1.2.3":
 			writeCommandOutput(command, "Release notes")
 		case "gh release view v1.2.3 --json isDraft,isImmutable,isPrerelease":
-			return failCommand(command, "release not found")
-		case "gh api repos/jinyongp/gate/immutable-releases --jq .enabled":
-			writeCommandOutput(command, "false\n")
+			viewCalls++
+			if viewCalls == 1 {
+				return failCommand(command, "release not found")
+			}
+			writeCommandOutput(command, `{"isDraft":false,"isImmutable":false,"isPrerelease":false}`)
 		default:
+			if len(command.Args) >= 2 && command.Args[0] == "release" && command.Args[1] == "create" {
+				return nil
+			}
 			t.Fatalf("unexpected command: %s", commandLine(command))
 		}
 		return nil
@@ -260,8 +267,8 @@ func TestPublishReleaseRequiresImmutableReleaseSettingBeforeCreate(t *testing.T)
 	if code := service.Run(context.Background(), []string{"publish-release", "v1.2.3"}); code != 1 {
 		t.Fatalf("Run = %d", code)
 	}
-	requireContains(t, errOut.String(), "immutable releases must be enabled")
-	requireNoCallContaining(t, fake, "gh release create")
+	requireContains(t, errOut.String(), "stable release must be published and immutable", "immutable=false")
+	requireContains(t, strings.Join(fake.commandLines(), "\n"), "gh release create")
 }
 
 func TestPublishReleaseRefusesConflictingImmutableAsset(t *testing.T) {

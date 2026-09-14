@@ -278,8 +278,8 @@ just check
 
 Version-tag releases publish the Go binaries and checksums to GitHub Releases,
 then publish the Homebrew formula from those release assets. The repository
-must have GitHub immutable releases enabled; the publisher fails before
-creating a mutable release.
+must have GitHub immutable releases enabled; the publisher verifies that every
+created or existing release is immutable.
 
 Useful development commands:
 

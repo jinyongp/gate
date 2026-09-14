@@ -59,9 +59,6 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 	case !isGitHubNotFound(stateErr):
 		return fmt.Errorf("inspect existing GitHub release: %w", stateErr)
 	default:
-		if err := service.requireImmutableReleases(ctx, repository); err != nil {
-			return err
-		}
 		if err := service.verifyReleaseTag(ctx, tag, expected, expectedObject); err != nil {
 			return err
 		}
@@ -71,7 +68,11 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 		if err := service.stream(ctx, "gh", args...); err != nil {
 			return fmt.Errorf("create GitHub release: %w", err)
 		}
-		return nil
+		created, err := service.githubReleaseState(ctx, tag)
+		if err != nil {
+			return fmt.Errorf("inspect created GitHub release: %w", err)
+		}
+		return validateImmutableReleaseState(created, tag)
 	}
 }
 
@@ -84,24 +85,6 @@ func validateImmutableReleaseState(state githubReleaseState, tag string) error {
 			state.Immutable,
 			tag,
 		)
-	}
-	return nil
-}
-
-func (service *Service) requireImmutableReleases(ctx context.Context, repository string) error {
-	raw, err := service.output(
-		ctx,
-		"gh",
-		"api",
-		"repos/"+repository+"/immutable-releases",
-		"--jq",
-		".enabled",
-	)
-	if err != nil {
-		return fmt.Errorf("inspect immutable release setting: %w", err)
-	}
-	if strings.TrimSpace(raw) != "true" {
-		return fmt.Errorf("GitHub immutable releases must be enabled before publishing")
 	}
 	return nil
 }
