@@ -14,7 +14,6 @@ set -euo pipefail
 : "${PREFLIGHT_JOB_RESULT:?}"
 : "${BUILD_JOB_RESULT:?}"
 : "${HOMEBREW_TAP_JOB_RESULT:?}"
-: "${NPM_PUBLISH_JOB_RESULT:?}"
 
 {
   echo "## Release summary"
@@ -38,5 +37,4 @@ set -euo pipefail
   echo "| preflight | ${PREFLIGHT_JOB_RESULT} |"
   echo "| build | ${BUILD_JOB_RESULT} |"
   echo "| homebrew tap | ${HOMEBREW_TAP_JOB_RESULT} |"
-  echo "| npm publish | ${NPM_PUBLISH_JOB_RESULT} |"
 } >> "$GITHUB_STEP_SUMMARY"

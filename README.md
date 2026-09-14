@@ -20,6 +20,12 @@ Or using the install script:
 curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh | sh
 ```
 
+Install a specific stable release by setting `GATE_VERSION` on the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh | GATE_VERSION=v2.11.4 sh
+```
+
 Supported platforms: macOS and Linux (darwin, linux) on arm64 and amd64.
 
 > [!TIP]
@@ -45,25 +51,6 @@ setup grants only the installed gate executable permission to bind low ports.
 
 For full usage, see [docs/usage.md](docs/usage.md). For detailed setup notes
 and internals, see [docs/spec.md](docs/spec.md).
-
-## JavaScript / Agents
-
-JavaScript tooling, dev-server launchers, and agents can install
-`@jinyongp/gate` instead of shelling out to a globally installed binary:
-
-```bash
-pnpm add -D @jinyongp/gate
-```
-
-The package provides:
-
-- typed access to service metadata through `createGateClient()`
-- the package-provided `gate` binary for portable automation
-- inline project config for generated or tool-owned setups
-- `isolatedRoot` for workspace-local agent state
-- `env()` and `run()` helpers for service env injection
-
-See the [Node guide](docs/usage.md#node).
 
 ## Upgrade
 
@@ -264,15 +251,10 @@ Development uses the repository checkout and the `just` command runner.
 Prerequisites:
 
 - Go
-- Node.js matching `.node-version`
-- Corepack-managed pnpm
 - [`just`](https://github.com/casey/just)
 
 Development recipes fetch Go tools such as `golangci-lint`, `govulncheck`, and
 `goimports` with `go run`, so they do not need separate manual installation.
-Node package validation uses the repository `packageManager`; enable Corepack
-before running `just check` if pnpm is not already available.
-
 Set up a checkout:
 
 ```bash
@@ -294,13 +276,10 @@ Run validation before opening a pull request:
 just check
 ```
 
-Version-tag releases publish the Go binaries to GitHub/Homebrew and publish
-`@jinyongp/gate` plus platform binary packages to npm. npm publishing uses trusted
-publishing with GitHub Actions OIDC, so no npm publish token is required in CI.
-Before the first OIDC release, publish or reserve each `@jinyongp/*` package once
-in binary-first order, then configure each package with a
-trusted publisher for `jinyongp/gate`, workflow filename `release.yml`, and the
-`npm publish` action.
+Version-tag releases publish the Go binaries and checksums to GitHub Releases,
+then publish the Homebrew formula from those release assets. The repository
+must have GitHub immutable releases enabled; the publisher fails before
+creating a mutable release.
 
 Useful development commands:
 

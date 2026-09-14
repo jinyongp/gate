@@ -1,5 +1,0 @@
-packages:
-  - "packages/*"
-  - "packages/binaries/*"
-autoInstallPeers: false
-confirmModulesPurge: false

@@ -47,13 +47,6 @@ func (service *Service) check(ctx context.Context) error {
 			},
 		},
 		{
-			label:     "running Node checks",
-			doneLabel: "completed Node checks",
-			run: func(ctx context.Context, child *Service) error {
-				return child.stream(ctx, runner.Command{Name: "pnpm", Args: []string{"node:check"}})
-			},
-		},
-		{
 			label:     "linting Go for Darwin and Linux",
 			doneLabel: "linted Go for Darwin and Linux",
 			run: func(ctx context.Context, child *Service) error {

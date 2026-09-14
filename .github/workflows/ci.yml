@@ -37,3 +37,10 @@ jobs:
           source-sha: ${{ github.sha }}
           runner-label: ${{ matrix.os }}
           cross-build: "true"
+
+  homebrew:
+    uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
+    with:
+      formula: gate
+      dry-run: true
+      validation-mode: spec

@@ -1,0 +1,30 @@
+desc: Local-dev global HTTPS reverse proxy and port registry
+homepage: https://github.com/jinyongp/gate
+license: MIT
+
+distribution:
+  type: github-release
+  tag: "v{version}"
+  assets:
+    macos-arm64: gate-darwin-arm64
+    macos-x86_64: gate-darwin-amd64
+    linux-arm64: gate-linux-arm64
+    linux-x86_64: gate-linux-amd64
+
+install: |
+  asset = Dir["gate-*"].first
+  chmod 0755, asset
+  bin.install asset => "gate"
+  generate_completions_from_executable(bin/"gate", "completion")
+
+caveats: |
+  <<~EOS
+    For full cleanup, run:
+      gate uninstall
+
+    `brew uninstall gate` removes only the Homebrew package. It does not remove
+    gate's local state, trusted root CA, managed hosts block, or shell PATH block.
+  EOS
+
+test: |
+  assert_match "v#{version}", shell_output("#{bin}/gate --version")

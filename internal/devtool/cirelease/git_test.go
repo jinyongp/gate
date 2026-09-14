@@ -27,7 +27,7 @@ func TestDetectReleaseTagWritesAnnotatedStableOutputs(t *testing.T) {
 		case "git tag --list v*":
 			writeCommandOutput(command, "v2.10.0\nv2.11.0\nnot-semver\n")
 			return nil
-		case "gh release view v2.11.0 --json isDraft,isPrerelease":
+		case "gh release view v2.11.0 --json isDraft,isImmutable,isPrerelease":
 			writeCommandOutput(command, `{"isDraft":false,"isPrerelease":false}`)
 			return nil
 		default:
@@ -77,7 +77,7 @@ func TestDetectReleaseTagAcceptsExplicitRecoveryTagFromMainToolingCheckout(t *te
 			)
 		case "git tag --list v*":
 			writeCommandOutput(command, "v2.11.0")
-		case "gh release view v2.11.0 --json isDraft,isPrerelease":
+		case "gh release view v2.11.0 --json isDraft,isImmutable,isPrerelease":
 			return failCommand(command, "HTTP 404: Not Found")
 		default:
 			t.Fatalf("unexpected command: %s", commandLine(command))
@@ -180,7 +180,7 @@ func TestDetectReleaseTagKeepsGitHubAPIFailureDistinct(t *testing.T) {
 			return nil
 		case "git merge-base --is-ancestor " + testSHA + " refs/remotes/origin/main":
 			return fakeExitError{code: 1}
-		case "gh release view v1.2.3 --json isDraft,isPrerelease":
+		case "gh release view v1.2.3 --json isDraft,isImmutable,isPrerelease":
 			return failCommand(command, "HTTP 500 service unavailable")
 		default:
 			t.Fatalf("unexpected command: %s", commandLine(command))
@@ -229,11 +229,8 @@ func TestVerifyReleaseTagTargetHandlesAnnotatedAndMovedTags(t *testing.T) {
 			return nil
 		}
 		service, _, _ := newTestService(t, fake)
-		if code := service.Run(
-			context.Background(),
-			[]string{"verify-release-tag-target", "v1.2.3", testSHA},
-		); code != 0 {
-			t.Fatalf("Run = %d", code)
+		if err := service.verifyReleaseTagTarget(context.Background(), "v1.2.3", testSHA); err != nil {
+			t.Fatalf("verifyReleaseTagTarget: %v", err)
 		}
 	})
 
@@ -252,11 +249,8 @@ func TestVerifyReleaseTagTargetHandlesAnnotatedAndMovedTags(t *testing.T) {
 			}
 		}
 		service, _, _ := newTestService(t, fake)
-		if code := service.Run(
-			context.Background(),
-			[]string{"verify-release-tag-target", "v1.2.3", testSHA},
-		); code != 0 {
-			t.Fatalf("Run = %d", code)
+		if err := service.verifyReleaseTagTarget(context.Background(), "v1.2.3", testSHA); err != nil {
+			t.Fatalf("verifyReleaseTagTarget: %v", err)
 		}
 	})
 
@@ -266,14 +260,12 @@ func TestVerifyReleaseTagTargetHandlesAnnotatedAndMovedTags(t *testing.T) {
 			writeCommandOutput(command, differentSHA+"\trefs/tags/v1.2.3^{}\n")
 			return nil
 		}
-		service, _, errOut := newTestService(t, fake)
-		if code := service.Run(
-			context.Background(),
-			[]string{"verify-release-tag-target", "v1.2.3", testSHA},
-		); code != 1 {
-			t.Fatalf("Run = %d", code)
+		service, _, _ := newTestService(t, fake)
+		err := service.verifyReleaseTagTarget(context.Background(), "v1.2.3", testSHA)
+		if err == nil {
+			t.Fatal("verifyReleaseTagTarget succeeded")
 		}
-		requireContains(t, errOut.String(), "release tag target moved", differentSHA, testSHA)
+		requireContains(t, err.Error(), "release tag target moved", differentSHA, testSHA)
 	})
 
 	t.Run("annotated object moved with unchanged target", func(t *testing.T) {
@@ -285,18 +277,16 @@ func TestVerifyReleaseTagTargetHandlesAnnotatedAndMovedTags(t *testing.T) {
 			)
 			return nil
 		}}
-		service, _, errOut := newTestService(t, fake)
-		if code := service.Run(
+		service, _, _ := newTestService(t, fake)
+		err := service.verifyReleaseTagIdentity(
 			context.Background(),
-			[]string{
-				"verify-release-tag-target",
-				"v1.2.3",
-				differentSHA,
-				differentSHA,
-			},
-		); code != 1 {
-			t.Fatalf("Run = %d", code)
+			"v1.2.3",
+			differentSHA,
+			differentSHA,
+		)
+		if err == nil {
+			t.Fatal("verifyReleaseTagIdentity succeeded")
 		}
-		requireContains(t, errOut.String(), "release tag object moved", testSHA, differentSHA)
+		requireContains(t, err.Error(), "release tag object moved", testSHA, differentSHA)
 	})
 }

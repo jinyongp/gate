@@ -13,6 +13,7 @@ import (
 
 type githubReleaseState struct {
 	Draft      bool `json:"isDraft"`
+	Immutable  bool `json:"isImmutable"`
 	Prerelease bool `json:"isPrerelease"`
 }
 
@@ -51,18 +52,16 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 	state, stateErr := service.githubReleaseState(ctx, tag)
 	switch {
 	case stateErr == nil:
-		if state.Draft || state.Prerelease {
-			return fmt.Errorf(
-				"stable release tag has non-final GitHub release state (draft=%t, prerelease=%t): %s",
-				state.Draft,
-				state.Prerelease,
-				tag,
-			)
+		if err := validateImmutableReleaseState(state, tag); err != nil {
+			return err
 		}
-		return service.reconcileReleaseAssets(ctx, tag, expected, expectedObject)
+		return service.verifyReleaseAssets(ctx, tag)
 	case !isGitHubNotFound(stateErr):
 		return fmt.Errorf("inspect existing GitHub release: %w", stateErr)
 	default:
+		if err := service.requireImmutableReleases(ctx, repository); err != nil {
+			return err
+		}
 		if err := service.verifyReleaseTag(ctx, tag, expected, expectedObject); err != nil {
 			return err
 		}
@@ -74,6 +73,37 @@ func (service *Service) publishRelease(ctx context.Context, tag string) error {
 		}
 		return nil
 	}
+}
+
+func validateImmutableReleaseState(state githubReleaseState, tag string) error {
+	if state.Draft || state.Prerelease || !state.Immutable {
+		return fmt.Errorf(
+			"stable release must be published and immutable (draft=%t, prerelease=%t, immutable=%t): %s",
+			state.Draft,
+			state.Prerelease,
+			state.Immutable,
+			tag,
+		)
+	}
+	return nil
+}
+
+func (service *Service) requireImmutableReleases(ctx context.Context, repository string) error {
+	raw, err := service.output(
+		ctx,
+		"gh",
+		"api",
+		"repos/"+repository+"/immutable-releases",
+		"--jq",
+		".enabled",
+	)
+	if err != nil {
+		return fmt.Errorf("inspect immutable release setting: %w", err)
+	}
+	if strings.TrimSpace(raw) != "true" {
+		return fmt.Errorf("GitHub immutable releases must be enabled before publishing")
+	}
+	return nil
 }
 
 func (service *Service) verifyReleaseTag(
@@ -89,7 +119,15 @@ func (service *Service) verifyReleaseTag(
 }
 
 func (service *Service) githubReleaseState(ctx context.Context, tag string) (githubReleaseState, error) {
-	raw, err := service.output(ctx, "gh", "release", "view", tag, "--json", "isDraft,isPrerelease")
+	raw, err := service.output(
+		ctx,
+		"gh",
+		"release",
+		"view",
+		tag,
+		"--json",
+		"isDraft,isImmutable,isPrerelease",
+	)
 	if err != nil {
 		return githubReleaseState{}, err
 	}
@@ -148,12 +186,7 @@ func (service *Service) latestPublishedTag(ctx context.Context, repository strin
 	return strings.TrimSpace(tag), nil
 }
 
-func (service *Service) reconcileReleaseAssets(
-	ctx context.Context,
-	tag,
-	expected,
-	expectedObject string,
-) error {
+func (service *Service) verifyReleaseAssets(ctx context.Context, tag string) error {
 	raw, err := service.output(ctx, "gh", "release", "view", tag, "--json", "assets", "--jq", ".assets[].name")
 	if err != nil {
 		return fmt.Errorf("list GitHub release assets: %w", err)
@@ -162,18 +195,21 @@ func (service *Service) reconcileReleaseAssets(
 	for _, asset := range lines(raw) {
 		existing[asset] = true
 	}
+	for _, asset := range releaseAssets {
+		if !existing[asset] {
+			return fmt.Errorf("immutable release is missing required asset: %s", asset)
+		}
+	}
+	if len(existing) != len(releaseAssets) {
+		return fmt.Errorf("immutable release contains unexpected assets")
+	}
 	temp, err := service.MkdirTemp("", "gate-release-assets-*")
 	if err != nil {
 		return fmt.Errorf("create release comparison directory: %w", err)
 	}
 	defer func() { _ = service.RemoveAll(temp) }()
 
-	var missing []string
 	for _, asset := range releaseAssets {
-		if !existing[asset] {
-			missing = append(missing, asset)
-			continue
-		}
 		if err := service.stream(ctx, "gh", "release", "download", tag, "--pattern", asset, "--dir", temp); err != nil {
 			return fmt.Errorf("download existing release asset %s: %w", asset, err)
 		}
@@ -187,16 +223,6 @@ func (service *Service) reconcileReleaseAssets(
 		}
 		if !bytes.Equal(local, remote) {
 			return fmt.Errorf("release asset differs from local file; refusing to replace tagged artifact: %s", asset)
-		}
-	}
-	if len(missing) > 0 {
-		if err := service.verifyReleaseTag(ctx, tag, expected, expectedObject); err != nil {
-			return err
-		}
-	}
-	for _, asset := range missing {
-		if err := service.stream(ctx, "gh", "release", "upload", tag, asset); err != nil {
-			return fmt.Errorf("upload missing release asset %s: %w", asset, err)
 		}
 	}
 	return nil

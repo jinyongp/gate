@@ -12,7 +12,6 @@ set -euo pipefail
 : "${GOVULNCHECK_OUTCOME:?}"
 : "${SCRIPTS_OUTCOME:?}"
 : "${LINUX_LOW_PORT_OUTCOME:?}"
-: "${NODE_CHECK_OUTCOME:?}"
 : "${TEST_OUTCOME:?}"
 
 {
@@ -31,6 +30,5 @@ set -euo pipefail
   echo "| govulncheck | ${GOVULNCHECK_OUTCOME} |"
   echo "| scripts | ${SCRIPTS_OUTCOME} |"
   echo "| Linux low ports | ${LINUX_LOW_PORT_OUTCOME} |"
-  echo "| node check | ${NODE_CHECK_OUTCOME} |"
   echo "| test + coverage | ${TEST_OUTCOME} |"
 } >> "$GITHUB_STEP_SUMMARY"

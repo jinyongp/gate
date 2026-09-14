@@ -76,31 +76,3 @@ release tag="":
 [doc('cross-compile all release targets into bin/')]
 build-all version="dev":
   go run ./cmd/gate-dev build-all {{quote(version)}} bin
-
-[doc('build Node API packages')]
-node-build:
-  pnpm node:build
-
-[doc('typecheck Node API packages')]
-node-typecheck:
-  pnpm node:typecheck
-
-[doc('dry-run pack Node API JS packages')]
-node-pack-dry-run:
-  pnpm node:pack:dry-run
-
-[doc('run Node API example smoke tests from packed tarballs')]
-node-smoke-examples:
-  pnpm node:smoke:examples
-
-[doc('copy release binaries into Node binary package folders')]
-node-stage-binaries:
-  pnpm node:stage:binaries
-
-[doc('run Node API package tests')]
-node-test:
-  pnpm node:test
-
-[doc('run Node API package validation')]
-node-check:
-  pnpm node:check

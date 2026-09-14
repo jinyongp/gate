@@ -14,8 +14,6 @@ import (
 var summaryShellFiles = []string{
 	".github/scripts/build-summary.sh",
 	".github/scripts/check-summary.sh",
-	".github/scripts/homebrew-summary.sh",
-	".github/scripts/npm-summary.sh",
 	".github/scripts/release-summary.sh",
 }
 
@@ -44,12 +42,6 @@ func (service *Service) scriptsCheck(ctx context.Context) error {
 	if err := service.stream(ctx, runner.Command{
 		Name: "bash",
 		Args: append([]string{"-n"}, summaryShellFiles...),
-	}); err != nil {
-		return err
-	}
-	if err := service.stream(ctx, runner.Command{
-		Name: "node",
-		Args: []string{"scripts/node/check-publish-packages.mjs"},
 	}); err != nil {
 		return err
 	}
@@ -134,15 +126,6 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 		setupGoCount != strings.Count(automation, "check-latest: true") {
 		return fmt.Errorf("GitHub Actions must use the current Go minor's latest patch release")
 	}
-	setupNodeCount := strings.Count(automation, "uses: actions/setup-node@")
-	nodeVersionCount := strings.Count(automation, "node-version-file: .node-version") +
-		strings.Count(automation, "node-version-file: source/.node-version") +
-		strings.Count(automation, "node-version-file: ${{ inputs.source-path }}/.node-version")
-	if setupNodeCount == 0 ||
-		setupNodeCount != nodeVersionCount {
-		return fmt.Errorf("GitHub Actions must use the repository .node-version")
-	}
-
 	contracts := []struct {
 		label     string
 		content   string
@@ -170,6 +153,9 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 				"ref: ${{ github.sha }}",
 				"uses: ./tooling/.github/actions/preflight",
 				`cross-build: "true"`,
+				"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0",
+				"dry-run: true",
+				"validation-mode: spec",
 			},
 		},
 		{
@@ -183,7 +169,6 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 				"run: just vuln",
 				"run: just scripts-check",
 				"run: just linux-low-port-test",
-				"run: just node-check",
 				"run: just cover",
 				"run: just build-all ci",
 				"GATE_REQUIRE_INSTALL_PTY_TEST",
@@ -209,10 +194,7 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 				`"$RUNNER_TEMP/gate-dev" ci build-release-artifacts`,
 				`"$RUNNER_TEMP/gate-dev" ci checksums`,
 				`"$RUNNER_TEMP/gate-dev" ci publish-release`,
-				`"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target`,
-				`"$RUNNER_TEMP/gate-dev" ci wait-release-assets`,
-				`"$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula`,
-				`node ../tooling/scripts/node/publish-packages.mjs "${VERSION_TAG}" bin`,
+				"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0",
 				"preflight:",
 				"fail-fast: false",
 				"os: [ubuntu-latest, macos-15]",
@@ -240,6 +222,18 @@ func (service *Service) validateRepositoryContracts(ctx context.Context) error {
 	for _, forbiddenCommand := range []string{"dispatch-ci", "wait-for-ci"} {
 		if strings.Contains(release, forbiddenCommand) {
 			return fmt.Errorf("release workflow must run preflight directly, not %s", forbiddenCommand)
+		}
+	}
+	for _, retiredNodePath := range []string{
+		"actions/setup-node@",
+		"npm_publish:",
+		"npm publish",
+		"pnpm install",
+		"scripts/node/",
+		"node-check",
+	} {
+		if strings.Contains(automation, retiredNodePath) {
+			return fmt.Errorf("GitHub Actions must not restore retired Node/npm distribution path %q", retiredNodePath)
 		}
 	}
 	if strings.Contains(release, "workflow_dispatch:") {

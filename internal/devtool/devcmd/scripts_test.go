@@ -32,7 +32,6 @@ func TestScriptsCheckValidatesOnlyTheRetainedShellAllowlist(t *testing.T) {
 	for _, expected := range []string{
 		"sh -n scripts/install.sh scripts/uninstall.sh",
 		"bash -n .github/scripts/build-summary.sh",
-		"node scripts/node/check-publish-packages.mjs",
 		"/tools/actionlint ",
 		"/tools/shellcheck -S warning",
 		"/tools/shfmt -d",
@@ -79,6 +78,35 @@ func TestRepositoryContractsRejectMissingReleaseCommand(t *testing.T) {
 	err := service.validateRepositoryContracts(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "publish-release") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRepositoryContractsRejectRetiredNodeDistributionPaths(t *testing.T) {
+	for _, retired := range []string{
+		"actions/setup-node@",
+		"npm_publish:",
+		"npm publish",
+		"pnpm install",
+		"scripts/node/",
+		"node-check",
+	} {
+		t.Run(retired, func(t *testing.T) {
+			service, _, _ := newTestService(&fakeRunner{}, platform.Linux{})
+			service.ReadFile = func(path string) ([]byte, error) {
+				data, err := validRepositoryContractFixture(path)
+				if err != nil {
+					return nil, err
+				}
+				if strings.HasSuffix(path, ".github/workflows/release.yml") {
+					data = append(data, []byte("\n"+retired+"\n")...)
+				}
+				return data, nil
+			}
+			err := service.validateRepositoryContracts(context.Background())
+			if err == nil || !strings.Contains(err.Error(), retired) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 

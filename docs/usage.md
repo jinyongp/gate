@@ -60,6 +60,12 @@ choose among multiple values keep their selection menu.
 curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh | sh
 ```
 
+Install a specific stable release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jinyongp/gate/main/scripts/install.sh | GATE_VERSION=v2.11.4 sh
+```
+
 > [!TIP]
 > The installer writes `gate` to `~/.local/bin` by default. If that directory is
 > not in `PATH`, the installer offers to update your shell startup file and
@@ -143,9 +149,8 @@ files, and legacy registry entries from pre-scoped development builds. It exits
 with `1` when issues remain. In JSON mode, the issue report is written to stdout
 even when the command exits `1`; usage and internal errors still use stderr.
 Use `doctor --json` for install, setup, CI, preflight, and explicit local state
-diagnostics. Normal Node API flows such as `service()`, `ready()`, and `run()`
-do not call `doctor`; they use command-specific JSON output and `GateError`
-metadata for failures.
+diagnostics. Normal automation should use command-specific JSON output and run
+`doctor` only when it needs a full installation or state diagnosis.
 
 ## Project Mode
 
@@ -435,9 +440,8 @@ Use isolated state for temporary agent inspection, tests, and sandboxed setup
 checks. Use the user's normal gate state for real dev app launches that should
 share the user's registry, trusted certificate material, and listener daemon.
 Isolated state does not isolate kernel listener ports such as HTTPS `:443` and
-HTTP `:80`. Node API calls with `isolatedRoot` reject `daemon: true`; pass
-`daemon: false` or omit it. For isolated daemon tests, use the CLI with explicit
-non-default listener addresses:
+HTTP `:80`. For isolated daemon tests, use explicit non-default listener
+addresses:
 
 ```bash
 gate --isolated-root .gate-agent daemon start --https-addr 127.0.0.1:18443 --http-addr 127.0.0.1:18080
@@ -447,127 +451,6 @@ Isolated state cannot safely reference-count the machine-wide `/etc/hosts`
 block, so gate refuses system-hosts mutation while `GATE_ISOLATED_ROOT` is set.
 Use `.localhost`, preconfigure DNS outside gate, or run the intentional hosts
 operation without isolated mode.
-
-## Node
-
-`@jinyongp/gate` is intended for agents and JavaScript tooling that need to inspect
-or control gate from code. It executes the gate binary and consumes the same
-JSON command contracts as scripts.
-
-Install only `@jinyongp/gate`; it provides the `gate` package binary and uses
-platform optional binary packages for supported Darwin/Linux arm64/x64 hosts.
-Do not install platform packages directly.
-
-```bash
-pnpm add -D @jinyongp/gate
-pnpm exec gate --version
-```
-
-Use the package binary for child-process workflows, or resolve the binary from
-code and pass it as `bin` or `GATE_BIN`:
-
-```ts
-import { createGateClient, resolveGateBinary } from '@jinyongp/gate'
-
-const bin = resolveGateBinary()
-const gate = createGateClient({ bin })
-```
-
-Core API:
-
-```ts
-import { createGateClient } from '@jinyongp/gate'
-
-const gate = createGateClient()
-const web = await gate.service('web', { up: true })
-```
-
-Use `ready()` when an agent needs to inspect the same descriptor as
-`gate env --json` before deciding how to launch the child:
-
-```ts
-const ready = await gate.ready('web', { up: true })
-
-console.log(ready.service.url)
-console.log(ready.daemon?.running)
-
-await gate.run(ready, ['pnpm', 'dev'])
-```
-
-Inline project config:
-
-```ts
-import { createGateClient, type GateInlineProjectConfig } from '@jinyongp/gate'
-
-const config = {
-  name: 'myapp',
-  base: 'myapp.localhost',
-  services: {
-    web: {},
-    api: {
-      port: 3001,
-      env: 'API_URL',
-    },
-  },
-} satisfies GateInlineProjectConfig
-
-const gate = createGateClient({ cwd: process.cwd() })
-const web = await gate.service('web', {
-  scope: { config },
-})
-```
-
-Inline config gives Node API callers project-scoped behavior without a
-checked-in `gate.toml`. The package writes a generated TOML file to the user
-cache and passes that file to the gate binary with `--config`. `scope.project`
-may be supplied, but it must match `config.name`. The inline shape supports
-`name`, `base`, and service `domain`, `host`, `port`, `env`, and `routeEnv`
-fields.
-`envFiles` are intentionally excluded; load environment variables before
-calling gate if inline values use `${NAME}` or `${NAME:-fallback}` references.
-
-Typed error handling:
-
-```ts
-import { createGateClient, isGateError } from '@jinyongp/gate'
-
-const gate = createGateClient()
-
-try {
-  await gate.service('web')
-} catch (error) {
-  if (isGateError(error, 'GATE_DNS_REQUIRED')) {
-    // Switch to a .localhost base, or pass dns: 'hosts'/'preconfigured'.
-  }
-  throw error
-}
-```
-
-By default, `service(name)` is not read-only: it behaves like
-`service(name, { up: true, dns: 'localhost', daemon: false })`. It reserves and
-activates the selected scope before reading service metadata, but it does not
-start the daemon or edit `/etc/hosts`. Use `service(name, { up: false })`,
-`ls()`, or `port()` when you only want to inspect existing state. Custom domains
-must opt into hosts-file DNS or declare preconfigured DNS through options.
-When `isolatedRoot` is set on the client or a per-call option, `daemon: true`
-is invalid because isolated state cannot isolate the shared listener ports.
-`daemon: false` remains valid.
-
-Common `GateError` codes:
-
-| code                        | agent action                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------- |
-| `GATE_DNS_REQUIRED`         | Use a `.localhost` base, or pass `dns: 'hosts'` / `dns: 'preconfigured'` intentionally. |
-| `GATE_INVALID_OPTIONS`      | Fix incompatible scope/config options before retrying.                                  |
-| `GATE_BINARY_NOT_FOUND`     | Reinstall `@jinyongp/gate`, or pass an explicit `bin` / `GATE_BIN`.                     |
-| `GATE_UNSUPPORTED_PLATFORM` | Use a supported Darwin/Linux arm64/x64 host or provide `bin`.                           |
-| `GATE_PERMISSION_REQUIRED`  | Retry only after explicit user approval for the privileged DNS/trust action.            |
-| `GATE_SERVICE_NOT_FOUND`    | Check scope, config path, service name, and whether reservations exist.                 |
-| `GATE_COMMAND_FAILED`       | Inspect `exitCode`, `gateCode`, stdout, and stderr before retrying.                     |
-| `GATE_JSON_PARSE_FAILED`    | Treat as a gate/version mismatch or broken binary output.                               |
-
-When the gate binary emits a JSON error envelope, `GateError` also preserves
-`gateCode`, `severity`, `retryable`, `hint`, and `nextActions`.
 
 ## Global Reservations
 

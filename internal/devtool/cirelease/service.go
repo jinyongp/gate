@@ -6,11 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -25,40 +23,30 @@ var (
 )
 
 type Service struct {
-	Out                 io.Writer
-	Err                 io.Writer
-	Dir                 string
-	Runner              runner.Runner
-	Getenv              func(string) string
-	Now                 func() time.Time
-	Sleep               func(context.Context, time.Duration) error
-	HTTPClient          *http.Client
-	GitHubWeb           string
-	AssetRequestTimeout time.Duration
-	ReadFile            func(string) ([]byte, error)
-	WriteFile           func(string, []byte, os.FileMode) error
-	MkdirAll            func(string, os.FileMode) error
-	MkdirTemp           func(string, string) (string, error)
-	RemoveAll           func(string) error
+	Out       io.Writer
+	Err       io.Writer
+	Dir       string
+	Runner    runner.Runner
+	Getenv    func(string) string
+	Now       func() time.Time
+	ReadFile  func(string) ([]byte, error)
+	WriteFile func(string, []byte, os.FileMode) error
+	MkdirTemp func(string, string) (string, error)
+	RemoveAll func(string) error
 }
 
 func New(out, errOut io.Writer, commandRunner runner.Runner) *Service {
 	return &Service{
-		Out:                 out,
-		Err:                 errOut,
-		Dir:                 ".",
-		Runner:              commandRunner,
-		Getenv:              os.Getenv,
-		Now:                 time.Now,
-		Sleep:               sleepContext,
-		HTTPClient:          http.DefaultClient,
-		GitHubWeb:           "https://github.com",
-		AssetRequestTimeout: 30 * time.Second,
-		ReadFile:            os.ReadFile,
-		WriteFile:           os.WriteFile,
-		MkdirAll:            os.MkdirAll,
-		MkdirTemp:           os.MkdirTemp,
-		RemoveAll:           os.RemoveAll,
+		Out:       out,
+		Err:       errOut,
+		Dir:       ".",
+		Runner:    commandRunner,
+		Getenv:    os.Getenv,
+		Now:       time.Now,
+		ReadFile:  os.ReadFile,
+		WriteFile: os.WriteFile,
+		MkdirTemp: os.MkdirTemp,
+		RemoveAll: os.RemoveAll,
 	}
 }
 
@@ -110,24 +98,6 @@ func (service *Service) execute(ctx context.Context, command string, args []stri
 			return usage("usage: gate-dev ci publish-release vX.Y.Z")
 		}
 		return service.publishRelease(ctx, args[0])
-	case "verify-release-tag-target":
-		if len(args) < 2 || len(args) > 3 {
-			return usage("usage: gate-dev ci verify-release-tag-target vX.Y.Z expected-sha [expected-tag-object]")
-		}
-		if len(args) == 3 {
-			return service.verifyReleaseTagIdentity(ctx, args[0], args[1], args[2])
-		}
-		return service.verifyReleaseTagTarget(ctx, args[0], args[1])
-	case "wait-release-assets":
-		if len(args) != 1 {
-			return usage("usage: gate-dev ci wait-release-assets vX.Y.Z")
-		}
-		return service.waitReleaseAssets(ctx, args[0])
-	case "generate-homebrew-formula":
-		if len(args) != 2 {
-			return usage("usage: gate-dev ci generate-homebrew-formula TAP_PATH vX.Y.Z")
-		}
-		return service.generateHomebrewFormula(ctx, args[0], args[1])
 	default:
 		return usage(fmt.Sprintf("unknown CI release command %q", command))
 	}
@@ -201,28 +171,6 @@ func (service *Service) appendGitHubOutput(values ...outputValue) error {
 		return fmt.Errorf("write GITHUB_OUTPUT: %w", err)
 	}
 	return nil
-}
-
-func positiveSeconds(value, fallback, label string) (time.Duration, error) {
-	if value == "" {
-		value = fallback
-	}
-	seconds, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || seconds <= 0 {
-		return 0, usage(label + " must be a positive integer")
-	}
-	return time.Duration(seconds) * time.Second, nil
-}
-
-func sleepContext(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 func usage(message string) error {

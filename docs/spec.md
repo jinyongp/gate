@@ -28,8 +28,7 @@ belong in [`docs/usage.md`](usage.md); the bundled agent cheat sheet belongs in
 | Project-local config | `gate.toml` is the shareable source of truth for a repository's local routes. |
 | Global reservations | A developer can reserve a named domain and port without a project file. |
 | Daemon hot reload | A resident proxy can receive new routes without restarting. |
-| Script/agent compatibility | Commands keep stdout data separate from stderr diagnostics; JSON output is stable and parseable. |
-| Agent-oriented Node integration | Optional Node packages can execute the gate binary from JavaScript build tooling without reimplementing gate core behavior. |
+| Script/agent compatibility | Commands keep stdout data separate from stderr diagnostics; stable JSON output and process exit status let automation use the CLI without parsing human output. |
 | Temporary external test access | LAN, Cloudflared, and Tailscale providers can expose selected local services. |
 
 ### Non-goals
@@ -39,7 +38,6 @@ belong in [`docs/usage.md`](usage.md); the bundled agent cheat sheet belongs in
 | Production traffic | gate terminates local dev traffic and assumes a developer-controlled machine. |
 | Hosted environments | gate is not a server deployment platform. |
 | Owning dev server processes | gate can run a child command with `PORT` injected, but it does not manage arbitrary service lifecycles as a process supervisor. |
-| Reimplementing gate in Node | Node packages are wrappers around the gate binary, not an alternate proxy, registry, DNS, or trust implementation. |
 | Replacing DNS infrastructure | gate only handles local `.localhost`, local hosts-file reflection, and provider-specific exposure workflows. |
 | Default public exposure | Any route reachable outside loopback must be explicitly exposed. |
 
@@ -109,11 +107,6 @@ walking upward from the current directory until it finds `gate.toml`, a `.git`
 root, the user's home directory, or the filesystem root. Project-mode commands
 may also receive an explicit config path; that path is loaded directly and does
 not need to be named `gate.toml`.
-
-The Node API may materialize an inline project config as a generated TOML file
-in the user cache and pass that file through the same explicit config-path
-mechanism. The gate binary still treats TOML parsing and validation as the
-source of truth.
 
 ```toml
 [project]
@@ -243,19 +236,16 @@ flowchart LR
 Storage paths normally follow XDG/macOS defaults. When `GATE_ISOLATED_ROOT` is
 set, gate resolves config, state, data, daemon socket, registry, and CA paths
 below that root instead of the user's normal state locations. This is an
-explicit sandbox/test mode; default CLI and Node API behavior must continue to
-share normal user gate state unless callers opt in.
-Isolation affects state paths only; it does not isolate OS listener ports. Node
-API callers with isolated state must not request daemon startup via
-`daemon: true`. CLI daemon tests that use isolated state must choose explicit
-non-default listener addresses. Isolated mode must not mutate the shared system
-hosts file; custom-domain tests must provide their own DNS or leave isolated
-mode before explicitly selecting hosts-file DNS.
+explicit sandbox/test mode; default CLI behavior must continue to share normal
+user gate state unless callers opt in. Isolation affects state paths only; it
+does not isolate OS listener ports. CLI daemon tests that use isolated state
+must choose explicit non-default listener addresses. Isolated mode must not
+mutate the shared system hosts file; custom-domain tests must provide their own
+DNS or leave isolated mode before explicitly selecting hosts-file DNS.
 
 | Data | Owner | Format | Notes |
 | --- | --- | --- | --- |
 | `gate.toml` | user and CLI | TOML | Shareable project config. Edited surgically so comments and surrounding formatting survive. |
-| Generated Node config | Node API | TOML | Cache-backed materialization of inline project config, passed to gate through the explicit config-path mechanism. |
 | `registry.json` | gate only | JSON | Machine-wide reservations. Uses schema versioning, advisory file locking, and atomic write by temp file + rename. |
 | Admin sockets | daemon | Unix sockets | CLI talks to listener-keyed daemons over a local HTTP API. |
 | CA material | gate | PEM files | Root key is private local state and must not be copied. Export only the root certificate. |

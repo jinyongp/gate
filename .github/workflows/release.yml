@@ -157,177 +157,16 @@ jobs:
       needs.release_tag.outputs.tag != '' &&
       needs.release_tag.outputs.on_main == 'true' &&
       needs.build.result == 'success'
-    runs-on: macos-15
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: tooling
-          persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.release_tag.outputs.target }}
-          path: source
-          persist-credentials: false
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: jinyongp/homebrew-tap
-          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
-          path: tap
-          fetch-depth: 0
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-          cache-dependency-path: tooling/go.sum
-      - name: build developer tool
-        working-directory: tooling
-        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
-      - name: wait for release assets
-        id: wait_release_assets
-        run: '"$RUNNER_TEMP/gate-dev" ci wait-release-assets "${VERSION_TAG}"'
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-      - name: generate binary formula
-        id: generate_formula
-        run: '"$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula tap "${VERSION_TAG}"'
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-      - name: verify release tag target
-        working-directory: source
-        run: '"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target "${VERSION_TAG}" "${RELEASE_TARGET}" "${RELEASE_OBJECT}"'
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-          RELEASE_TARGET: ${{ needs.release_tag.outputs.target }}
-          RELEASE_OBJECT: ${{ needs.release_tag.outputs.object }}
-      - name: commit formula
-        id: commit_formula
-        working-directory: tap
-        run: bash .github/workflows/scripts/commit-formula.sh
-        env:
-          FORMULA_PATH: Formula/gate.rb
-          FORMULA: gate
-          VERSION: ${{ needs.release_tag.outputs.tag }}
-      - name: tap formula
-        id: tap_formula
-        run: brew tap jinyongp/tap "$GITHUB_WORKSPACE/tap"
-      - name: audit formula
-        id: audit_formula
-        run: brew audit --strict jinyongp/tap/gate
-      - name: install formula
-        id: install_formula
-        run: brew install jinyongp/tap/gate
-      - name: test formula
-        id: test_formula
-        run: brew test jinyongp/tap/gate
-      - name: verify release tag before formula push
-        if: steps.commit_formula.outputs.changed == 'true'
-        working-directory: source
-        run: '"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target "${VERSION_TAG}" "${RELEASE_TARGET}" "${RELEASE_OBJECT}"'
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-          RELEASE_TARGET: ${{ needs.release_tag.outputs.target }}
-          RELEASE_OBJECT: ${{ needs.release_tag.outputs.object }}
-      - name: push formula
-        id: push_formula
-        if: steps.commit_formula.outputs.changed == 'true'
-        working-directory: tap
-        run: bash .github/workflows/scripts/push-formula.sh
-      - name: job summary
-        if: always()
-        run: bash tooling/.github/scripts/homebrew-summary.sh
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-          RELEASE_TARGET: ${{ needs.release_tag.outputs.target }}
-          RELEASE_OBJECT: ${{ needs.release_tag.outputs.object }}
-          WAIT_RELEASE_ASSETS_OUTCOME: ${{ steps.wait_release_assets.outcome || 'not run' }}
-          GENERATE_FORMULA_OUTCOME: ${{ steps.generate_formula.outcome || 'not run' }}
-          COMMIT_FORMULA_OUTCOME: ${{ steps.commit_formula.outcome || 'not run' }}
-          FORMULA_CHANGED: ${{ steps.commit_formula.outputs.changed || 'unknown' }}
-          TAP_FORMULA_OUTCOME: ${{ steps.tap_formula.outcome || 'not run' }}
-          AUDIT_FORMULA_OUTCOME: ${{ steps.audit_formula.outcome || 'not run' }}
-          INSTALL_FORMULA_OUTCOME: ${{ steps.install_formula.outcome || 'not run' }}
-          TEST_FORMULA_OUTCOME: ${{ steps.test_formula.outcome || 'not run' }}
-          PUSH_FORMULA_OUTCOME: ${{ steps.push_formula.outcome || 'not run' }}
-
-  npm_publish:
-    needs: [release_tag, build]
-    if: |
-      needs.release_tag.outputs.tag != '' &&
-      needs.release_tag.outputs.on_main == 'true' &&
-      needs.build.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: tooling
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: ${{ needs.release_tag.outputs.target }}
-          path: source
-      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-          cache-dependency-path: tooling/go.sum
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version-file: source/.node-version
-          registry-url: https://registry.npmjs.org
-      - name: build developer tool
-        working-directory: tooling
-        run: go build -trimpath -o "$RUNNER_TEMP/gate-dev" ./cmd/gate-dev
-      - name: enable corepack
-        id: corepack
-        run: corepack enable
-      - name: install
-        id: install
-        working-directory: source
-        run: pnpm install --frozen-lockfile
-      - name: download release binaries
-        id: build_binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: gate-${{ needs.release_tag.outputs.target }}
-          path: source/bin
-      - name: verify release tag target
-        working-directory: source
-        run: '"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target "${VERSION_TAG}" "${RELEASE_TARGET}" "${RELEASE_OBJECT}"'
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-          RELEASE_TARGET: ${{ needs.release_tag.outputs.target }}
-          RELEASE_OBJECT: ${{ needs.release_tag.outputs.object }}
-      - name: publish npm packages
-        id: publish_npm
-        working-directory: source
-        run: node ../tooling/scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-          GATE_RELEASE_TARGET_SHA: ${{ needs.release_tag.outputs.target }}
-          GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}
-          NPM_PUBLISH_SUMMARY: npm-publish-summary.tsv
-      - name: job summary
-        if: always()
-        run: bash tooling/.github/scripts/npm-summary.sh
-        env:
-          VERSION_TAG: ${{ needs.release_tag.outputs.tag }}
-          RELEASE_TARGET: ${{ needs.release_tag.outputs.target }}
-          RELEASE_OBJECT: ${{ needs.release_tag.outputs.object }}
-          COREPACK_OUTCOME: ${{ steps.corepack.outcome || 'not run' }}
-          INSTALL_OUTCOME: ${{ steps.install.outcome || 'not run' }}
-          BUILD_BINARIES_OUTCOME: ${{ steps.build_binaries.outcome || 'not run' }}
-          PUBLISH_NPM_OUTCOME: ${{ steps.publish_npm.outcome || 'not run' }}
-          NPM_PUBLISH_SUMMARY: source/npm-publish-summary.tsv
+    uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
+    with:
+      formula: gate
+      ref: ${{ needs.release_tag.outputs.target }}
+      version: ${{ needs.release_tag.outputs.tag }}
+    secrets:
+      deploy_key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
 
   release_summary:
-    needs: [release_tag, preflight, build, homebrew_tap, npm_publish]
+    needs: [release_tag, preflight, build, homebrew_tap]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -350,4 +189,3 @@ jobs:
           PREFLIGHT_JOB_RESULT: ${{ needs.preflight.result }}
           BUILD_JOB_RESULT: ${{ needs.build.result }}
           HOMEBREW_TAP_JOB_RESULT: ${{ needs.homebrew_tap.result }}
-          NPM_PUBLISH_JOB_RESULT: ${{ needs.npm_publish.result }}

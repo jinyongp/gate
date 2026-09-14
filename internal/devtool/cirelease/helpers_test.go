@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"gate/internal/devtool/runner"
 )
@@ -82,7 +81,6 @@ func newTestService(t *testing.T, fake *fakeRunner) (*Service, *strings.Builder,
 	service := New(&out, &errOut, fake)
 	service.Dir = t.TempDir()
 	service.Getenv = environment(map[string]string{})
-	service.Sleep = func(context.Context, time.Duration) error { return nil }
 	return service, &out, &errOut
 }
 

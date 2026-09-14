@@ -295,7 +295,6 @@ func TestCheckSuccessShowsAllActivityStages(t *testing.T) {
 		"checked Go formatting",
 		"completed Go vet",
 		"completed Go tests and coverage",
-		"completed Node checks",
 		"linted Go for Darwin and Linux",
 		"scanned Go vulnerabilities",
 		"checked scripts and workflows",
@@ -333,13 +332,14 @@ fail-fast: false
 ref: ${{ github.sha }}
 uses: ./tooling/.github/actions/preflight
 cross-build: "true"
+uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
+dry-run: true
+validation-mode: spec
 `), nil
 	case "repo/.github/actions/preflight/action.yml":
 		return []byte(`uses: actions/setup-go@sha
 go-version: "1.26.x"
 check-latest: true
-uses: actions/setup-node@sha
-node-version-file: ${{ inputs.source-path }}/.node-version
 uses: extractions/setup-just@sha
 run: just fmt-check
 run: just vet
@@ -355,7 +355,6 @@ run: just scripts-check
       env:
         GATE_RUN_LINUX_LOW_PORT_TEST: "1"
         GATE_REQUIRE_LINUX_LOW_PORT_TEST: "1"
-run: just node-check
 run: just cover
 run: just build-all ci
 GATE_REQUIRE_INSTALL_PTY_TEST
@@ -377,10 +376,7 @@ GATE_RELEASE_TAG_OBJECT: ${{ needs.release_tag.outputs.object }}
 "$RUNNER_TEMP/gate-dev" ci build-release-artifacts
 "$RUNNER_TEMP/gate-dev" ci checksums
 "$RUNNER_TEMP/gate-dev" ci publish-release
-"$RUNNER_TEMP/gate-dev" ci verify-release-tag-target
-"$RUNNER_TEMP/gate-dev" ci wait-release-assets
-"$RUNNER_TEMP/gate-dev" ci generate-homebrew-formula
-node ../tooling/scripts/node/publish-packages.mjs "${VERSION_TAG}" bin
+uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0
 preflight:
 fail-fast: false
 os: [ubuntu-latest, macos-15]

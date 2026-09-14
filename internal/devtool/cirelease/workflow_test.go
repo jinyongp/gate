@@ -33,6 +33,9 @@ func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 		"ref: ${{ github.sha }}",
 		"uses: ./tooling/.github/actions/preflight",
 		`cross-build: "true"`,
+		"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0",
+		"dry-run: true",
+		"validation-mode: spec",
 	} {
 		if !strings.Contains(ciWorkflow, contract) {
 			t.Errorf("CI workflow is missing pull-request contract %q", contract)
@@ -56,7 +59,6 @@ func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 		"run: just vuln",
 		"run: just scripts-check",
 		"run: just linux-low-port-test",
-		"run: just node-check",
 		"run: just cover",
 		"run: just build-all ci",
 	} {
@@ -69,9 +71,6 @@ func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 		"build-release-artifacts",
 		"checksums",
 		"publish-release",
-		"verify-release-tag-target",
-		"wait-release-assets",
-		"generate-homebrew-formula",
 	}
 	for _, command := range commands {
 		if !strings.Contains(workflow, "gate-dev\" ci "+command) {
@@ -96,6 +95,7 @@ func TestWorkflowsRunSharedPreflightAndDeletedScriptsStayAbsent(t *testing.T) {
 		"uses: ./tooling/.github/actions/preflight",
 		"source-sha: ${{ needs.release_tag.outputs.target }}",
 		"needs: [release_tag, preflight]",
+		"uses: jinyongp/homebrew-tap/.github/workflows/publish-formula.yml@dfe0050e6e8a3f6848c556ac9790ce34976cc64f # automation-v1.4.0",
 	} {
 		if !strings.Contains(workflow, contract) {
 			t.Errorf("release workflow is missing %q", contract)

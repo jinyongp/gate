@@ -37,38 +37,12 @@ else
 fi
 ```
 
-## Node API
+## Automation
 
-Use `@jinyongp/gate` when JavaScript automation needs typed gate data instead of
-shell parsing. Install only `@jinyongp/gate`; it exposes the `gate` binary and
-loads platform optional binary packages for supported Darwin/Linux arm64/x64
-hosts.
-
-```ts
-import { createGateClient, isGateError } from '@jinyongp/gate'
-
-const gate = createGateClient({ cwd: process.cwd() })
-const web = await gate.service('web', { up: true })
-const ready = await gate.ready('web', { up: true })
-await gate.run(ready, ['pnpm', 'dev'])
-
-try {
-  await gate.service('web')
-} catch (error) {
-  if (isGateError(error, 'GATE_DNS_REQUIRED')) {
-    // Use .localhost, or opt into dns: 'hosts'/'preconfigured'.
-  }
-  throw error
-}
-```
-
-For JS/package installs, use the package `gate` bin or call
-`resolveGateBinary()` and pass it as `bin`/`GATE_BIN`; the earlier `$GATE_BIN`
-snippet is for system-installed gate. Prefer the CLI for launching child
-processes:
+Use the CLI for scripts and agents. Launch child processes through `gate run`:
 
 ```bash
-pnpm exec gate run --up web -- pnpm dev
+"$GATE_BIN" run --up web -- pnpm dev
 ```
 
 In an interactive terminal, `gate run --up` prints the selected route to stderr
@@ -79,7 +53,7 @@ For scripts or agents that need structured route/env data without spawning a
 child, use:
 
 ```bash
-pnpm exec gate env web --json
+"$GATE_BIN" env web --json
 ```
 
 `gate env` is read-only by default. Use `gate env --up web --json` only when the
@@ -94,68 +68,17 @@ git-ignored directory instead of writing registry locks, daemon sockets, logs,
 or CA material under the user's normal gate state:
 
 ```bash
-pnpm exec gate --isolated-root .gate-agent env --up web --json
-pnpm exec gate --isolated-root .gate-agent run --up web -- pnpm dev
+"$GATE_BIN" --isolated-root .gate-agent env --up web --json
+"$GATE_BIN" --isolated-root .gate-agent run --up web -- pnpm dev
 ```
 
-The CLI flag sets `GATE_ISOLATED_ROOT` for that command. Node callers should
-use `createGateClient({ isolatedRoot: '.gate-agent' })`.
 Use isolated state for temporary inspection, tests, and sandboxed setup checks.
 Use normal gate state for real dev app launches that should share the user's
 registry, trusted certificate material, and listener daemon.
-`isolatedRoot` does not isolate kernel listener ports such as HTTPS `:443` and
-HTTP `:80`. Node API calls with `isolatedRoot` reject `daemon: true`; pass
-`daemon: false` or omit it. For isolated daemon tests, use the CLI with explicit
-non-default listener addresses.
-
-`service(name)` defaults to `{ up: true, dns: 'localhost', daemon: false }`. It
-can reserve/activate routes, but it does not start the daemon unless
-`daemon: true` is passed. Use `service(name, { up: false })`, `ls()`, or
-`port()` for read-only inspection. Custom domains must explicitly choose
-`dns: 'hosts'` or `dns: 'preconfigured'`.
-Use `ready(name, options)` when automation needs the canonical descriptor before
-spawning, then pass that snapshot to `run(ready, argv)` to avoid duplicate
-resolution.
-Do not call `doctor` from normal Node `service()`, `ready()`, or `run()` flows.
-Use `GateError` metadata for command failures, and run `gate doctor --json`
-only for install/setup/CI/preflight or explicit local state diagnosis.
-
-Use inline project config when an agent needs project-scoped Node API behavior
-without creating `gate.toml`:
-
-```ts
-import { createGateClient, type GateInlineProjectConfig } from '@jinyongp/gate'
-
-const config = {
-  name: 'myapp',
-  base: 'myapp.localhost',
-  services: { web: {} },
-} satisfies GateInlineProjectConfig
-
-const gate = createGateClient({ cwd: process.cwd() })
-const web = await gate.service('web', { scope: { config } })
-```
-
-Inline config is written to the user cache as generated TOML and passed through
-`--config`. `scope.project`, if present, must match `config.name`. Do not put
-`envFiles` in Node API options; load environment variables before calling gate
-when inline values use `${NAME}` or `${NAME:-fallback}` references.
-
-Common Node error actions:
-
-- `GATE_DNS_REQUIRED`: use `.localhost`, or intentionally pass `dns: 'hosts'` /
-  `dns: 'preconfigured'`.
-- `GATE_INVALID_OPTIONS`: fix incompatible scope/config options before retrying.
-- `GATE_BINARY_NOT_FOUND` / `GATE_UNSUPPORTED_PLATFORM`: reinstall `@jinyongp/gate`
-  or pass an explicit `bin` / `GATE_BIN`.
-- `GATE_PERMISSION_REQUIRED`: stop unless the user approved the privileged
-  DNS/trust action.
-- `GATE_SERVICE_NOT_FOUND`: check scope, config path, service name, and whether
-  reservations exist.
-- `GATE_COMMAND_FAILED` / `GATE_JSON_PARSE_FAILED`: inspect command metadata and
-  stderr before retrying.
-When a JSON error envelope is available, `GateError` also carries `severity`,
-`retryable`, `hint`, and `nextActions`.
+`--isolated-root` does not isolate kernel listener ports such as HTTPS `:443` and
+HTTP `:80`. For isolated daemon tests, use explicit non-default listener
+addresses. Run `gate doctor --json` only for install/setup/CI/preflight or
+explicit local state diagnosis.
 
 ## Linux and WSL low ports
 
